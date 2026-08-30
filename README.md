@@ -31,4 +31,6 @@ compilé en WebAssembly ([`crypto-core`](crypto-core), partagé entre les trois)
 
 ## Licence
 
-[MIT](LICENSE) — commune aux trois projets de ce dépôt.
+[Tous droits réservés](LICENSE) — commune aux trois projets de ce dépôt. Code public à des fins de
+consultation uniquement ; aucune réutilisation, redistribution ou modification n'est autorisée
+sans permission écrite de l'auteur.

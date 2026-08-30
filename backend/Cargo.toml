@@ -3,7 +3,7 @@ name = "backend"
 version = "0.1.0"
 edition = "2021" # Spécifie l'édition 2021 de Rust (gestion moderne de la mémoire, des fonctionnalités asynchrones, etc.)
 default-run = "backend"
-license = "MIT"
+license-file = "../LICENSE"
 
 # Profil de compilation pour `cargo build --release` (celui utilisé par le Dockerfile) : n'affecte
 # JAMAIS `cargo test`/`cargo check`, qui restent en profil "dev" (rapide à compiler, utile en

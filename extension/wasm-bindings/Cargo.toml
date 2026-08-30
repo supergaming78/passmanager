@@ -3,7 +3,7 @@ name = "wasm-bindings"
 version = "0.1.0"
 description = "Pont wasm-bindgen autour de crypto-core, pour la future extension navigateur — voir extension/wasm-bindings/src/lib.rs."
 edition = "2021"
-license = "MIT"
+license-file = "../../LICENSE"
 
 [lib]
 # "cdylib" : seul crate-type que wasm-pack sait transformer en module .wasm chargeable côté

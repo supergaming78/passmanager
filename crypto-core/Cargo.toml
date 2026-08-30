@@ -3,7 +3,7 @@ name = "crypto-core"
 version = "0.1.0"
 description = "Cryptographie Zero-Knowledge partagée entre le client desktop/Android (frontend(app)/src-tauri) et l'extension navigateur (extension/wasm-bindings) — voir le commentaire en tête de src/crypto.rs pour le détail du schéma de dérivation/chiffrement."
 edition = "2021"
-license = "MIT"
+license-file = "../LICENSE"
 
 [lib]
 # `rlib` : lié statiquement par les deux consommateurs (src-tauri et wasm-bindings), chacun sa

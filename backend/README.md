@@ -246,4 +246,6 @@ infrastructure externe n'est nécessaire pour lancer la suite complète.
 
 ## Licence
 
-[MIT](../LICENSE) — commune aux trois projets de ce dépôt (backend, app desktop/Android, extension).
+[Tous droits réservés](../LICENSE) — commune aux trois projets de ce dépôt (backend, app
+desktop/Android, extension). Code public à des fins de consultation uniquement ; aucune
+réutilisation, redistribution ou modification n'est autorisée sans permission écrite de l'auteur.

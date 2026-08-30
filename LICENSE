@@ -1,21 +1,23 @@
-MIT License
+Copyright (c) 2026 supergaming78. Tous droits réservés.
+All rights reserved.
 
-Copyright (c) 2026 supergaming78
+Ce code source est rendu public à des fins de consultation uniquement (transparence — voir le
+README du dépôt). Sauf autorisation écrite explicite de l'auteur, aucun droit n'est accordé de
+copier, modifier, publier, distribuer, sous-licencier, exécuter en tant que service, ou vendre
+tout ou partie de ce logiciel, ni de permettre à un tiers de le faire.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This source code is made publicly available for reading purposes only (transparency — see the
+repository README). Except with the author's prior explicit written permission, no right is
+granted to copy, modify, publish, distribute, sublicense, run as a service, or sell all or part of
+this software, nor to permit any third party to do so.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+CE LOGICIEL EST FOURNI "EN L'ÉTAT", SANS GARANTIE D'AUCUNE SORTE, EXPRESSE OU IMPLICITE, Y COMPRIS
+MAIS SANS S'Y LIMITER LES GARANTIES DE QUALITÉ MARCHANDE, D'ADÉQUATION À UN USAGE PARTICULIER ET
+D'ABSENCE DE CONTREFAÇON. L'AUTEUR NE POURRA EN AUCUN CAS ÊTRE TENU RESPONSABLE DE TOUT DOMMAGE OU
+AUTRE RESPONSABILITÉ DÉCOULANT DE, OU EN LIEN AVEC CE LOGICIEL OU SON UTILISATION.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
