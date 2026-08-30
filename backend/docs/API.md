@@ -1,0 +1,1210 @@
+# Référence API
+
+Documentation de toutes les routes exposées par le backend. Pour un contrat machine-readable
+(génération de client, Swagger UI...), voir [`openapi.yaml`](openapi.yaml).
+
+## Sommaire
+
+- [Conventions générales](#conventions-générales)
+- [Modèle d'authentification](#modèle-dauthentification)
+- [Limitation de débit (rate limiting)](#limitation-de-débit-rate-limiting)
+- [Format des erreurs](#format-des-erreurs)
+- [Authentification](#endpoints--authentification)
+- [Coffre-fort](#endpoints--coffre-fort-vault)
+- [Appareils de confiance](#endpoints--appareils-de-confiance)
+- [Accès d'urgence](#endpoints--accès-durgence)
+- [Partage d'entrée](#endpoints--partage-dentrée)
+- [Coffres partagés familiaux](#endpoints--coffres-partagés-familiaux)
+- [Partage à usage limité](#endpoints--partage-à-usage-limité)
+- [Synchronisation temps réel](#endpoints--synchronisation-temps-réel)
+- [Administration](#endpoints--administration)
+- [Divers](#endpoints--divers)
+
+## Conventions générales
+
+- Toutes les requêtes et réponses avec un corps utilisent `Content-Type: application/json`,
+  **sauf** `POST /auth/register` qui répond en texte brut (`"OK"`) — historique, à garder en tête
+  côté client si tu ne veux pas faire échouer un `response.json()`.
+- Une réponse sans corps (`204 No Content`, ou certains `200`/`202` volontairement vides) ne
+  contient aucun JSON à parser.
+- Les champs préfixés `encrypted_` sont des blobs **déjà chiffrés côté client** (Zero-Knowledge) :
+  le serveur les stocke et les renvoie tels quels, sans jamais les déchiffrer, les comparer ou les
+  trier par contenu. Aucune recherche côté serveur n'est possible sur ces champs — le filtrage/tri
+  doit se faire côté client après déchiffrement.
+- `master_password_hash` (et ses variantes `old_`/`new_`) n'est **jamais** le mot de passe maître
+  en clair : c'est un hash d'authentification dérivé localement par le client (Argon2id/PBKDF2) à
+  partir du mot de passe maître. Le serveur ne doit jamais recevoir le mot de passe maître lui-même.
+
+## Modèle d'authentification
+
+1. **Inscription** (`POST /auth/register`) crée un compte **non vérifié** et envoie un code à 6
+   chiffres par email. Le compte est inutilisable pour se connecter tant que ce code n'a pas été
+   confirmé via `POST /auth/verify-email`.
+2. **Connexion** (`POST /auth/login`) :
+   - Si l'appareil (`device_id`) est déjà "de confiance" pour ce compte : renvoie directement un
+     `access_token` (JWT) et un `refresh_token`.
+   - Sinon : renvoie `202 { "status": "2FA_REQUIRED" }` et envoie un code à 6 chiffres par email.
+     Le client doit ensuite appeler `POST /auth/verify-device` avec ce code pour enregistrer
+     l'appareil comme "de confiance", **puis rappeler `/auth/login`** pour obtenir les tokens.
+3. **Access token** : JWT signé HMAC-SHA256, durée de vie courte (`ACCESS_TOKEN_SECONDS`, 600s par
+   défaut). À envoyer dans l'en-tête `Authorization: Bearer <access_token>` sur toutes les routes
+   authentifiées.
+4. **Refresh token** : chaîne opaque aléatoire (jamais un JWT), à durée de vie plus longue
+   (`REFRESH_TOKEN_HOURS` si "se souvenir de moi", sinon `REFRESH_TOKEN_SHORT_SECONDS`). Consommé
+   à **usage unique** : chaque appel à `POST /auth/refresh` le fait tourner (rotation) — l'ancien
+   refresh token ne fonctionne plus après coup, même s'il n'a pas expiré.
+5. **Invalidation immédiate de session** : un access token déjà émis est rejeté (même s'il n'a pas
+   encore expiré) dès que l'un de ces événements survient sur le compte :
+   - changement de mot de passe volontaire (`PUT /auth/password`) ;
+   - réinitialisation de mot de passe oublié (`POST /auth/reset-password`) ;
+   - déconnexion globale volontaire (`POST /devices/logout-all`).
+   Dans ces trois cas, toutes les requêtes authentifiées suivantes avec l'ancien access token
+   renvoient `401`, obligeant le client à se reconnecter.
+6. **WebSocket** : `GET /ws` ne s'authentifie **pas** avec l'access token directement (l'API
+   WebSocket des navigateurs ne permet pas d'en-tête `Authorization` à l'ouverture). Le client doit
+   d'abord échanger son access token contre un ticket à usage unique via `POST /ws/ticket`, puis
+   ouvrir la connexion avec `GET /ws?ticket=<ticket>`. `POST /devices/logout-all` ferme
+   activement toute connexion `/ws` déjà ouverte pour ce compte (pas seulement les futures
+   requêtes REST) : le serveur diffuse un événement interne que le client reçoit juste avant la
+   fermeture du socket.
+
+## Limitation de débit (rate limiting)
+
+Trois paliers, par adresse IP (voir `TRUST_PROXY_HEADERS` dans `../README.md` — désactivé par
+défaut, l'identification reste sur l'IP du pair TCP direct tant que ce backend n'est pas
+explicitement déclaré derrière un reverse proxy de confiance) :
+
+| Palier | Routes concernées | Limite |
+|---|---|---|
+| Sensible | `POST /auth/register`, `/login`, `/verify-email`, `/resend-verification`, `/forgot-password`, `/reset-password`, `/verify-device` ; `PUT /auth/email`, `/auth/password` ; `PUT /admin/users/{email}/role`, `/admin/users/{email}/email`, `/admin/users/{email}/extension-email-change`, `/admin/users/extension-email-change-all` ; `POST /admin/users/{email}/revoke-sessions` ; `DELETE /admin/users/{email}` | 4 req/s, rafale de 8 |
+| Auth (reste) | `POST /auth/logout`, `/refresh` | 15 req/s, rafale de 30 |
+| Global | Toutes les autres routes (`/vault/*`, `/devices/*`, `/ws/*`, `/me`, `/audit`, `GET /admin/users`...) | 40 req/s, rafale de 80 |
+
+Un dépassement renvoie `429 Too Many Requests` avec un en-tête `Retry-After` (secondes avant que
+la rafale se recharge — voir la crate `governor`, ce n'est PAS un blocage permanent : il n'y a
+jamais besoin de redémarrer le serveur pour qu'il se résorbe). Les routes `/auth/*` sensibles
+cumulent le palier "Sensible" **et** le palier "Auth" (le plus strict des deux s'applique de
+fait) ; les 6 routes `/admin/users/*` mutantes ci-dessus sont hors du groupe `/auth`, donc
+uniquement sur le palier "Sensible" (pas de cumul avec "Auth").
+
+Toute requête dépassant **30 secondes** (ex: un envoi SMTP qui traîne) est coupée avec
+`408 Request Timeout` et `{ "error": "La requête a pris trop de temps" }`.
+
+## Format des erreurs
+
+Toute erreur applicative renvoie `{ "error": "<message>" }` avec un code HTTP parmi :
+
+| Code | Cas |
+|---|---|
+| `400` | Validation du payload échouée, ou message spécifique (ex: email pas encore vérifié, re-chiffrement incomplet, plafond d'appareils atteint) |
+| `401` | Identifiants incorrects, session/token expiré ou invalidé, compte introuvable |
+| `403` | Droits insuffisants (ex: `/audit` par un non-admin) |
+| `404` | Ressource introuvable ou n'appartenant pas à l'appelant |
+| `408` | Requête trop longue (timeout global de 30s) |
+| `409` | Conflit (ex: doublon en base) |
+| `429` | Limite de débit dépassée |
+| `500` | Erreur interne (hachage, jeton, base de données) — message volontairement générique, jamais de détail technique exposé au client |
+
+## Endpoints — Authentification
+
+Toutes les routes ci-dessous sont préfixées par `/auth`.
+
+### `POST /auth/register`
+
+Crée un compte. **Aucune authentification requise.**
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `email` | string | oui | format email valide |
+| `master_password_hash` | string | oui | 6-128 caractères |
+| `device_id` | string | oui | identifiant stable de l'appareil (ignoré ici, seulement utile au login) |
+| `remember_me` | bool | non | ignoré à l'inscription |
+| `max_trusted_devices` | number | non | 1-50, défaut 10 — plafond d'appareils de confiance pour ce compte |
+
+**Réponse** : `201 Created`, corps texte brut `"OK"` (pas de JSON).
+**Erreurs** : `400` validation, `409` email déjà utilisé.
+**Effet de bord** : envoie un code de vérification à 6 chiffres par email (expire en 30 min).
+
+### `POST /auth/verify-email`
+
+Confirme le code reçu à l'inscription.
+
+| Champ | Type | Requis |
+|---|---|---|
+| `email` | string | oui |
+| `code` | string | oui |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `400` code incorrect/expiré/aucun code en attente, ou trop de tentatives (5 max, le
+code est alors définitivement invalidé — il faut se réinscrire).
+
+### `POST /auth/resend-verification`
+
+Renvoie un nouveau code de vérification (le précédent expire ou a été perdu).
+
+| Champ | Type | Requis |
+|---|---|---|
+| `email` | string | oui |
+
+**Réponse** : `202 Accepted`, corps vide, **dans tous les cas** — email inconnu ou déjà vérifié
+inclus (anti-énumération de comptes). Aucun nouveau code n'est généré si le compte n'existe pas ou
+est déjà vérifié.
+
+### `POST /auth/login`
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `email` | string | oui | format email valide |
+| `master_password_hash` | string | oui | 6-128 caractères |
+| `device_id` | string | oui | |
+| `remember_me` | bool | non | détermine la durée du refresh token |
+| `max_trusted_devices` | number | non | ignoré au login |
+
+**Réponses possibles** :
+- `200 OK` — appareil de confiance :
+  ```json
+  { "access_token": "...", "refresh_token": "...", "expires_in": 600 }
+  ```
+- `202 Accepted` — appareil inconnu, 2FA requis :
+  ```json
+  { "status": "2FA_REQUIRED" }
+  ```
+- `400` — email pas encore vérifié (voir `/auth/verify-email`), OU compte temporairement bloqué
+  pour trop d'échecs récents (voir ci-dessous) — message distinct dans ce dernier cas.
+- `401` — email ou mot de passe incorrect (même message pour les deux cas).
+
+**Effet de bord (appareil de confiance uniquement)** : si l'adresse IP appelante n'a jamais été vue
+pour CET appareil précis (fenêtre glissante des 5 IP les plus récentes), envoie une alerte de
+sécurité par email et journalise `LOGIN_NEW_IP_DETECTED` (voir `GET /audit/me`) — jamais bloquant,
+purement informatif (une IP seule n'est pas un signal fiable pour refuser une connexion : VPN,
+itinérance mobile...). Aucune alerte lors du tout premier login d'un appareil qui vient d'être
+approuvé (déjà couvert par l'alerte "nouvel appareil" de `POST /auth/verify-device`).
+
+**Anti-bruteforce par compte** : en plus du rate limiting par IP (voir plus haut), chaque compte
+suit ses échecs de mot de passe consécutifs. Après 5 échecs, le compte est bloqué (`400`, message
+dédié) pendant 15 minutes glissantes à partir du DERNIER échec — même avec le bon mot de passe.
+Une connexion réussie remet immédiatement ce compteur à zéro. Complète (ne remplace pas) le rate
+limiting par IP : celui-ci seul ne protège pas un compte ciblé par un attaquant changeant d'IP.
+
+### `POST /auth/verify-device`
+
+Valide le code 2FA reçu suite à un `login()` sur un appareil inconnu, et l'enregistre comme
+appareil de confiance.
+
+| Champ | Type | Requis |
+|---|---|---|
+| `email` | string | oui |
+| `code` | string | oui |
+| `device_id` | string | oui |
+| `device_name` | string | non — nom convivial (ex: "iPhone de Jean") |
+
+**Réponse** : `200 OK`, corps vide. **Rappeler `/auth/login` ensuite** pour obtenir les tokens.
+**Erreurs** : `400` code incorrect/expiré, trop de tentatives, ou plafond d'appareils de confiance
+atteint (l'utilisateur doit d'abord révoquer un appareil existant via `DELETE /devices/{id}`).
+**Effet de bord** : envoie une alerte de sécurité par email ("nouvel appareil approuvé").
+
+### `POST /auth/refresh`
+
+| Champ | Type | Requis |
+|---|---|---|
+| `refresh_token` | string | oui |
+
+**Réponse** : `200 OK` :
+```json
+{ "access_token": "...", "refresh_token": "..." }
+```
+(pas de champ `expires_in` ici, contrairement à `/auth/login`.)
+
+**Erreurs** : `401 SessionExpired` — token invalide, expiré, ou déjà utilisé (rotation à usage
+unique : rejouer un ancien refresh token échoue toujours, même s'il n'a pas expiré).
+
+### `POST /auth/logout`
+
+Révoque **un seul** refresh token (un seul appareil). **Aucune authentification requise** — la
+connaissance du refresh token suffit à prouver la légitimité de la déconnexion.
+
+| Champ | Type | Requis |
+|---|---|---|
+| `refresh_token` | string | oui |
+
+**Réponse** : `204 No Content`, idempotent (succès même si le token n'existait déjà plus).
+
+### `PUT /auth/password`
+
+*Authentification requise.* Change volontairement le mot de passe maître. **Doit obligatoirement
+inclure la ré-encryption de la totalité du coffre actif** (architecture Zero-Knowledge : la clé de
+chiffrement du coffre dérive du mot de passe maître).
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `old_master_password_hash` | string | oui | 6-128 caractères |
+| `new_master_password_hash` | string | oui | 6-128 caractères |
+| `reencrypted_entries` | array | oui | voir ci-dessous — **doit contenir EXACTEMENT toutes les entrées actives du coffre** |
+| `reencrypted_history` | array | non (défaut `[]`) | voir ci-dessous — **doit contenir EXACTEMENT toutes les lignes de `vault_password_history` de l'utilisateur** |
+| `reencrypted_attachments` | array | non (défaut `[]`) | voir ci-dessous — **doit contenir EXACTEMENT toutes les pièces jointes de l'utilisateur** |
+
+Chaque élément de `reencrypted_entries` :
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `id` | string | oui | id d'une entrée existante |
+| `encrypted_site_name` | string | oui | 1-8192 caractères |
+| `encrypted_username` | string | non | max 8192 caractères |
+| `encrypted_login_email` | string | non | max 8192 caractères |
+| `encrypted_password` | string | oui | 1-8192 caractères |
+| `encrypted_preferred_login_type` | string | oui | 1-8192 caractères |
+| `encrypted_folder` | string | non | max 8192 caractères |
+| `encrypted_notes` | string | non | max 8192 caractères |
+| `encrypted_url` | string | non | max 8192 caractères |
+| `encrypted_extra_fields` | string | non | max 8192 caractères — champs additionnels des types dédiés (carte/identité), voir `POST /vault` |
+
+Chaque élément de `reencrypted_history` :
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `id` | string | oui | id d'une ligne d'historique existante (voir `GET /vault/{id}/history`) |
+| `encrypted_password` | string | oui | 1-8192 caractères |
+
+Chaque élément de `reencrypted_attachments` :
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `id` | string | oui | id d'une pièce jointe existante (voir `GET /vault/{id}/attachments`) |
+| `encrypted_filename` | string | oui | 1-8192 caractères |
+| `encrypted_content` | string | oui | 1-10 000 000 caractères |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `401` ancien mot de passe incorrect ; `400` si le nombre d'entrées re-chiffrées, de
+lignes d'historique re-chiffrées, ou de pièces jointes re-chiffrées, ne correspond pas exactement à
+ce qui existe en base (opération annulée dans son ensemble, rien n'est modifié).
+**Effets de bord** : invalide **toutes** les sessions actives (tous appareils) ; envoie une alerte
+de sécurité par email ; ferme aussi immédiatement les access tokens déjà émis (voir
+[Modèle d'authentification](#modèle-dauthentification)).
+**Note** : cette route accepte des requêtes jusqu'à 512 Mo (un coffre de 5000 entrées et 50 pièces
+jointes re-chiffrées peut être volumineux).
+
+### `PUT /auth/email`
+
+*Authentification requise.* Change l'adresse email du compte.
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `new_email` | string | oui | format email valide |
+| `master_password_hash` | string | oui | confirmation d'identité |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `401` mot de passe incorrect ; `403` si l'appelant vient d'une extension navigateur
+(en-tête `Origin` commençant par `chrome-extension://`/`moz-extension://`) et n'est ni admin ni
+explicitement autorisé (voir `can_change_email_via_extension` sous `GET /me` et
+`PUT /admin/users/{email}/extension-email-change` plus bas — l'app desktop n'est JAMAIS concernée
+par cette restriction, quelle que soit la valeur de ce réglage).
+**Effets de bord** : invalide toutes les sessions actives ; envoie une alerte de sécurité à
+**l'ancienne** adresse (pas la nouvelle) ; propage automatiquement le changement à toutes les
+données liées (coffre, appareils de confiance, logs d'audit...).
+
+### `GET /me`
+
+*Authentification requise.*
+
+**Réponse** : `200 OK` :
+```json
+{
+  "email": "utilisateur@example.com",
+  "is_moderator": false,
+  "max_trusted_devices": 10,
+  "can_change_email_via_extension": false,
+  "is_admin": false
+}
+```
+`is_moderator` : seule source fiable pour qu'un client sache s'il doit afficher une interface
+d'administration — jamais déduit du JWT lui-même (qui ne porte pas ce champ, voir la section
+Authentification plus haut). `max_trusted_devices` : le plafond d'appareils de confiance
+actuellement en vigueur (seul moyen pour un client de le connaître avant de le modifier via
+`PUT /devices/limit`, qui ne renvoie que 200 vide). `can_change_email_via_extension` : voir
+`PUT /auth/email` ci-dessus — permet à un client (la popup de l'extension) de savoir s'il doit
+afficher son formulaire de changement d'email plutôt que d'attendre un 403 pour le découvrir.
+`is_admin` : vrai UNIQUEMENT pour le compte configuré via `ADMIN_EMAIL` — seul compte
+autorisé à appeler `PUT /admin/users/{email}/role` (voir plus bas) ; permet à l'écran
+Administration de masquer les boutons promouvoir/rétrograder pour tout le monde d'autre.
+
+### `GET /audit/me`
+
+*Authentification requise.* Historique de sécurité SELF-SERVICE — contrairement à `GET /audit`
+(section Administration plus bas, réservé aux admins, tous comptes confondus), ne renvoie que les
+100 entrées les plus récentes du compte APPELANT (`WHERE user_email = ?`), triées du plus récent
+au plus ancien. Même forme de réponse que `GET /audit`. Aucun contenu du coffre là-dedans — juste
+action/IP/user-agent/date en clair.
+
+### `POST /auth/forgot-password`
+
+Initie une réinitialisation de mot de passe oublié.
+
+| Champ | Type | Requis |
+|---|---|---|
+| `email` | string | oui |
+
+**Réponse** : `202 Accepted`, corps vide, **dans tous les cas** (anti-énumération de comptes —
+même réponse que l'email existe ou non).
+
+### `POST /auth/reset-password`
+
+Confirme le code reçu et applique le nouveau mot de passe.
+
+⚠️ **Purge intégrale du coffre** : contrairement à `PUT /auth/password` (changement volontaire),
+il n'y a ici aucune clé de l'ancien mot de passe pour re-chiffrer quoi que ce soit — toutes les
+entrées du coffre sont **définitivement supprimées**.
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `email` | string | oui | |
+| `code` | string | oui | |
+| `new_master_password_hash` | string | oui | 6-128 caractères |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `400` code invalide/expiré, ou trop de tentatives.
+**Effets de bord** : purge tout le coffre, invalide toutes les sessions, ferme les access tokens
+déjà émis.
+
+## Endpoints — Coffre-fort (vault)
+
+Toutes les routes ci-dessous nécessitent une authentification.
+
+### `GET /vault?limit=&offset=`
+
+Liste les entrées actives du coffre de l'utilisateur (favoris en premier).
+
+| Paramètre | Type | Défaut | Notes |
+|---|---|---|---|
+| `limit` | number | 50 | plafonné à 100 quoi que le client demande |
+| `offset` | number | 0 | |
+
+**Réponse** : `200 OK`, tableau de `VaultEntry` :
+```json
+[{
+  "id": "uuid",
+  "encrypted_site_name": "...",
+  "encrypted_username": "...",
+  "encrypted_login_email": "...",
+  "encrypted_password": "...",
+  "encrypted_preferred_login_type": "...",
+  "user_email": "...",
+  "is_favorite": false,
+  "encrypted_folder": null,
+  "encrypted_notes": null,
+  "encrypted_url": null,
+  "entry_type": "login",
+  "encrypted_extra_fields": null,
+  "updated_at": "2026-08-05T12:00:00",
+  "version": 1,
+  "has_attachments": false
+}]
+```
+`version` : compteur entier incrémenté à chaque modification — à renvoyer dans `expected_version`
+lors d'un `PUT /vault/{id}` pour détecter un conflit d'édition (voir plus bas).
+`has_attachments` : vrai si cette entrée a au moins une pièce jointe (calculé à la volée, pas une
+colonne stockée) — évite au client d'interroger `GET /vault/{id}/attachments` pour chaque entrée
+juste pour savoir s'il faut afficher un indicateur.
+`entry_type` : type d'entrée dédié (`"login"` par défaut, ou `"card"`/`"identity"`/`"note"`) —
+métadonnée EN CLAIR, comme `is_favorite`. `encrypted_extra_fields` : blob JSON chiffré côté client
+contenant les champs spécifiques au type (ex: date d'expiration/CVV pour une carte) — jamais
+interprété par le serveur, purement une convention côté client (voir `POST /vault`).
+
+### `POST /vault`
+
+Ajoute une entrée.
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `encrypted_site_name` | string | oui | 1-8192 caractères |
+| `encrypted_username` | string | non | max 8192 caractères |
+| `encrypted_login_email` | string | non | max 8192 caractères |
+| `encrypted_password` | string | oui | 1-8192 caractères |
+| `encrypted_preferred_login_type` | string | oui | 1-8192 caractères |
+| `is_favorite` | bool | oui | |
+| `encrypted_folder` | string | non | max 8192 caractères |
+| `encrypted_notes` | string | non | max 8192 caractères |
+| `encrypted_url` | string | non | max 8192 caractères |
+| `entry_type` | string | non (défaut `"login"`) | métadonnée EN CLAIR — `"login"`/`"card"`/`"identity"`/`"note"`, aucune valeur imposée côté serveur |
+| `encrypted_extra_fields` | string | non | max 8192 caractères — voir `GET /vault` |
+| `password_changed` | bool | non (défaut `false`) | voir `PUT /vault/{id}` |
+
+**Réponse** : `201 Created`, corps vide.
+**Erreurs** : `400` validation, ou plafond de 5000 entrées actives atteint.
+
+### `PUT /vault/{id}`
+
+Modifie une entrée existante (mêmes champs que `POST /vault`). `password_changed` doit être `true`
+UNIQUEMENT si le CLIENT a réellement changé le mot de passe dans ce formulaire (pas à chaque
+simple modification de site/dossier/notes/url, qui repasse pourtant par cette même route) : dans ce
+cas, l'ANCIENNE valeur chiffrée de `encrypted_password` est archivée dans l'historique (voir
+`GET /vault/{id}/history`) avant d'être écrasée. Le serveur ne peut pas déduire ce changement
+lui-même en comparant les blobs chiffrés (AES-GCM est randomisé, `encrypted_password` diffère
+toujours d'un appel à l'autre même à mot de passe inchangé).
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `expected_version` | number | non | voir DÉTECTION DE CONFLIT ci-dessous |
+
+**DÉTECTION DE CONFLIT** : si `expected_version` est fourni, il doit correspondre à `version` tel
+qu'il est actuellement en base au moment de cet appel — sinon la modification est refusée (`409`)
+plutôt que d'écraser silencieusement une modification faite entre-temps depuis un AUTRE appareil.
+Omettre ce champ désactive le contrôle (compatible avec un client plus ancien).
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `404` si l'entrée n'existe pas, n'appartient pas à l'appelant, ou est dans la
+corbeille (il faut d'abord la restaurer) ; `409` en cas de conflit de version (voir ci-dessus).
+
+### `GET /vault/{id}/history`
+
+Historique des mots de passe d'une entrée, du plus récent au plus ancien (archivé automatiquement
+par `PUT /vault/{id}` quand `password_changed: true` — voir ci-dessus). Plafonné à 20 versions par
+entrée (les plus anciennes sont purgées automatiquement au-delà).
+
+**Réponse** : `200 OK`, tableau de `PasswordHistoryEntry` :
+```json
+[{ "id": "uuid", "vault_id": "uuid", "encrypted_password": "...", "changed_at": "2026-08-05T12:00:00" }]
+```
+**Erreurs** : aucune erreur spécifique — une entrée sans historique renvoie simplement `[]`.
+
+### `POST /vault/history/export`
+
+Exporte l'intégralité de l'historique de mots de passe de l'utilisateur (tous dossiers/entrées
+confondus) — à récupérer, re-chiffrer côté client, puis renvoyer dans `reencrypted_history` lors
+d'un changement de mot de passe maître (voir `PUT /auth/password`). Même exigence de
+reconfirmation du mot de passe maître que `POST /vault/export`, pour la même raison.
+
+| Champ | Type | Requis |
+|---|---|---|
+| `master_password_hash` | string | oui — reconfirmation obligatoire |
+
+**Réponse** : `200 OK`, tableau de `PasswordHistoryEntry` (même forme que `GET /vault/{id}/history`,
+tous dossiers confondus, sans plafond).
+**Erreurs** : `401` mot de passe incorrect.
+
+### `POST /vault/{id}/attachments`
+
+Ajoute une pièce jointe chiffrée à une entrée (nom de fichier ET contenu CHIFFRÉS côté client —
+voir `src-tauri/src/crypto.rs::encrypt_field` — le serveur ne les lit ni ne les valide jamais).
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `encrypted_filename` | string | oui | 1-8192 caractères |
+| `encrypted_content` | string | oui | 1-10 000 000 caractères (~5 Mo de fichier original, une fois chiffré et doublement encodé en base64) |
+| `content_size` | number | oui | 1-5 242 880 (taille EN CLAIR du fichier original, en octets — SEULE métadonnée non chiffrée, fournie par le client, non vérifiable par le serveur) |
+
+**Réponse** : `201 Created` : `{ "id": "uuid" }`.
+**Erreurs** : `400` validation, ou plafond atteint (5 pièces jointes par entrée, 50 au total par
+utilisateur) ; `404` si l'entrée n'existe pas, n'appartient pas à l'appelant, ou est dans la
+corbeille.
+**Note** : cette route accepte des requêtes jusqu'à 16 Mo.
+
+### `GET /vault/{id}/attachments`
+
+Liste les pièces jointes d'une entrée, **sans leur contenu** (évite de transférer plusieurs Mo par
+fichier juste pour en afficher le nom).
+
+**Réponse** : `200 OK`, tableau de `VaultAttachmentMeta` :
+```json
+[{ "id": "uuid", "encrypted_filename": "...", "content_size": 1234, "created_at": "2026-08-05T12:00:00" }]
+```
+
+### `GET /vault/{id}/attachments/{attachment_id}`
+
+Récupère UNE pièce jointe complète (avec son contenu chiffré) — pour le téléchargement.
+
+**Réponse** : `200 OK`, un `VaultAttachment` :
+```json
+{ "id": "uuid", "vault_id": "uuid", "encrypted_filename": "...", "encrypted_content": "...", "content_size": 1234, "created_at": "2026-08-05T12:00:00" }
+```
+**Erreurs** : `404`.
+
+### `DELETE /vault/{id}/attachments/{attachment_id}`
+
+Supprime définitivement une pièce jointe (pas de corbeille pour les pièces jointes).
+
+**Réponse** : `204 No Content`.
+**Erreurs** : `404`.
+
+### `DELETE /vault/{id}`
+
+Suppression **douce** (déplace vers la corbeille, récupérable 30 jours).
+
+**Réponse** : `204 No Content`.
+**Erreurs** : `404`.
+
+### `PATCH /vault/{id}/favorite`
+
+Bascule le statut favori (`true` <-> `false`).
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `404` (y compris si l'entrée est dans la corbeille).
+
+### `GET /vault/trash`
+
+Liste les entrées dans la corbeille (les plus récemment supprimées en premier).
+
+**Réponse** : `200 OK`, tableau de `TrashedVaultEntry` :
+```json
+[{
+  "id": "uuid",
+  "encrypted_site_name": "...",
+  "encrypted_username": "...",
+  "encrypted_login_email": "...",
+  "encrypted_preferred_login_type": "...",
+  "is_favorite": false,
+  "deleted_at": "2026-08-05T12:00:00",
+  "encrypted_folder": null
+}]
+```
+(pas de `encrypted_password` ni `user_email` dans cette réponse allégée.)
+
+### `POST /vault/{id}/restore`
+
+Restaure une entrée de la corbeille.
+
+**Réponse** : `200 OK`, corps vide. **Erreurs** : `404`.
+
+### `DELETE /vault/{id}/permanent`
+
+Supprime **définitivement** une entrée déjà dans la corbeille (aucun retour en arrière). Échoue
+sur une entrée active (doit d'abord passer par `DELETE /vault/{id}`).
+
+**Réponse** : `204 No Content`. **Erreurs** : `404`.
+
+### `POST /vault/import`
+
+Importe en bloc un ensemble d'entrées (ex: restauration d'un backup obtenu via `/vault/export`).
+Chaque entrée devient une **nouvelle** ligne — jamais de fusion/écrasement de l'existant.
+
+| Champ | Type | Requis |
+|---|---|---|
+| `entries` | array de `VaultEntryInput` (mêmes champs que `POST /vault`) | oui |
+
+**Réponse** : `201 Created` :
+```json
+{ "imported": 3 }
+```
+**Erreurs** : `400` si une seule entrée du lot est invalide, ou si l'import dépasse le plafond de
+5000 entrées actives — dans les deux cas, **rien n'est importé** (tout ou rien).
+**Note** : accepte des requêtes jusqu'à 256 Mo.
+
+### `POST /vault/export`
+
+Exporte l'intégralité du coffre actif (pas de pagination). Reste chiffré (Zero-Knowledge).
+
+| Champ | Type | Requis |
+|---|---|---|
+| `master_password_hash` | string | oui — reconfirmation obligatoire |
+
+**Réponse** : `200 OK`, tableau de `VaultEntry` (même forme que `GET /vault`, sans pagination).
+**Erreurs** : `401` mot de passe incorrect.
+
+### `GET /api/vault/sync` (alias `GET /api/vault/sync-check`)
+
+Endpoint léger pour savoir si le client doit re-télécharger le coffre, sans le récupérer en
+entier.
+
+**Réponse** : `200 OK` :
+```json
+{ "sync_token": "3_2026-08-05 12:00:00", "total_entries": 3, "last_modified": "2026-08-05 12:00:00" }
+```
+`sync_token` change dès qu'une entrée est ajoutée, modifiée, ou que son statut favori change (les
+entrées dans la corbeille ne comptent pas dans `total_entries`).
+
+## Endpoints — Appareils de confiance
+
+Toutes les routes ci-dessous nécessitent une authentification.
+
+### `GET /devices`
+
+**Réponse** : `200 OK`, tableau de `TrustedDevice` :
+```json
+[{ "device_id": "...", "device_name": "iPhone de Jean", "created_at": "...", "last_used_at": "..." }]
+```
+
+### `DELETE /devices/{device_id}`
+
+Révoque un appareil de confiance : il devra repasser par le 2FA à sa prochaine connexion, et sa
+session active (s'il en a une) est immédiatement coupée.
+
+**Réponse** : `204 No Content`. **Erreurs** : `404`.
+
+### `PUT /devices/limit`
+
+Modifie le plafond d'appareils de confiance (choisi initialement à l'inscription via
+`max_trusted_devices`).
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `new_limit` | number | oui | 1-50 |
+| `master_password_hash` | string | oui | reconfirmation obligatoire |
+
+**Réponse** : `200 OK`, corps vide. **Erreurs** : `401` mot de passe incorrect.
+
+### `POST /devices/logout-all`
+
+Déconnexion totale volontaire : révoque **toutes** les sessions actives, sur **tous** les
+appareils — y compris celui qui appelle cette route. Aucune reconfirmation de mot de passe
+requise (action purement défensive, ne peut rien exposer). Ferme également toute connexion
+WebSocket (`GET /ws`) déjà ouverte pour ce compte (voir point 6 plus haut).
+
+**Réponse** : `204 No Content`.
+**Effet de bord** : ferme aussi immédiatement les access tokens déjà émis (voir
+[Modèle d'authentification](#modèle-dauthentification)).
+
+## Endpoints — Accès d'urgence
+
+Toutes les routes ci-dessous nécessitent une authentification. Zero-Knowledge de bout en bout : le
+serveur ne relaie que des clés publiques et des blobs déjà chiffrés côté client (voir
+`src-tauri/src/emergency.rs` pour la construction cryptographique — une "boîte scellée" X25519).
+
+Machine à états d'une relation (`status`) : `pending` (invitation envoyée) → `active` (acceptée) →
+`access_requested` (le contact a demandé l'accès, délai d'attente en cours) → `access_granted`
+(accès accordé, définitivement ou automatiquement après le délai).
+
+### `PUT /emergency/keys`
+
+Enregistre ou remplace sa propre paire de clés X25519 (générée côté client).
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `public_key` | string | oui | 1-8192 caractères |
+| `encrypted_private_key` | string | oui | 1-8192 caractères — CHIFFRÉE côté client avec la clé du coffre |
+
+**Réponse** : `200 OK`, corps vide.
+
+### `GET /emergency/keys/me`
+
+Récupère ses propres clés (publique **et** privée chiffrée) — nécessaire pour desceller la clé
+d'un coffre distant une fois l'accès accordé.
+
+**Réponse** : `200 OK`, `{ "public_key": "...", "encrypted_private_key": "..." }`.
+
+### `GET /emergency/keys/{email}`
+
+Récupère **uniquement** la clé publique d'un autre utilisateur (jamais sa clé privée, même
+chiffrée) — ce qu'il faut pour lui sceller quelque chose.
+
+**Réponse** : `200 OK`, `{ "public_key": "..." }`.
+**Erreurs** : `404` si cet utilisateur n'a jamais configuré l'accès d'urgence.
+
+### `POST /emergency/contacts`
+
+Désigne un nouveau contact de confiance — envoie une invitation par email, sans effet tant qu'elle
+n'est pas acceptée.
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `contact_email` | string | oui | email valide, différent du sien |
+| `waiting_period_days` | number | oui | 0-90 |
+
+**Réponse** : `201 Created`, `{ "id": "uuid" }`.
+**Erreurs** : `400` validation, ou tentative de s'ajouter soi-même ; `409` ce contact est déjà désigné.
+
+### `GET /emergency/contacts`
+
+Liste les contacts désignés par l'utilisateur connecté ("les gens en qui j'ai confiance").
+
+**Réponse** : `200 OK`, tableau de `EmergencyContact` (id, owner_email, contact_email,
+waiting_period_days, status, requested_at, available_at, created_at — **jamais**
+`sealed_vault_key`, qui ne transite que via `GET /emergency/contacts/{id}/vault`).
+
+### `GET /emergency/granted-to-me`
+
+Liste les relations où l'utilisateur connecté est le **contact** désigné ("les comptes où on m'a
+fait confiance"). Même forme que `GET /emergency/contacts`.
+
+### `POST /emergency/contacts/{id}/accept`
+
+Le contact accepte l'invitation.
+
+**Réponse** : `200 OK`, corps vide. **Erreurs** : `404` (invitation inconnue, déjà traitée, ou vous
+n'êtes pas le contact désigné — réponse volontairement identique dans les trois cas).
+
+### `POST /emergency/contacts/{id}/decline`
+
+Le contact refuse l'invitation (supprime la relation).
+
+**Réponse** : `204 No Content`. **Erreurs** : `404`.
+
+### `PUT /emergency/contacts/{id}/seed`
+
+Le propriétaire chiffre (scelle) sa clé de coffre pour ce contact précis — peut être rappelé à
+tout moment pour rafraîchir le blob (ex: après un changement de mot de passe maître).
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `sealed_vault_key` | string | oui | 1-8192 caractères |
+
+**Réponse** : `200 OK`, corps vide. **Erreurs** : `404`.
+
+### `POST /emergency/contacts/{id}/request-access`
+
+Le contact demande l'accès d'urgence — démarre le délai d'attente configuré par le propriétaire.
+Refusé si l'invitation n'a pas été acceptée, ou si le propriétaire n'a pas encore scellé sa clé.
+
+**Réponse** : `200 OK`, corps vide. **Erreurs** : `404`.
+**Effet de bord** : notifie le propriétaire par email.
+
+### `POST /emergency/contacts/{id}/approve`
+
+Le propriétaire approuve immédiatement une demande en cours, sans attendre la fin du délai.
+
+**Réponse** : `200 OK`, corps vide. **Erreurs** : `404`.
+
+### `POST /emergency/contacts/{id}/reject`
+
+Le propriétaire refuse une demande en cours (retour à `active` — la relation elle-même n'est pas
+supprimée, seule cette demande précise est annulée).
+
+**Réponse** : `200 OK`, corps vide. **Erreurs** : `404`.
+
+### `GET /emergency/contacts/{id}/vault`
+
+Le contact consulte le coffre du propriétaire, en lecture seule — uniquement si `status` vaut déjà
+`access_granted`, ou si le délai d'attente est écoulé (promotion automatique à cet instant).
+
+**Réponse** : `200 OK`, `{ "sealed_vault_key": "...", "entries": [VaultEntry, ...] }` (même forme
+que `GET /vault`, sans pagination).
+**Erreurs** : `404` si l'accès n'est pas (encore) accordé.
+**Effet de bord** : notifie le propriétaire par email à **chaque** consultation effective.
+
+### `DELETE /emergency/contacts/{id}`
+
+Révoque une relation — le propriétaire ou le contact peuvent y mettre fin à tout moment.
+
+**Réponse** : `204 No Content`. **Erreurs** : `404` (y compris pour un tiers étranger à la relation).
+
+## Endpoints — Partage d'entrée
+
+Toutes les routes ci-dessous nécessitent une authentification. Même construction Zero-Knowledge que
+l'accès d'urgence ci-dessus (boîte scellée X25519, réutilise `/emergency/keys/*` pour les clés
+publiques), mais **instantané** : pas de délai d'attente ni de machine à états — un partage existe
+ou n'existe pas.
+
+### `POST /vault/{id}/shares`
+
+Partage (ou re-partage, après une modification de l'entrée) l'entrée `{id}` avec un autre
+utilisateur. Le client résout d'abord la clé publique du destinataire (`GET
+/emergency/keys/{email}`) et scelle le contenu en clair de l'entrée AVANT d'appeler cette route.
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `shared_with_email` | string | oui | email valide, différent du sien |
+| `sealed_entry` | string | oui | 1-32768 caractères — JSON scellé des champs en clair de l'entrée |
+
+**Réponse** : `201 Created`, `{ "id": "uuid" }`. Re-partager avec le **même** destinataire réutilise
+le même `id` et remplace le blob existant (jamais de doublon).
+**Erreurs** : `400` validation, ou tentative de partage avec soi-même ; `404` si `{id}` n'existe pas
+ou n'appartient pas à l'appelant.
+**Effet de bord** : notifie le destinataire par email.
+
+### `GET /vault/{id}/shares`
+
+Liste les partages actifs de l'entrée `{id}`, vus par son propriétaire.
+
+**Réponse** : `200 OK`, tableau de `VaultShare` (id, shared_with_email, created_at — **jamais**
+`sealed_entry`, qui ne transite que via `GET /shares/{id}`).
+
+### `GET /shares/shared-with-me`
+
+Liste tout ce qui a été partagé avec l'utilisateur connecté, tous propriétaires confondus.
+
+**Réponse** : `200 OK`, tableau de `SharedWithMeEntry` (id, vault_id, owner_email, created_at —
+jamais `sealed_entry`).
+
+### `GET /shares/{id}`
+
+Récupère le blob scellé d'un partage précis, à desceller côté client — réservé au **destinataire**
+désigné (ni le propriétaire lui-même via cette route, ni évidemment un tiers).
+
+**Réponse** : `200 OK`, `{ "owner_email": "...", "sealed_entry": "..." }`.
+**Erreurs** : `404` si le partage n'existe pas, si l'appelant n'en est pas le destinataire, ou si
+l'entrée source a depuis été mise à la corbeille.
+
+### `DELETE /shares/{id}`
+
+Révoque un partage — le propriétaire ou le destinataire peuvent y mettre fin à tout moment.
+
+**Réponse** : `204 No Content`. **Erreurs** : `404` (y compris pour un tiers étranger au partage).
+
+## Endpoints — Coffres partagés familiaux
+
+Toutes les routes ci-dessous nécessitent une authentification. **S'AJOUTE** au partage d'entrée
+1-vers-1 ci-dessus, ne le remplace pas — les deux systèmes coexistent pour deux usages différents.
+Même construction Zero-Knowledge (boîte scellée X25519, réutilise `/emergency/keys/*` pour les
+clés publiques), mais avec une **clé symétrique partagée par tous les membres** (générée une seule
+fois à la création, scellée individuellement pour chacun) plutôt qu'un blob par destinataire : une
+modification par un membre est visible **en direct** par tous les autres (notifiés via WebSocket,
+`event_type: "SHARED_VAULT_UPDATE"`), sans avoir besoin de re-partager après chaque changement.
+
+**Rôles** : exactement UN propriétaire par coffre (le créateur, immuable — pas de transfert de
+propriété dans cette version) ; tout autre membre est un membre simple. Un membre simple peut
+consulter/ajouter/modifier/supprimer des **entrées**, et quitter le coffre lui-même. Seul le
+propriétaire peut inviter/retirer un AUTRE membre, ou supprimer le coffre entier — et ne peut PAS
+quitter son propre coffre (doit le supprimer entièrement à la place, voir `DELETE /shared-vaults/{id}`).
+
+**Limite acceptée** (documentée, comme toute construction à clé symétrique partagée de ce type) :
+retirer un membre révoque son accès **futur**, mais ne protège pas rétroactivement ce qu'il a déjà
+pu voir/exporter avant son retrait — la clé n'est pas changée à chaque retrait (coût jugé
+disproportionné pour l'usage familial visé).
+
+**Périmètre volontairement réduit** par rapport au coffre personnel dans cette première version :
+pas de pièces jointes, d'historique de mot de passe, de corbeille (suppression directe et
+définitive), ni de favoris/dossiers pour les entrées partagées.
+
+### `POST /shared-vaults`
+
+Crée un nouveau coffre partagé — l'appelant en devient automatiquement le propriétaire et premier
+membre. Le client a déjà généré une clé symétrique fraîche pour ce coffre, chiffré `encrypted_name`
+avec elle, et scellé cette même clé pour sa propre clé publique.
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `encrypted_name` | string | oui | 1-8192 caractères |
+| `sealed_vault_key` | string | oui | 1-4096 caractères — clé du coffre scellée pour l'appelant |
+
+**Réponse** : `201 Created`, `{ "id": "uuid" }`.
+
+### `GET /shared-vaults`
+
+Liste les coffres partagés dont l'appelant est membre.
+
+**Réponse** : `200 OK`, tableau de `SharedVaultView` (id, encrypted_name, created_by, created_at,
+`sealed_vault_key` — **toujours la copie de l'appelant**, jamais celle d'un autre membre —, is_owner).
+
+### `DELETE /shared-vaults/{id}`
+
+Supprime **définitivement** le coffre entier (membres et entrées inclus) — réservé au propriétaire.
+
+**Réponse** : `204 No Content`. **Erreurs** : `404` si `{id}` n'existe pas ou que l'appelant n'en
+est pas le propriétaire.
+
+### `POST /shared-vaults/{id}/members`
+
+Invite un nouveau membre — réservé au propriétaire. Le client a déjà résolu la clé publique du
+futur membre (`GET /emergency/keys/{email}`) et scellé la clé du coffre pour lui.
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `member_email` | string | oui | email valide, différent de l'appelant |
+| `sealed_vault_key` | string | oui | 1-4096 caractères |
+
+**Réponse** : `201 Created`. **Erreurs** : `400` validation, tentative de s'inviter soi-même, ou
+déjà membre ; `403` si l'appelant n'est pas le propriétaire.
+**Effet de bord** : notifie le nouveau membre par email.
+
+### `GET /shared-vaults/{id}/members`
+
+Liste les membres d'un coffre partagé — n'importe quel membre peut la consulter.
+
+**Réponse** : `200 OK`, tableau de `SharedVaultMemberView` (member_email, is_owner, added_at —
+**jamais** `sealed_vault_key`, propre à chaque membre). **Erreurs** : `404` si l'appelant n'est pas
+membre.
+
+### `DELETE /shared-vaults/{id}/members/{email}`
+
+Retire un membre. Si `{email}` est celui de l'appelant : il quitte le coffre de lui-même (interdit
+pour le propriétaire — voir plus haut). Sinon : réservé au propriétaire, qui retire quelqu'un
+d'autre.
+
+**Réponse** : `204 No Content`. **Erreurs** : `404` (membre introuvable, ou tentative du propriétaire
+de se retirer lui-même) ; `403` (tentative par un non-propriétaire de retirer quelqu'un d'autre).
+
+### `GET /shared-vaults/{id}/entries`
+
+Liste les entrées d'un coffre partagé — réservé à ses membres.
+
+**Réponse** : `200 OK`, tableau de `SharedVaultEntry` (mêmes champs `encrypted_*`/`entry_type` que
+le coffre personnel, plus `created_by` et `version`). **Erreurs** : `404` si l'appelant n'est pas
+membre.
+
+### `POST /shared-vaults/{id}/entries`
+
+Ajoute une entrée — réservé aux membres (n'importe lequel).
+
+| Champ | Type | Requis |
+|---|---|---|
+| `encrypted_site_name` | string | oui |
+| `encrypted_username`, `encrypted_login_email`, `encrypted_notes`, `encrypted_url`, `encrypted_extra_fields` | string | non |
+| `encrypted_password`, `encrypted_preferred_login_type` | string | oui |
+| `entry_type` | string | non (défaut `"login"`) |
+
+**Réponse** : `201 Created`, `{ "id": "uuid" }`.
+**Effet de bord** : notifie TOUS les membres via WebSocket (`SHARED_VAULT_UPDATE`).
+
+### `PUT /shared-vaults/{id}/entries/{entry_id}`
+
+Modifie une entrée — mêmes champs que la création, plus `expected_version` (voir [Coffre-fort](#endpoints--coffre-fort-vault)
+pour le principe de détection de conflit — **encore plus pertinent ici**, plusieurs membres
+différents pouvant modifier la même entrée à quelques instants d'écart).
+
+**Réponse** : `200 OK`. **Erreurs** : `404` (entrée introuvable ou appelant non-membre) ; `409` si
+`expected_version` ne correspond plus à la version actuelle.
+**Effet de bord** : notifie tous les membres via WebSocket.
+
+### `DELETE /shared-vaults/{id}/entries/{entry_id}`
+
+Supprime **définitivement** une entrée (pas de corbeille) — réservé aux membres.
+
+**Réponse** : `204 No Content`. **Erreurs** : `404`.
+**Effet de bord** : notifie tous les membres via WebSocket.
+
+## Endpoints — Partage à usage limité
+
+Toutes les routes ci-dessous nécessitent une authentification. **S'AJOUTE** au partage d'entrée
+classique ET aux coffres partagés familiaux ci-dessus, ne remplace ni l'un ni l'autre — trois
+mécanismes de partage distincts qui coexistent, chacun pour un usage différent.
+
+Le destinataire **ne voit jamais** l'identifiant ni le mot de passe — seulement le nom du site —
+et ne peut déclencher un "usage" (remplissage automatique côté extension, copie sans affichage
+côté desktop) qu'un nombre de fois limité choisi par l'expéditeur (**1 par défaut**). Deux blobs
+scellés distincts côté client : le nom du site (librement consultable, ne consomme jamais
+d'usage) et les identifiants (accessibles uniquement via `POST /blind-shares/{id}/use`, qui
+décrémente le compteur de façon **atomique** — une seule requête SQL avec la condition
+`remaining_uses > 0` directement dans son `WHERE`, jamais un `SELECT` puis un `UPDATE` séparés,
+pour qu'aucune course entre deux appels concurrents ne puisse jamais dépasser le nombre d'usages
+autorisé).
+
+**Limite honnêtement documentée** : empêcher l'affichage du mot de passe rend son exposition
+CASUELLE/accidentelle impossible (aucun bouton "voir"/"copier" pour ce type de partage) et borne
+strictement le nombre d'OCCASIONS d'y accéder — mais un destinataire techniquement outillé
+(inspection de sa propre extension/application) pourrait toujours extraire la valeur en clair
+PENDANT un usage autorisé. C'est une limite inhérente à tout mécanisme de remplissage automatique
+côté client, pas un défaut corrigible côté serveur.
+
+### `POST /vault/{id}/blind-shares`
+
+Crée un partage à usage limité pour l'entrée `{id}`. Le client résout d'abord la clé publique du
+destinataire (`GET /emergency/keys/{email}`) et scelle **séparément** le nom du site et les
+identifiants avant d'appeler cette route.
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `shared_with_email` | string | oui | email valide, différent du sien |
+| `sealed_site_name` | string | oui | 1-8192 caractères |
+| `sealed_credentials` | string | oui | 1-32768 caractères — JSON scellé (identifiant + mot de passe) |
+| `max_uses` | number | non | 1-1000, défaut 1 |
+
+**Réponse** : `201 Created`, `{ "id": "uuid" }`.
+**Erreurs** : `400` validation, ou tentative de partage avec soi-même ; `404` si `{id}` n'existe pas
+ou n'appartient pas à l'appelant.
+**Effet de bord** : notifie le destinataire par email.
+
+### `GET /vault/{id}/blind-shares`
+
+Liste les partages à usage limité actifs de l'entrée `{id}`, vus par son propriétaire.
+
+**Réponse** : `200 OK`, tableau de `VaultBlindShare` (id, shared_with_email, max_uses,
+remaining_uses, created_at — **jamais** les blobs scellés).
+
+### `GET /blind-shares/shared-with-me`
+
+Liste tout ce qui a été partagé en usage limité avec l'utilisateur connecté.
+
+**Réponse** : `200 OK`, tableau de `BlindShareReceivedView` (id, owner_email, `sealed_site_name`
+**inclus** — librement consultable, ne consomme jamais d'usage —, max_uses, remaining_uses,
+created_at — jamais `sealed_credentials`).
+
+### `POST /blind-shares/{id}/use`
+
+Le **destinataire** consomme UN usage : décrémente `remaining_uses` de façon atomique et renvoie
+les identifiants scellés, à desceller et utiliser **immédiatement** côté client (jamais mis en
+cache ni ré-affiché ensuite).
+
+**Réponse** : `200 OK`, `{ "sealed_credentials": "...", "remaining_uses": N }`.
+**Erreurs** : `400` (message dédié) si plus aucun usage disponible ; `404` si le partage n'existe
+pas, si l'appelant n'en est pas le destinataire désigné, ou si l'entrée source a depuis été
+supprimée (mise à la corbeille ou purgée).
+
+### `DELETE /blind-shares/{id}`
+
+Révoque un partage à usage limité — le propriétaire ou le destinataire peuvent y mettre fin à tout
+moment, indépendamment du nombre d'usages restants.
+
+**Réponse** : `204 No Content`. **Erreurs** : `404`.
+
+## Endpoints — Synchronisation temps réel
+
+### `POST /ws/ticket`
+
+*Authentification requise.* Échange l'access token contre un ticket à usage unique, destiné
+exclusivement à l'ouverture de `/ws` (voir [Modèle d'authentification](#modèle-dauthentification)).
+
+**Réponse** : `200 OK` :
+```json
+{ "ticket": "...", "expires_in": 60 }
+```
+
+### `GET /ws?ticket=<ticket>`
+
+Bascule la connexion en WebSocket. Le `ticket` (obtenu via `POST /ws/ticket`) est à usage unique
+et expire après 60 secondes.
+
+Une fois connecté, le client reçoit des messages texte JSON à chaque modification du coffre
+effectuée depuis un **autre** appareil du même compte :
+```json
+{ "event_type": "VAULT_ADD" }
+```
+Valeurs possibles : `VAULT_ADD`, `VAULT_DELETE`, `VAULT_UPDATE`, `VAULT_TOGGLE_FAVORITE`,
+`VAULT_RESTORE`, `VAULT_PURGE`, `VAULT_IMPORT`. Ce canal ne transporte **jamais** de contenu
+chiffré — c'est uniquement un signal de réveil, le client doit rappeler les routes REST
+habituelles (`GET /vault`, `/api/vault/sync`) pour connaître l'état réel.
+
+**Erreurs** : `401 SessionExpired` si le ticket est invalide, déjà consommé, ou expiré. Un
+plafond de 10 connexions simultanées par utilisateur s'applique (`409 Conflict` au-delà).
+
+## Endpoints — Administration
+
+**Terminologie** : il n'existe qu'un seul **Admin** — le compte configuré via `ADMIN_EMAIL`
+(`is_admin = true`, voir `GET /me` et `GET /admin/users`). Tout autre compte promu
+(`is_moderator = true` mais `is_admin = false`) est un **Modérateur** : il peut gérer les
+comptes non-admin, mais jamais un autre modérateur ni l'Admin — voir la section "Hiérarchie entre
+admins" de chaque endpoint ci-dessous.
+
+### `GET /audit`
+
+*Authentification requise, réservé aux administrateurs.*
+
+**Réponse** : `200 OK`, les 100 derniers logs d'audit du système (tous utilisateurs confondus),
+triés du plus récent au plus ancien :
+```json
+[{
+  "id": 1,
+  "user_email": "...",
+  "action": "LOGIN_SUCCESS_SESSION",
+  "ip_address": "...",
+  "user_agent": "...",
+  "created_at": "..."
+}]
+```
+**Erreurs** : `403` si l'appelant n'est pas administrateur.
+
+### `GET /admin/users`
+
+*Authentification requise, réservé aux administrateurs.*
+
+Liste tous les comptes de l'application. **Ne contient jamais `password_hash`**, même haché.
+
+**Réponse** : `200 OK` :
+```json
+[{
+  "email": "...",
+  "is_moderator": false,
+  "email_verified": true,
+  "created_at": "...",
+  "max_trusted_devices": 10,
+  "can_change_email_via_extension": false,
+  "is_admin": false
+}]
+```
+`is_admin` : voir la note de terminologie en tête de cette section — vrai UNIQUEMENT sur
+la ligne du compte `ADMIN_EMAIL` (l'"Admin"), jamais sur un simple "Modérateur".
+**Erreurs** : `403` si l'appelant n'est pas administrateur.
+
+### `PUT /admin/users/{email}/role`
+
+*Authentification requise, réservé au PREMIER admin uniquement (voir plus bas).* Promeut ou
+rétrograde un compte administrateur. **SEUL le compte configuré via `ADMIN_EMAIL` (le "premier
+admin", propriétaire de l'instance) peut appeler cet endpoint** — un AUTRE admin, même avec
+`is_moderator = true` en base, ne peut ni promouvoir ni rétrograder personne (`403`). Le premier admin
+**ne peut pas modifier son propre rôle** via cet endpoint (évite un verrouillage accidentel).
+Si `ADMIN_EMAIL` n'est pas configuré, personne ne peut plus changer de rôle via cet endpoint.
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `is_moderator` | boolean | oui |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `403` appelant autre que le premier admin. `400` tentative d'auto-modification.
+`404` email inconnu.
+
+### `PUT /admin/users/{email}/email`
+
+*Authentification requise, réservé aux administrateurs.* Change l'email d'un AUTRE compte —
+utile si un utilisateur a perdu l'accès à sa boîte mail ou a fait une faute de frappe à
+l'inscription. **Ne touche JAMAIS au mot de passe maître ni à la clé du coffre** (l'email n'est
+pas une donnée cryptographique — le Zero-Knowledge reste intact, l'admin ne peut toujours pas
+accéder au contenu du coffre de la cible). Un admin **ne peut pas** l'utiliser sur son propre
+compte (utiliser `PUT /auth/email`, avec sa propre reconfirmation par mot de passe).
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `new_email` | string (email) | oui |
+
+**Hiérarchie entre admins** (même règle que les endpoints ci-dessous) : le premier admin
+(`ADMIN_EMAIL`) ne peut JAMAIS être ciblé, par personne. Un admin "normal" ne peut cibler QUE des
+comptes non-admin — cibler un AUTRE admin reste réservé au premier admin.
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `403` non-admin, ou tentative de cibler un admin sans être le premier admin. `400`
+validation, ou tentative d'auto-modification. `404` email inconnu.
+**Effets de bord** : invalide toutes les sessions du compte ; envoie une alerte de sécurité à
+**l'ancienne** adresse (seul moyen pour le vrai propriétaire de s'apercevoir du changement s'il
+n'en est pas à l'origine) ; tracé dans l'audit sous le **nouvel** email.
+
+### `PUT /admin/users/{email}/extension-email-change`
+
+*Authentification requise.* Autorise ou interdit à CE compte de changer son adresse email depuis
+l'extension navigateur (sans effet sur l'app desktop, jamais concernée par cette restriction —
+voir `PUT /auth/email` ci-dessus). Désactivé par défaut pour tout le monde ; un admin reste
+toujours autorisé indépendamment de ce réglage pour son propre compte.
+**Hiérarchie entre admins** (voir aussi `DELETE /admin/users/{email}` et
+`POST /admin/users/{email}/revoke-sessions` ci-dessous, même règle) : le premier admin
+(`ADMIN_EMAIL`) ne peut JAMAIS être la cible, par personne. Un admin "normal" ne peut cibler QUE
+des comptes non-admin — cibler un AUTRE admin reste réservé au premier admin.
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `enabled` | boolean | oui |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `403` non-admin, ou tentative de cibler un admin sans être le premier admin. `404` email inconnu.
+
+### `PUT /admin/users/extension-email-change-all`
+
+*Authentification requise, réservé au PREMIER admin uniquement.* Même réglage que ci-dessus, mais
+appliqué à TOUS les comptes d'un coup — comme cette variante touche aussi les comptes admin (sans
+pouvoir les exclure proprement), elle est réservée exclusivement à `ADMIN_EMAIL`.
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `enabled` | boolean | oui |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `403` appelant autre que le premier admin.
+
+### `POST /admin/users/{email}/revoke-sessions`
+
+*Authentification requise.* Révoque immédiatement toutes les
+sessions actives du compte ciblé (tous appareils, access tokens déjà émis inclus) et ferme ses
+connexions WebSocket actives — équivalent de `POST /devices/logout-all`, déclenché par un admin
+sur un compte tiers (ex: compte signalé compromis). **Hiérarchie entre admins** : le premier admin
+(`ADMIN_EMAIL`) ne peut jamais être ciblé (même par lui-même — utiliser
+`POST /devices/logout-all` pour ses propres sessions) ; un admin "normal" ne peut cibler que des
+comptes non-admin.
+
+**Réponse** : `204 No Content`.
+**Erreurs** : `403` non-admin, ou tentative de cibler un admin sans être le premier admin. `404` email inconnu.
+
+### `DELETE /admin/users/{email}`
+
+*Authentification requise.* Supprime **définitivement** un compte et
+tout ce qui lui est rattaché (coffre, appareils de confiance, sessions, codes en attente — voir
+`ON DELETE CASCADE`). Aucun retour en arrière possible. Un admin **ne peut pas supprimer son
+propre compte** via cet endpoint. **Hiérarchie entre admins** : même règle que
+`POST /admin/users/{email}/revoke-sessions` ci-dessus — le premier admin ne peut jamais être
+supprimé, un admin "normal" ne peut supprimer que des comptes non-admin.
+
+**Réponse** : `204 No Content`.
+**Erreurs** : `403` non-admin, ou tentative de cibler un admin sans être le premier admin. `400`
+tentative d'auto-suppression. `404` email inconnu.
+
+## Endpoints — Divers
+
+### `GET /health`
+
+*Aucune authentification requise.* Vérifie que le serveur répond ET que la base de données est
+joignable.
+
+**Réponse** : `200 OK { "status": "ok" }`, ou `503 Service Unavailable { "status": "db_unreachable" }`.

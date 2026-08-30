@@ -1,0 +1,64 @@
+services:
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    # Injecte les variables du .env au démarrage du conteneur (jamais gravées dans l'image,
+    # voir le Dockerfile) : DATABASE_URL, JWT_SECRET, PASSWORD_PEPPER, SMTP_*, ALLOWED_ORIGINS...
+    env_file:
+      - .env
+    environment:
+      # Surcharge l'URL pour pointer vers le volume persistant monté ci-dessous
+      - DATABASE_URL=sqlite:/app/data/vault.db
+      # "info" par défaut : le niveau "debug" a un coût réel (formatage de chaînes, bookkeeping
+      # de spans) sur CHAQUE requête d'un service qui tourne en continu — à réserver à une session
+      # de débogage ponctuelle (repasser cette ligne en debug temporairement), pas à la prod.
+      - RUST_LOG=backend=info,tower_http=info
+    volumes:
+      - ./data:/app/data # Stockage persistant de la base SQLite
+    restart: always
+    # Utilise le HEALTHCHECK défini dans le Dockerfile (appelle GET /health) pour que Docker
+    # sache si le conteneur est réellement opérationnel, pas juste "démarré".
+    healthcheck:
+      test: ["CMD", "/app/healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Sauvegarde périodique de la base SQLite (voir scripts/backup.sh pour le détail) — conteneur
+  # SÉPARÉ de "api" plutôt qu'un cron dans la même image : l'image applicative reste minimale
+  # (pas de binaire `sqlite3` CLI, voir Dockerfile), et un souci sur la sauvegarde (ex: disque
+  # plein sur ./backups) ne peut jamais faire planter/redémarrer le serveur lui-même.
+  # `alpine` + `sqlite` : image très légère, seul le binaire `sqlite3` CLI nécessaire au script.
+  backup:
+    image: alpine:3.20
+    command: ["sh", "-c", "apk add --no-cache sqlite >/dev/null && sh /scripts/backup.sh"]
+    environment:
+      - DB_PATH=/data/vault.db
+      - BACKUP_DIR=/backups
+      # Décommenter/ajuster pour changer la fréquence (secondes) ou le nombre de sauvegardes
+      # conservées — défauts dans scripts/backup.sh (24h, 14 sauvegardes) si absents ici.
+      # - BACKUP_INTERVAL_SECONDS=86400
+      # - BACKUP_KEEP_COUNT=14
+    volumes:
+      # :ro — ce conteneur ne doit JAMAIS pouvoir écrire dans la base vivante, seulement la lire
+      # pour en tirer un instantané cohérent (voir scripts/backup.sh).
+      - ./data:/data:ro
+      - ./backups:/backups
+      - ./scripts/backup.sh:/scripts/backup.sh:ro
+    restart: always
+    depends_on:
+      - api
+
+# IMPORTANT — permissions du volume ./data :
+# Le conteneur tourne maintenant avec un utilisateur non-root (UID 1000, voir Dockerfile).
+# Si ce démarrage échoue avec une erreur "permission denied" sur la BDD SQLite, exécute une fois
+# sur l'hôte : `mkdir -p ./data && sudo chown -R 1000:1000 ./data` — pour que ce dossier monté
+# appartienne au même UID que l'utilisateur applicatif à l'intérieur du conteneur.
+#
+# Le service "backup" ci-dessus n'a PAS ce problème : il tourne en root DANS son propre conteneur
+# (image `alpine` standard, aucun `user:` défini), ce qui lui permet de lire ./data et d'écrire
+# dans ./backups quelle que soit leur propriété côté hôte — aucun `chown` manuel nécessaire pour
+# ce service. `./backups` est créé automatiquement par Docker au premier démarrage s'il n'existe
+# pas déjà.

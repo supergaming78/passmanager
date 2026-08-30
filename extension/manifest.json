@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "PassManager",
+  "version": "0.1.0",
+  "description": "Gestionnaire de mots de passe Zero-Knowledge — coffre auto-hébergé.",
+  "action": {
+    "default_popup": "popup/dist/index.html",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "permissions": ["storage", "activeTab", "scripting"],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmr4aB+UiH4p1EvOYVTSIP/E4CM99bNxgTDbtJJ6ievnIC0csU46aeE5q1Cd1EzKPFLKmhAD6gq5AxJWlDhwrr1loAaf9pczCPteUuQPEmOkyX2yujK5A98joPBB5gMJF19iS4dS/gHcvP6r0/fceMOWpPZBgHOYjuLacYc3/T5Whug50f84h3fuxQbICWZVuXNJFcmslrtlH96MuDqEEnCS65tgO+WxyYmj1kYUKCDBwq1Jrn9No06mv7IeUsssIRq5tYO+kzdJLvZrCKubHJcVq/lWyLO5NLnQx8xVCJODK+zXJZMqVIy/n90I9YFt9ZsbTSIk68jNmLEEzDHd4RwIDAQAB",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "passmanager@julie.dev",
+      "strict_min_version": "115.0"
+    },
+    "gecko_android": {
+      "strict_min_version": "115.0"
+    }
+  }
+}

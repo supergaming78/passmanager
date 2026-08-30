@@ -1,0 +1,20 @@
+# Configuration de `cargo audit` (voir https://github.com/rustsec/rustsec/tree/main/cargo-audit).
+# Liste les avis de sécurité explicitement acceptés, avec la justification qui va avec — pour que
+# `cargo audit` reste utile (0 faux positif connu et documenté) plutôt que quelque chose qu'on
+# apprend à ignorer par habitude.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — "Marvin Attack" (canal auxiliaire temporel) sur `rsa` 0.9.10.
+    # Aucune version corrigée n'existe à ce jour (avis émis en 2023, toujours sans correctif amont).
+    # Cette crate arrive UNIQUEMENT en dépendance transitive de `jsonwebtoken` (feature
+    # "rust_crypto", qui regroupe HMAC/RSA/Ed25519/P-256/P-384 sans possibilité de n'activer que
+    # HMAC — voir Cargo.toml). Le code de ce projet n'utilise QUE du HMAC-SHA256
+    # (EncodingKey::from_secret / DecodingKey::from_secret dans crypto.rs et middleware.rs) : le
+    # chemin de code RSA vulnérable est présent dans le binaire mais jamais exécuté. L'alternative
+    # (feature "aws_lc_rs") réintroduirait une dépendance C/assembleur (BoringSSL) — contraire au
+    # choix délibéré du projet de rester 100% Rust côté crypto/TLS (voir le commentaire sur
+    # `lettre`/rustls/webpki-roots dans ce même fichier, motivé par l'image Docker minimale).
+    # À réévaluer si `jsonwebtoken` propose un jour un découpage plus fin de ses algorithmes.
+    "RUSTSEC-2023-0071",
+]

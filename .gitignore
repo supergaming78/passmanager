@@ -1,0 +1,67 @@
+# .gitignore RACINE — s'applique à tout le dépôt (backend/, frontend(app)/, extension/,
+# crypto-core/), en complément des .gitignore déjà présents dans certains sous-dossiers
+# (frontend(app)/.gitignore, extension/.gitignore, frontend(app)/src-tauri/gen/android/.gitignore
+# — celui-ci scaffoldé par Tauri lui-même, laisse volontairement les fichiers modifiés à la main
+# comme MainActivity.kt trackés, n'exclut que les artefacts de build Android).
+#
+# AJOUTÉ AVANT le tout premier `git init` de ce projet, précisément pour qu'aucun secret réel ni
+# aucune donnée utilisateur réelle ne puisse se retrouver dans l'historique dès le premier commit
+# (voir backend/README.md — un historique git, contrairement à un simple fichier supprimé, garde
+# ces informations récupérables indéfiniment même après un commit ultérieur qui les retirerait).
+
+# --- Secrets et configuration locale (JAMAIS commités, JAMAIS partagés) ---
+# .env.example RESTE tracké (voir !.env.example ci-dessous) : c'est le modèle sans valeurs réelles.
+backend/.env
+.env
+.env.local
+*.env
+!*.env.example
+
+# --- Données réelles du serveur (base de données du coffre, logs d'exploitation) ---
+# Le contenu de ces dossiers est soit chiffré mais réel (base SQLite = comptes + coffres réels de
+# vrais utilisateurs), soit potentiellement révélateur (logs = IP/emails/horodatages réels) — ni
+# l'un ni l'autre n'a sa place dans un dépôt de CODE, peu importe que le dépôt soit public ou privé.
+backend/data/
+backend/logs/
+
+# --- Clé privée de signature de l'extension (voir extension/.gitignore, déjà présent — répété ici
+# en garde-fou redondant, cette clé ne doit vraiment jamais finir versionnée). ---
+extension-key.pem
+
+# --- Clé de signature des mises à jour desktop (Tauri updater, voir tauri.conf.json::plugins.
+# updater et frontend(app)/README.md#mises-à-jour-automatiques) — sert UNIQUEMENT en CI (secret
+# GitHub Actions TAURI_SIGNING_PRIVATE_KEY), ne doit jamais exister ailleurs que sur la machine qui
+# l'a générée et dans les secrets GitHub. La partie PUBLIQUE (.pub) est sans risque à committer
+# (déjà recopiée en clair dans tauri.conf.json) mais exclue aussi ici, pour ne pas laisser une
+# copie surnuméraire à côté de la clé privée prêter à confusion.
+frontend(app)/src-tauri/tauri-updater.key
+frontend(app)/src-tauri/tauri-updater.key.pub
+
+# --- Clé de signature de release Android (répété ici en garde-fou redondant, déjà exclue par
+# frontend(app)/src-tauri/gen/android/.gitignore — sert UNIQUEMENT en CI via le secret GitHub
+# Actions ANDROID_KEYSTORE_BASE64). ---
+frontend(app)/src-tauri/gen/android/*.keystore
+frontend(app)/src-tauri/gen/android/*.jks
+frontend(app)/src-tauri/gen/android/keystore.properties
+
+# --- Artefacts de build (régénérés à chaque fois, inutiles et volumineux à versionner) ---
+target/
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# WASM régénéré par `wasm-pack build` (voir extension/README.md#construire) — jamais figé dans
+# l'historique, sinon un oubli de rebuild après un changement de crypto-core passerait inaperçu.
+extension/wasm-bindings/pkg-web/
+extension/wasm-bindings/pkg-nodejs/
+
+# --- Éditeurs / OS ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Configuration locale d'outils (préférences personnelles, pas destinées à être partagées) ---
+.claude/

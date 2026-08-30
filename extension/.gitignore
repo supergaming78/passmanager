@@ -1,0 +1,5 @@
+# Clé privée de signature de l'extension (voir README.md "ID d'extension stable") : quiconque
+# l'obtient peut publier une extension revendiquant le même ID que la nôtre. Aucun dépôt git
+# n'existe encore dans ce projet, mais ce fichier ne doit JAMAIS finir dans un futur commit
+# (git init + git add . l'y engloutirait sinon sans qu'on y pense).
+extension-key.pem

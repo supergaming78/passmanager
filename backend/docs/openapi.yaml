@@ -1,0 +1,1662 @@
+openapi: 3.0.3
+info:
+  title: Backend gestionnaire de mots de passe
+  description: >
+    API Zero-Knowledge pour un gestionnaire de mots de passe : le serveur ne voit et ne stocke
+    jamais le mot de passe maitre d'un utilisateur, ni la cle qui chiffre son coffre. Voir
+    docs/API.md pour les explications detaillees (modele d'authentification, invalidation de
+    session, rate limiting). La route WebSocket GET /ws n'est pas representable par OpenAPI 3.0
+    (pas de support natif) : voir API.md.
+  version: "1.0.0"
+servers:
+  - url: http://localhost:3000
+    description: Local / Docker Compose
+
+security: []
+
+tags:
+  - name: auth
+    description: Inscription, connexion, gestion de session et de compte
+  - name: vault
+    description: Coffre-fort (CRUD, corbeille, import/export, synchronisation)
+  - name: devices
+    description: Appareils de confiance
+  - name: emergency
+    description: Acces d'urgence (contact de confiance, delai d'attente, coffre en lecture seule)
+  - name: sharing
+    description: Partage securise d'une entree, instantane (meme construction que emergency)
+  - name: sync
+    description: Synchronisation temps reel (ticket WebSocket)
+  - name: admin
+    description: Administration
+  - name: misc
+    description: Divers
+
+paths:
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Inscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthPayload' }
+      responses:
+        '201':
+          description: Compte cree (non verifie). Corps texte brut "OK", pas de JSON.
+          content:
+            text/plain:
+              schema: { type: string, example: "OK" }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/verify-email:
+    post:
+      tags: [auth]
+      summary: Confirme le code de verification envoye a l'inscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerifyEmailPayload' }
+      responses:
+        '200': { description: Email verifie }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/resend-verification:
+    post:
+      tags: [auth]
+      summary: Renvoie un nouveau code de verification
+      description: Reponse 202 dans tous les cas (anti-enumeration de comptes).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ForgotPasswordPayload' }
+      responses:
+        '202': { description: Traite (email inconnu ou deja verifie -> aucun effet, silencieusement) }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Connexion
+      description: >
+        Sur un appareil deja approuve, une IP jamais vue pour CET appareil (fenetre glissante des 5
+        plus recentes) declenche une alerte email best-effort + une entree d'audit
+        LOGIN_NEW_IP_DETECTED - jamais bloquant. Aucune alerte au tout premier login d'un appareil
+        qui vient d'etre approuve (deja couvert par l'alerte "nouvel appareil" de /auth/verify-device).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthPayload' }
+      responses:
+        '200':
+          description: Appareil de confiance, tokens emis
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginSuccessResponse' }
+        '202':
+          description: Appareil inconnu, 2FA requis (code envoye par email)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TfaRequiredResponse' }
+        '400':
+          description: Email pas encore verifie, OU compte temporairement bloque pour trop d'echecs recents (anti-bruteforce par compte, 15 min glissantes apres 5 echecs - voir docs/API.md)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/verify-device:
+    post:
+      tags: [auth]
+      summary: Valide le code 2FA et enregistre l'appareil comme appareil de confiance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerifyTfaPayload' }
+      responses:
+        '200': { description: "Appareil valide. Rappeler /auth/login ensuite pour obtenir les tokens." }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rafraichit l'access token via le refresh token (rotation a usage unique)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshPayload' }
+      responses:
+        '200':
+          description: Nouveau couple de tokens
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RefreshResponse' }
+        '401':
+          description: Refresh token invalide, expire, ou deja utilise
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Deconnecte un seul appareil (revoque son refresh token)
+      description: Aucune authentification requise - la connaissance du refresh token suffit. Idempotent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshPayload' }
+      responses:
+        '204': { description: Deconnecte (ou deja deconnecte) }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/password:
+    put:
+      tags: [auth]
+      summary: Change volontairement le mot de passe maitre (avec re-chiffrement complet du coffre)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangeMasterPasswordPayload' }
+      responses:
+        '200': { description: "Mot de passe change. Toutes les sessions (et access tokens deja emis) sont invalidees." }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/email:
+    put:
+      tags: [auth]
+      summary: Change l'adresse email du compte
+      description: "Depuis l'extension navigateur (Origin chrome-extension://.../moz-extension://...) : refuse avec 403 sauf pour un admin ou un compte explicitement autorise (voir can_change_email_via_extension sous GET /me). L'app desktop n'est jamais concernee par cette restriction."
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateEmailPayload' }
+      responses:
+        '200': { description: "Email change. Toutes les sessions (et access tokens deja emis) sont invalidees." }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '403':
+          description: Changement d'email refuse depuis l'extension (non autorise pour ce compte)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /me:
+    get:
+      tags: [auth]
+      summary: Profil de l'utilisateur connecte
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MeResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /audit/me:
+    get:
+      tags: [auth]
+      summary: Historique de securite self-service (compte connecte uniquement)
+      description: >
+        Contrairement a /audit (reserve aux administrateurs, tous comptes confondus), ne renvoie
+        que les 100 entrees les plus recentes du compte APPELANT.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditLog' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/forgot-password:
+    post:
+      tags: [auth]
+      summary: Initie une reinitialisation de mot de passe oublie
+      description: Reponse 202 dans tous les cas (anti-enumeration de comptes).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ForgotPasswordPayload' }
+      responses:
+        '202': { description: Traite }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/reset-password:
+    post:
+      tags: [auth]
+      summary: Confirme le code de reinitialisation et applique le nouveau mot de passe
+      description: >
+        ATTENTION : purge integralement le coffre (aucune cle de l'ancien mot de passe pour
+        re-chiffrer quoi que ce soit dans ce flux).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmResetPayload' }
+      responses:
+        '200': { description: "Mot de passe reinitialise, coffre purge, sessions invalidees." }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault:
+    get:
+      tags: [vault]
+      summary: Liste les entrees actives du coffre (favoris en premier)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, default: 50, maximum: 100 }
+        - in: query
+          name: offset
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/VaultEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    post:
+      tags: [vault]
+      summary: Ajoute une entree au coffre
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VaultEntryInput' }
+      responses:
+        '201': { description: Entree creee }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/{id}:
+    put:
+      tags: [vault]
+      summary: Modifie une entree existante
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VaultEntryInput' }
+      responses:
+        '200': { description: Entree modifiee }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    delete:
+      tags: [vault]
+      summary: Supprime une entree (suppression douce, vers la corbeille)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+      responses:
+        '204': { description: Deplacee vers la corbeille }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/{id}/favorite:
+    patch:
+      tags: [vault]
+      summary: Bascule le statut favori d'une entree
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+      responses:
+        '200': { description: Statut bascule }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/{id}/history:
+    get:
+      tags: [vault]
+      summary: Historique des mots de passe d'une entree (plus recent en premier)
+      description: >
+        Archive automatiquement quand PUT /vault/{id} recoit password_changed=true. Plafonne a
+        20 versions par entree (les plus anciennes sont purgees automatiquement au-dela).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PasswordHistoryEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/{id}/attachments:
+    post:
+      tags: [vault]
+      summary: Ajoute une piece jointe chiffree a une entree
+      description: >
+        Nom de fichier ET contenu CHIFFRES cote client, le serveur ne les lit ni ne les valide
+        jamais. Accepte des requetes jusqu'a 16 Mo (voir main.rs).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VaultAttachmentInput' }
+      responses:
+        '201':
+          description: Creee
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    get:
+      tags: [vault]
+      summary: Liste les pieces jointes d'une entree, SANS leur contenu
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/VaultAttachmentMeta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/{id}/attachments/{attachment_id}:
+    get:
+      tags: [vault]
+      summary: Recupere une piece jointe complete (avec son contenu chiffre)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+        - { $ref: '#/components/parameters/AttachmentId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VaultAttachment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    delete:
+      tags: [vault]
+      summary: Supprime definitivement une piece jointe
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+        - { $ref: '#/components/parameters/AttachmentId' }
+      responses:
+        '204': { description: Supprimee }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/history/export:
+    post:
+      tags: [vault]
+      summary: Exporte l'integralite de l'historique de mots de passe (reste chiffre)
+      description: >
+        A recuperer, re-chiffrer cote client, puis renvoyer dans reencrypted_history lors d'un
+        changement de mot de passe maitre (PUT /auth/password).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExportVaultPayload' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PasswordHistoryEntry' }
+        '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/trash:
+    get:
+      tags: [vault]
+      summary: Liste les entrees dans la corbeille
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TrashedVaultEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/{id}/restore:
+    post:
+      tags: [vault]
+      summary: Restaure une entree de la corbeille
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+      responses:
+        '200': { description: Entree restauree }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/{id}/permanent:
+    delete:
+      tags: [vault]
+      summary: Supprime definitivement une entree deja dans la corbeille
+      description: Echoue sur une entree active (doit d'abord passer par DELETE /vault/{id}).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+      responses:
+        '204': { description: Supprimee definitivement }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/import:
+    post:
+      tags: [vault]
+      summary: Importe en bloc un ensemble d'entrees (tout ou rien)
+      description: >
+        Chaque entree devient une NOUVELLE ligne, jamais de fusion/ecrasement de l'existant.
+        Accepte des requetes jusqu'a 256 Mo.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImportVaultPayload' }
+      responses:
+        '201':
+          description: Import reussi
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/export:
+    post:
+      tags: [vault]
+      summary: Exporte l'integralite du coffre actif (reste chiffre)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExportVaultPayload' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/VaultEntry' }
+        '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/vault/sync:
+    get:
+      tags: [vault]
+      summary: Etat resume du coffre, pour savoir s'il faut re-synchroniser
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SyncResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/vault/sync-check:
+    get:
+      tags: [vault]
+      summary: Alias historique de GET /api/vault/sync (meme handler)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SyncResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /devices:
+    get:
+      tags: [devices]
+      summary: Liste les appareils de confiance
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TrustedDevice' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /devices/{device_id}:
+    delete:
+      tags: [devices]
+      summary: Revoque un appareil de confiance (coupe aussi sa session active)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: device_id
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Revoque }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /devices/limit:
+    put:
+      tags: [devices]
+      summary: Modifie le plafond d'appareils de confiance
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateDeviceLimitPayload' }
+      responses:
+        '200': { description: Plafond mis a jour }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/InvalidCredentials' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /devices/logout-all:
+    post:
+      tags: [devices]
+      summary: Deconnexion totale volontaire (tous les appareils, y compris l'appelant)
+      description: Aucune reconfirmation de mot de passe requise. Ferme aussi les access tokens deja emis et toute connexion WebSocket (/ws) deja ouverte pour ce compte.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Toutes les sessions revoquees }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/keys:
+    put:
+      tags: [emergency]
+      summary: Enregistre ou remplace sa propre paire de cles X25519
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserKeysInput' }
+      responses:
+        '200': { description: OK }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/keys/me:
+    get:
+      tags: [emergency]
+      summary: Ses propres cles (publique ET privee chiffree)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserKeysInput' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/keys/{email}:
+    get:
+      tags: [emergency]
+      summary: Cle PUBLIQUE d'un autre utilisateur uniquement (jamais sa cle privee)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: email
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPublicKey' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/contacts:
+    post:
+      tags: [emergency]
+      summary: Designe un nouveau contact de confiance (invitation par email)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddEmergencyContactPayload' }
+      responses:
+        '201':
+          description: Cree
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    get:
+      tags: [emergency]
+      summary: Contacts designes par l'utilisateur connecte (proprietaire)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EmergencyContact' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/granted-to-me:
+    get:
+      tags: [emergency]
+      summary: Relations ou l'utilisateur connecte est le contact designe
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/EmergencyContact' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/contacts/{id}:
+    delete:
+      tags: [emergency]
+      summary: Revoque une relation (proprietaire ou contact, les deux cotes peuvent)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/EmergencyContactId' }
+      responses:
+        '204': { description: Revoquee }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/contacts/{id}/accept:
+    post:
+      tags: [emergency]
+      summary: Le contact accepte l'invitation
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/EmergencyContactId' }
+      responses:
+        '200': { description: Acceptee }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/contacts/{id}/decline:
+    post:
+      tags: [emergency]
+      summary: Le contact refuse l'invitation (supprime la relation)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/EmergencyContactId' }
+      responses:
+        '204': { description: Refusee }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/contacts/{id}/seed:
+    put:
+      tags: [emergency]
+      summary: Le proprietaire scelle sa cle de coffre pour ce contact
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/EmergencyContactId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SeedEmergencyKeyPayload' }
+      responses:
+        '200': { description: Scellee }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/contacts/{id}/request-access:
+    post:
+      tags: [emergency]
+      summary: Le contact demande l'acces d'urgence (demarre le delai d'attente)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/EmergencyContactId' }
+      responses:
+        '200': { description: Demande enregistree }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/contacts/{id}/approve:
+    post:
+      tags: [emergency]
+      summary: Le proprietaire approuve immediatement une demande en cours
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/EmergencyContactId' }
+      responses:
+        '200': { description: Approuvee }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/contacts/{id}/reject:
+    post:
+      tags: [emergency]
+      summary: Le proprietaire refuse une demande en cours (retour a 'active')
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/EmergencyContactId' }
+      responses:
+        '200': { description: Refusee }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /emergency/contacts/{id}/vault:
+    get:
+      tags: [emergency]
+      summary: Le contact consulte le coffre du proprietaire (lecture seule)
+      description: 404 si l'acces n'est pas (encore) accorde. Notifie le proprietaire par email a chaque consultation effective.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/EmergencyContactId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmergencyVaultView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /vault/{id}/shares:
+    post:
+      tags: [sharing]
+      summary: Partage (ou re-partage) l'entree avec un autre utilisateur
+      description: Re-partager avec le meme destinataire reutilise le meme id et remplace le blob existant.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ShareEntryPayload' }
+      responses:
+        '201':
+          description: Cree
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    get:
+      tags: [sharing]
+      summary: Liste les partages actifs de cette entree (proprietaire)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/VaultShare' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /shares/shared-with-me:
+    get:
+      tags: [sharing]
+      summary: Tout ce qui a ete partage avec l'utilisateur connecte
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SharedWithMeEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /shares/{id}:
+    get:
+      tags: [sharing]
+      summary: Recupere le blob scelle d'un partage (reserve au destinataire)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ShareId' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SharedEntryView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+    delete:
+      tags: [sharing]
+      summary: Revoque un partage (proprietaire ou destinataire, les deux cotes peuvent)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ShareId' }
+      responses:
+        '204': { description: Revoque }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /ws/ticket:
+    post:
+      tags: [sync]
+      summary: Echange l'access token contre un ticket WebSocket a usage unique (60s)
+      description: >
+        Le endpoint WebSocket lui-meme (GET /ws, authentifie par ce ticket a usage unique, pas par
+        un Bearer token) n'est pas modelisable par OpenAPI 3.0 (pas de support natif du protocole
+        WebSocket) - voir docs/API.md, section "Synchronisation temps reel", pour sa description
+        complete (evenements envoyes, cycle de vie de la connexion).
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WsTicketResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /audit:
+    get:
+      tags: [admin]
+      summary: Les 100 derniers logs d'audit du systeme (reserve aux administrateurs)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditLog' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Acces refuse (non administrateur)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /admin/users:
+    get:
+      tags: [admin]
+      summary: Liste tous les comptes (jamais password_hash, reserve aux administrateurs)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AdminUserView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Acces refuse (non administrateur)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /admin/users/{email}/role:
+    put:
+      tags: [admin]
+      summary: Promeut ou retrograde un compte administrateur (reserve au PREMIER admin, ADMIN_EMAIL, uniquement)
+      description: SEUL le compte configure via ADMIN_EMAIL peut appeler cet endpoint — un autre admin, meme avec is_moderator=true, ne peut ni promouvoir ni retrograder personne. Le premier admin ne peut pas non plus modifier son propre role via cet endpoint.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: email
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateUserRolePayload' }
+      responses:
+        '200': { description: Role mis a jour }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Acces refuse (non administrateur)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /admin/users/{email}/email:
+    put:
+      tags: [admin]
+      summary: Change l'email d'un AUTRE compte (reserve aux administrateurs)
+      description: Ne touche jamais au mot de passe maitre ni a la cle du coffre. Un admin ne peut pas l'utiliser sur son propre compte (utiliser PUT /auth/email). Invalide les sessions de la cible, alerte l'ANCIENNE adresse, trace l'evenement sous le NOUVEL email. Hierarchie entre admins (meme regle que les autres endpoints admin cibles) -- le premier admin (ADMIN_EMAIL) ne peut jamais etre cible, par personne ; un admin normal ne peut cibler que des comptes non-admin.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: email
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminUpdateEmailPayload' }
+      responses:
+        '200': { description: Email mis a jour }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Acces refuse (non administrateur)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /admin/users/{email}/extension-email-change:
+    put:
+      tags: [admin]
+      summary: Autorise ou interdit a UN compte de changer son email depuis l'extension navigateur
+      description: Sans effet sur l'app desktop. Desactive par defaut. Hierarchie entre admins (voir aussi revoke-sessions et DELETE ci-dessous, meme regle) -- le premier admin (ADMIN_EMAIL) ne peut jamais etre cible, par personne ; un admin normal ne peut cibler que des comptes non-admin.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: email
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateExtensionEmailChangePayload' }
+      responses:
+        '200': { description: Reglage mis a jour }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Acces refuse (non administrateur)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /admin/users/extension-email-change-all:
+    put:
+      tags: [admin]
+      summary: Meme reglage que /admin/users/{email}/extension-email-change, applique a TOUS les comptes (reserve au PREMIER admin uniquement)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateExtensionEmailChangePayload' }
+      responses:
+        '200': { description: Reglage mis a jour pour tous les comptes }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Acces refuse (non administrateur)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /admin/users/{email}/revoke-sessions:
+    post:
+      tags: [admin]
+      summary: Revoque a distance toutes les sessions actives d'un compte
+      description: Hierarchie entre admins -- le premier admin (ADMIN_EMAIL) ne peut jamais etre cible, meme par lui-meme (utiliser POST /devices/logout-all pour ses propres sessions) ; un admin normal ne peut cibler que des comptes non-admin.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: email
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Sessions revoquees }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Acces refuse (non administrateur)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /admin/users/{email}:
+    delete:
+      tags: [admin]
+      summary: Supprime definitivement un compte et tout ce qui lui est rattache
+      description: Aucun retour en arriere possible. Un admin ne peut pas supprimer son propre compte via cet endpoint. Hierarchie entre admins -- meme regle que revoke-sessions ci-dessus.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: email
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Compte supprime }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Acces refuse (non administrateur)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /health:
+    get:
+      tags: [misc]
+      summary: Healthcheck (verifie aussi que la base de donnees est joignable)
+      responses:
+        '200':
+          description: Operationnel
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+        '503':
+          description: Base de donnees injoignable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthResponse' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Access token JWT obtenu via /auth/login ou /auth/refresh, a envoyer dans l'en-tete
+        "Authorization: Bearer <token>".
+
+  parameters:
+    VaultEntryId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string }
+      description: Identifiant (UUID) de l'entree du coffre
+
+    AttachmentId:
+      in: path
+      name: attachment_id
+      required: true
+      schema: { type: string }
+      description: Identifiant (UUID) de la piece jointe
+
+    EmergencyContactId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string }
+      description: Identifiant (UUID) d'une relation d'acces d'urgence
+
+    ShareId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string }
+      description: Identifiant (UUID) d'un partage d'entree
+
+  responses:
+    ValidationError:
+      description: Payload invalide ou regle metier non respectee
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Unauthorized:
+      description: Non authentifie, session expiree, ou invalidee
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InvalidCredentials:
+      description: Identifiants incorrects
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: Ressource introuvable ou n'appartenant pas a l'appelant
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: Conflit (ex. doublon)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    RateLimited:
+      description: Limite de debit depassee
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
+      required: [error]
+
+    AuthPayload:
+      type: object
+      required: [email, master_password_hash, device_id]
+      properties:
+        email: { type: string, format: email }
+        master_password_hash:
+          type: string
+          minLength: 6
+          maxLength: 128
+          description: Hash d'authentification derive cote client, jamais le mot de passe en clair.
+        device_id: { type: string, description: Identifiant stable de l'appareil emetteur }
+        remember_me: { type: boolean, nullable: true, description: Pertinent uniquement au login }
+        max_trusted_devices:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 50
+          default: 10
+          description: Pertinent uniquement a l'inscription
+
+    VerifyEmailPayload:
+      type: object
+      required: [email, code]
+      properties:
+        email: { type: string, format: email }
+        code: { type: string, example: "123456" }
+
+    ForgotPasswordPayload:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+
+    VerifyTfaPayload:
+      type: object
+      required: [email, code, device_id]
+      properties:
+        email: { type: string, format: email }
+        code: { type: string, example: "123456" }
+        device_id: { type: string }
+        device_name: { type: string, nullable: true, example: "iPhone de Jean" }
+
+    RefreshPayload:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: { type: string }
+
+    ReencryptedVaultEntry:
+      type: object
+      required: [id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type]
+      properties:
+        id: { type: string }
+        encrypted_site_name: { type: string, minLength: 1, maxLength: 8192 }
+        encrypted_username: { type: string, nullable: true, maxLength: 8192 }
+        encrypted_login_email: { type: string, nullable: true, maxLength: 8192 }
+        encrypted_password: { type: string, minLength: 1, maxLength: 8192 }
+        encrypted_preferred_login_type: { type: string, minLength: 1, maxLength: 8192 }
+        encrypted_folder: { type: string, nullable: true, maxLength: 8192 }
+        encrypted_notes: { type: string, nullable: true, maxLength: 8192 }
+        encrypted_url: { type: string, nullable: true, maxLength: 8192 }
+        encrypted_extra_fields: { type: string, nullable: true, maxLength: 8192 }
+
+    ReencryptedHistoryEntry:
+      type: object
+      required: [id, encrypted_password]
+      properties:
+        id: { type: string }
+        encrypted_password: { type: string, minLength: 1, maxLength: 8192 }
+
+    ReencryptedVaultAttachment:
+      type: object
+      required: [id, encrypted_filename, encrypted_content]
+      properties:
+        id: { type: string }
+        encrypted_filename: { type: string, minLength: 1, maxLength: 8192 }
+        encrypted_content: { type: string, minLength: 1, maxLength: 10000000 }
+
+    ChangeMasterPasswordPayload:
+      type: object
+      required: [old_master_password_hash, new_master_password_hash, reencrypted_entries]
+      properties:
+        old_master_password_hash: { type: string, minLength: 6, maxLength: 128 }
+        new_master_password_hash: { type: string, minLength: 6, maxLength: 128 }
+        reencrypted_entries:
+          type: array
+          description: Doit contenir EXACTEMENT toutes les entrees actives du coffre.
+          items: { $ref: '#/components/schemas/ReencryptedVaultEntry' }
+        reencrypted_history:
+          type: array
+          description: Doit contenir EXACTEMENT toutes les lignes de vault_password_history de l'utilisateur. Optionnel (defaut []).
+          items: { $ref: '#/components/schemas/ReencryptedHistoryEntry' }
+        reencrypted_attachments:
+          type: array
+          description: Doit contenir EXACTEMENT toutes les pieces jointes de l'utilisateur. Optionnel (defaut []).
+          items: { $ref: '#/components/schemas/ReencryptedVaultAttachment' }
+
+    UpdateEmailPayload:
+      type: object
+      required: [new_email, master_password_hash]
+      properties:
+        new_email: { type: string, format: email }
+        master_password_hash: { type: string }
+
+    UpdateDeviceLimitPayload:
+      type: object
+      required: [new_limit, master_password_hash]
+      properties:
+        new_limit: { type: integer, minimum: 1, maximum: 50 }
+        master_password_hash: { type: string }
+
+    ExportVaultPayload:
+      type: object
+      required: [master_password_hash]
+      properties:
+        master_password_hash: { type: string }
+
+    ConfirmResetPayload:
+      type: object
+      required: [email, code, new_master_password_hash]
+      properties:
+        email: { type: string, format: email }
+        code: { type: string }
+        new_master_password_hash: { type: string, minLength: 6, maxLength: 128 }
+
+    VaultEntryInput:
+      type: object
+      required: [encrypted_site_name, encrypted_password, encrypted_preferred_login_type, is_favorite]
+      properties:
+        encrypted_site_name: { type: string, minLength: 1, maxLength: 8192 }
+        encrypted_username: { type: string, nullable: true, maxLength: 8192 }
+        encrypted_login_email: { type: string, nullable: true, maxLength: 8192 }
+        encrypted_password: { type: string, minLength: 1, maxLength: 8192 }
+        encrypted_preferred_login_type: { type: string, minLength: 1, maxLength: 8192 }
+        is_favorite: { type: boolean }
+        encrypted_folder: { type: string, nullable: true, maxLength: 8192 }
+        encrypted_notes: { type: string, nullable: true, maxLength: 8192 }
+        encrypted_url: { type: string, nullable: true, maxLength: 8192 }
+        entry_type:
+          type: string
+          default: login
+          description: Metadonnee EN CLAIR - "login"/"card"/"identity"/"note". Une valeur inconnue est acceptee telle quelle (aucune liste blanche cote serveur).
+        encrypted_extra_fields:
+          type: string
+          nullable: true
+          maxLength: 8192
+          description: Blob JSON chiffre cote client contenant les champs specifiques au type dedie - jamais interprete par le serveur.
+        password_changed:
+          type: boolean
+          default: false
+          description: Vrai uniquement si le CLIENT a reellement change le mot de passe dans ce formulaire (archive l'ancien dans l'historique).
+        expected_version:
+          type: integer
+          nullable: true
+          description: Detection de conflit d'edition - doit correspondre a VaultEntry.version tel qu'actuellement en base, sinon 409 Conflict.
+
+    ImportVaultPayload:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/VaultEntryInput' }
+
+    VaultEntry:
+      type: object
+      properties:
+        id: { type: string }
+        encrypted_site_name: { type: string }
+        encrypted_username: { type: string, nullable: true }
+        encrypted_login_email: { type: string, nullable: true }
+        encrypted_password: { type: string }
+        encrypted_preferred_login_type: { type: string }
+        user_email: { type: string }
+        is_favorite: { type: boolean }
+        encrypted_folder: { type: string, nullable: true }
+        encrypted_notes: { type: string, nullable: true }
+        encrypted_url: { type: string, nullable: true }
+        entry_type: { type: string, description: 'Toujours present dans une reponse serveur - "login" par defaut.' }
+        encrypted_extra_fields: { type: string, nullable: true }
+        updated_at: { type: string, format: date-time }
+        version:
+          type: integer
+          description: Compteur incremente a chaque modification - a renvoyer dans expected_version pour detecter un conflit d'edition.
+        has_attachments:
+          type: boolean
+          description: Vrai si cette entree a au moins une piece jointe (calcule a la volee, pas une colonne stockee).
+
+    PasswordHistoryEntry:
+      type: object
+      properties:
+        id: { type: string }
+        vault_id: { type: string }
+        encrypted_password: { type: string }
+        changed_at: { type: string, format: date-time }
+
+    VaultAttachmentInput:
+      type: object
+      required: [encrypted_filename, encrypted_content, content_size]
+      properties:
+        encrypted_filename: { type: string, minLength: 1, maxLength: 8192 }
+        encrypted_content: { type: string, minLength: 1, maxLength: 10000000 }
+        content_size:
+          type: integer
+          minimum: 1
+          maximum: 5242880
+          description: Taille EN CLAIR du fichier original, en octets (5 Mo max) - fournie par le client, non verifiable par le serveur.
+
+    VaultAttachmentMeta:
+      type: object
+      properties:
+        id: { type: string }
+        encrypted_filename: { type: string }
+        content_size: { type: integer }
+        created_at: { type: string, format: date-time }
+
+    VaultAttachment:
+      type: object
+      properties:
+        id: { type: string }
+        vault_id: { type: string }
+        encrypted_filename: { type: string }
+        encrypted_content: { type: string }
+        content_size: { type: integer }
+        created_at: { type: string, format: date-time }
+
+    TrashedVaultEntry:
+      type: object
+      properties:
+        id: { type: string }
+        encrypted_site_name: { type: string }
+        encrypted_username: { type: string, nullable: true }
+        encrypted_login_email: { type: string, nullable: true }
+        encrypted_preferred_login_type: { type: string }
+        is_favorite: { type: boolean }
+        deleted_at: { type: string, format: date-time }
+        encrypted_folder: { type: string, nullable: true }
+
+    TrustedDevice:
+      type: object
+      properties:
+        device_id: { type: string }
+        device_name: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time }
+
+    UserKeysInput:
+      type: object
+      required: [public_key, encrypted_private_key]
+      properties:
+        public_key: { type: string, minLength: 1, maxLength: 8192 }
+        encrypted_private_key: { type: string, minLength: 1, maxLength: 8192, description: Chiffree cote client avec la cle du coffre. }
+
+    UserPublicKey:
+      type: object
+      properties:
+        public_key: { type: string }
+
+    AddEmergencyContactPayload:
+      type: object
+      required: [contact_email, waiting_period_days]
+      properties:
+        contact_email: { type: string, format: email }
+        waiting_period_days: { type: integer, minimum: 0, maximum: 90 }
+
+    SeedEmergencyKeyPayload:
+      type: object
+      required: [sealed_vault_key]
+      properties:
+        sealed_vault_key: { type: string, minLength: 1, maxLength: 8192 }
+
+    EmergencyContact:
+      type: object
+      description: Ne contient JAMAIS sealed_vault_key, qui ne transite que via GET /emergency/contacts/{id}/vault une fois l'acces reellement accorde.
+      properties:
+        id: { type: string }
+        owner_email: { type: string }
+        contact_email: { type: string }
+        waiting_period_days: { type: integer }
+        status: { type: string, enum: [pending, active, access_requested, access_granted] }
+        requested_at: { type: string, format: date-time, nullable: true }
+        available_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    EmergencyVaultView:
+      type: object
+      properties:
+        sealed_vault_key: { type: string }
+        entries:
+          type: array
+          items: { $ref: '#/components/schemas/VaultEntry' }
+
+    ShareEntryPayload:
+      type: object
+      required: [shared_with_email, sealed_entry]
+      properties:
+        shared_with_email: { type: string, format: email }
+        sealed_entry: { type: string, minLength: 1, maxLength: 32768 }
+
+    VaultShare:
+      type: object
+      description: Vue proprietaire d'un partage — ne contient JAMAIS sealed_entry, qui ne transite que via GET /shares/{id}.
+      properties:
+        id: { type: string }
+        shared_with_email: { type: string }
+        created_at: { type: string, format: date-time }
+
+    SharedWithMeEntry:
+      type: object
+      description: Vue destinataire d'un partage — meme raison, jamais sealed_entry.
+      properties:
+        id: { type: string }
+        vault_id: { type: string }
+        owner_email: { type: string }
+        created_at: { type: string, format: date-time }
+
+    SharedEntryView:
+      type: object
+      properties:
+        owner_email: { type: string }
+        sealed_entry: { type: string }
+
+    AuditLog:
+      type: object
+      properties:
+        id: { type: integer }
+        user_email: { type: string }
+        action: { type: string, example: "LOGIN_SUCCESS_SESSION" }
+        ip_address: { type: string }
+        user_agent: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    AdminUserView:
+      type: object
+      description: Vue admin d'un compte. Ne contient JAMAIS password_hash, meme hache.
+      properties:
+        email: { type: string }
+        is_moderator: { type: boolean }
+        email_verified: { type: boolean }
+        created_at: { type: string, format: date-time }
+        max_trusted_devices: { type: integer }
+        can_change_email_via_extension: { type: boolean }
+        is_admin: { type: boolean, description: "Vrai UNIQUEMENT pour le compte ADMIN_EMAIL (l'\"Admin\") — tout autre compte avec is_moderator=true est un \"Moderateur\"." }
+
+    UpdateUserRolePayload:
+      type: object
+      required: [is_moderator]
+      properties:
+        is_moderator: { type: boolean }
+
+    AdminUpdateEmailPayload:
+      type: object
+      required: [new_email]
+      properties:
+        new_email: { type: string, format: email }
+
+    UpdateExtensionEmailChangePayload:
+      type: object
+      required: [enabled]
+      properties:
+        enabled: { type: boolean }
+
+    SyncResponse:
+      type: object
+      properties:
+        sync_token: { type: string }
+        total_entries: { type: integer }
+        last_modified: { type: string }
+
+    LoginSuccessResponse:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_in: { type: integer, description: Duree de vie de l'access_token en secondes }
+
+    TfaRequiredResponse:
+      type: object
+      properties:
+        status: { type: string, enum: [2FA_REQUIRED] }
+
+    RefreshResponse:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+
+    MeResponse:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        is_moderator: { type: boolean }
+        max_trusted_devices: { type: integer }
+        can_change_email_via_extension: { type: boolean, description: "Autorisation a changer son email DEPUIS L'EXTENSION NAVIGATEUR — sans effet sur le desktop." }
+        is_admin: { type: boolean, description: "Vrai UNIQUEMENT pour le compte configure via ADMIN_EMAIL — seul compte autorise a changer un role admin." }
+
+    WsTicketResponse:
+      type: object
+      properties:
+        ticket: { type: string }
+        expires_in: { type: integer, example: 60 }
+
+    ImportResponse:
+      type: object
+      properties:
+        imported: { type: integer }
+
+    HealthResponse:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, db_unreachable] }

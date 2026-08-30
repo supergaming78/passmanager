@@ -1,0 +1,31 @@
+[package]
+name = "crypto-core"
+version = "0.1.0"
+description = "Cryptographie Zero-Knowledge partagée entre le client desktop/Android (frontend(app)/src-tauri) et l'extension navigateur (extension/wasm-bindings) — voir le commentaire en tête de src/crypto.rs pour le détail du schéma de dérivation/chiffrement."
+edition = "2021"
+license = "MIT"
+
+[lib]
+# `rlib` : lié statiquement par les deux consommateurs (src-tauri et wasm-bindings), chacun sa
+# propre cible de compilation (desktop/Android vs wasm32-unknown-unknown) — pas de crate-type
+# spécifique à une plateforme ici (ni "cdylib" ni "staticlib", contrairement à src-tauri/Cargo.toml,
+# qui en a besoin pour EXPOSER un binaire natif ; cette crate n'est jamais compilée seule).
+crate-type = ["rlib"]
+
+[dependencies]
+# ==========================================
+# Mêmes dépendances/versions que précédemment dans src-tauri/Cargo.toml (extraction mécanique,
+# voir le commentaire en tête de src/crypto.rs pour le détail de chaque usage) — AUCUNE dépendance
+# WASM/getrandom-backend ICI : la doc de `getrandom` recommande de n'activer son backend `wasm_js`
+# que dans la crate FEUILLE qui produit le binaire final (voir extension/wasm-bindings/Cargo.toml),
+# jamais dans une lib partagée comme celle-ci — sinon cette contrainte se propagerait à TOUS les
+# consommateurs, y compris le desktop, qui n'en a pas besoin.
+argon2 = "0.6.0"
+hkdf = "0.12"
+sha2 = "0.10"
+sha1 = "0.10"
+aes-gcm = "0.10"
+base64 = "0.22"
+rand = "0.10"
+zeroize = "1"
+x25519-dalek = { version = "3.0.0", features = ["static_secrets", "getrandom"] }

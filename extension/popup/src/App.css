@@ -1,0 +1,16 @@
+@import "tailwindcss";
+
+/* Une popup de navigateur se dimensionne à son contenu (pas de fenêtre redimensionnable comme
+   l'app desktop) — largeur fixe raisonnable, hauteur plafonnée avec défilement interne pour la
+   liste du coffre plutôt que de laisser la popup grandir sans limite (Chrome la contraint de
+   toute façon à une taille maximale). */
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  width: 380px;
+  max-height: 580px;
+  overflow-y: auto;
+  margin: 0;
+}

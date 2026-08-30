@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+/* Réglages globaux minimaux — le reste de la mise en page passe par les classes Tailwind
+   directement dans les composants, pas par du CSS custom accumulé ici. */
+:root {
+  color-scheme: light dark;
+}
+
+/* touch-action: manipulation — supprime le délai d'env. 300ms que certains navigateurs mobiles
+ * ajoutent avant un tap (le temps de vérifier s'il s'agit d'un double-tap pour zoomer) et empêche
+ * un double-tap accidentel de zoomer la page plutôt que d'activer deux fois le bouton. Sans effet
+ * sur desktop (la souris n'a pas cette notion). */
+button,
+a {
+  touch-action: manipulation;
+}
+
+body {
+  margin: 0;
+  /* Marges de zone sûre (encoche, coins arrondis, barre de gestes) — voir viewport-fit=cover dans
+   * index.html. `env(safe-area-inset-*)` vaut 0 sur desktop/un appareil sans zone sûre à éviter,
+   * donc sans effet là où ce n'est pas nécessaire. */
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}

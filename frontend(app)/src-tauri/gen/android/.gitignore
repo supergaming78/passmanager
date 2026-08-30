@@ -1,0 +1,27 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+key.properties
+keystore.properties
+
+# Clé de signature de release Android (générée localement via `keytool`, voir
+# ../../../../.gitignore et frontend(app)/README.md#mises-à-jour-automatiques pour le pendant
+# desktop de la même précaution) — ne doit jamais être commitée, sert uniquement en CI via le
+# secret GitHub Actions ANDROID_KEYSTORE_BASE64.
+*.keystore
+*.jks
+
+/.tauri
+/tauri.settings.gradle

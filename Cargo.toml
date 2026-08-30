@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+# `crypto-core` est partagé entre le client desktop/Android (frontend(app)/src-tauri) et la future
+# extension navigateur (extension/wasm-bindings) — d'où un workspace à la racine du dépôt plutôt
+# que niché dans l'un des deux. `backend/` reste volontairement EXCLU : Cargo.toml/Cargo.lock
+# totalement séparés (langage/cycle de vie de déploiement différents, aucun besoin de crypto-core)
+# — sans cet `exclude`, Cargo refuserait de compiler backend/ isolément en le croyant membre d'un
+# workspace dont il ne fait pas partie.
+members = [
+    "frontend(app)/src-tauri",
+    "crypto-core",
+    "extension/wasm-bindings",
+]
+exclude = [
+    "backend",
+]

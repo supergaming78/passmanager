@@ -1,0 +1,164 @@
+[package]
+name = "backend"
+version = "0.1.0"
+edition = "2021" # Spécifie l'édition 2021 de Rust (gestion moderne de la mémoire, des fonctionnalités asynchrones, etc.)
+default-run = "backend"
+license = "MIT"
+
+# Profil de compilation pour `cargo build --release` (celui utilisé par le Dockerfile) : n'affecte
+# JAMAIS `cargo test`/`cargo check`, qui restent en profil "dev" (rapide à compiler, utile en
+# itération locale) — ces réglages ne coûtent donc qu'au moment du build de production, peu fréquent.
+[profile.release]
+# Link-Time Optimization inter-crate : réduit la taille du binaire et améliore légèrement les
+# performances runtime, au prix d'un temps de compilation plus long.
+lto = true
+# Un seul lot de compilation (au lieu de 16 par défaut) : laisse LLVM optimiser tout le crate
+# d'un coup plutôt que par morceaux indépendants — même compromis (mieux optimisé, plus lent à
+# compiler) que LTO ci-dessus.
+codegen-units = 1
+# Retire les symboles de debug du binaire final (jamais utilisés en production) : binaire, donc
+# image Docker, plus légers.
+strip = true
+# Explicite (et PAS "abort") : le code s'appuie sur l'isolation par tâche de Tokio pour qu'un
+# panic imprévu dans une requête (ex: voir mailer.rs) ne fasse échouer QUE cette requête, jamais
+# tout le process. "abort" casserait cette garantie en tuant le processus entier au premier panic
+# — valeur du défaut Rust, mais écrite ici explicitement pour qu'elle ne soit jamais changée par
+# erreur (ex: en copiant un profil "optimisé" trouvé ailleurs sans en connaître les implications).
+panic = "unwind"
+
+[dependencies]
+# ==========================================
+# Web Framework & Runtime (Cœur de l'application)
+# ==========================================
+
+# Axum : Le framework web asynchrone utilisé pour concevoir l'API REST. Il est basé sur Tokio et Tower.
+# "ws" active le support natif des WebSocket (utilisé pour la synchronisation temps réel entre
+# appareils — voir handlers/sync.rs — plutôt qu'un polling répété de check_sync).
+axum = { version = "0.8.9", features = ["ws"] }
+
+# Tokio : Le runtime asynchrone indispensable pour exécuter du code non bloquant en Rust.
+# La fonctionnalité "full" active tous les outils nécessaires (timers, entrées/sorties réseau, système de fichiers).
+tokio = { version = "1.53.1", features = ["full"] }
+
+# Tower-HTTP : Ensemble de middlewares pré-construits pour Axum.
+# "cors" gère les autorisations Cross-Origin, "trace" permet de suivre/enregistrer les requêtes HTTP,
+# "set-header" ajoute des en-têtes de sécurité (X-Content-Type-Options, etc.) sur chaque réponse,
+# et "compression-gzip" compresse les réponses JSON volumineuses (ex: listage du coffre).
+tower-http = { version = "0.7.0", features = ["cors", "trace", "set-header", "compression-gzip"] }
+
+# Tower Governor : Un middleware de "Rate Limiting" (limitation de débit).
+# Il protège l'API contre les attaques par force brute ou de déni de service (DoS) en limitant le nombre de requêtes par IP.
+tower_governor = "0.8.0"
+
+# Tower : Boîte à outils bas niveau sur laquelle Axum/Tower-HTTP sont construits, déjà présente
+# transitivement — déclarée ici explicitement pour utiliser directement `ServiceBuilder` et
+# `timeout()` (limite de temps globale par requête, voir main.rs) et `HandleErrorLayer` pour
+# convertir proprement un dépassement de délai en réponse HTTP 408 plutôt qu'en erreur brute.
+tower = { version = "0.5", features = ["util", "timeout"] }
+
+# ==========================================
+# Sécurité & Authentification
+# ==========================================
+
+# Argon2 : Algorithme de hachage de pointe, ultra-sécurisé, recommandé pour les mots de passe.
+# Conçu pour être volontairement gourmand en mémoire afin de résister aux attaques par force brute (ex: via GPU).
+# 0.6.0 : migration délibérée et testée (voir crypto.rs::hash_password) — "std" a été retiré de la
+# crate (plus besoin de le demander), et hash_password() ne prend plus le sel en argument manuel
+# (généré en interne via la feature "getrandom", activée par défaut). Le format PHC produit/lu
+# ($argon2id$v=19$...) est inchangé : les hashs déjà en base restent vérifiables normalement (voir
+# le test de non-régression dédié).
+argon2 = { version = "0.6.0", features = ["password-hash"] }
+
+# JSON Web Tokens (JWT) : Utilisé pour générer et valider les jetons de session sécurisés (Access Tokens).
+# "rust_crypto" utilise des implémentations de cryptographie purement écrites en Rust.
+jsonwebtoken = { version = "11.0.0", features = ["rust_crypto"] }
+
+# Axum-Extra : Extensions pour Axum. Ici, la fonctionnalité "cookie" permet de lire et d'écrire
+# des cookies HTTP de manière simple et sécurisée.
+axum-extra = { version = "0.12.6", features = ["cookie"] }
+
+# Rand : Bibliothèque de génération de nombres aléatoires. Indispensable pour créer des sels cryptographiques,
+# des codes de validation 2FA ou des jetons de réinitialisation uniques.
+rand = "0.10.2"
+rand_core = "0.10.1"
+
+# Hex : Permet d'encoder et de décoder des données binaires en chaînes de caractères hexadécimales (ex: pour des empreintes numériques).
+hex = "0.4.3"
+
+# Sha2 : Hash cryptographique RAPIDE (pas volontairement lent comme Argon2), utilisé pour stocker
+# les refresh tokens sous forme de hash plutôt qu'en clair en base. Adapté ici car le token est
+# déjà un secret à haute entropie (256 bits aléatoires) — contrairement à un mot de passe, il n'y
+# a pas besoin (et ce serait même contre-productif en performance) de le hacher lentement : refresh()
+# est appelé à chaque renouvellement de session, un hash lent y ajouterait une latence inutile.
+sha2 = "0.11.0"
+
+# ==========================================
+# Base de données
+# ==========================================
+
+# SQLx : Le pilote SQL asynchrone pour interagir avec la base de données sans ORM lourd.
+# "runtime-tokio" lie SQLx au moteur Tokio. "tls-rustls" sécurise les connexions réseau en TLS.
+# "sqlite" indique qu'on utilise une base SQLite, et "chrono" permet de lier automatiquement les dates SQL au crate Chrono.
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "tls-rustls", "sqlite", "chrono"] }
+
+# UUID : Générateur d'identifiants uniques universels (UUID v4). Très utile pour créer des clés primaires
+# de base de données impossibles à deviner (contrairement aux simples entiers 1, 2, 3...).
+uuid = { version = "1.26.0", features = ["v4", "serde"] }
+
+# ==========================================
+# Sérialisation & Validation
+# ==========================================
+
+# Serde : La bibliothèque incontournable en Rust pour convertir les structures de données.
+# "derive" permet de générer automatiquement le code nécessaire pour transformer une structure Rust en JSON, et inversement.
+serde = { version = "1.0.229", features = ["derive"] }
+
+# Serde_JSON : Permet de manipuler spécifiquement le format JSON dans les requêtes et les réponses HTTP d'Axum.
+serde_json = "1.0.151"
+
+# Validator : Permet de valider automatiquement les formats des données reçues des utilisateurs
+# (ex: s'assurer qu'un champ contient un email valide ou qu'un texte fait au moins 8 caractères).
+validator = { version = "0.21.0", features = ["derive"] }
+
+# ==========================================
+# Logging & Utilitaires
+# ==========================================
+
+# Tracing : Framework pour ajouter des logs structurés et tracer l'exécution des fonctions asynchrones (ex: #[instrument]).
+tracing = { version = "0.1.44", features = ["attributes"] }
+
+# Tracing-Subscriber : Collecte les logs générés par Tracing pour les formater.
+# Active l'affichage en JSON, le filtrage via des variables d'environnement ("env-filter"), ou un formatage textuel propre ("fmt").
+tracing-subscriber = { version = "0.3.23", features = ["json", "env-filter", "fmt"] }
+
+# Tracing-Appender : Permet d'écrire automatiquement les logs de l'application dans des fichiers physiques sur le disque, avec rotation.
+tracing-appender = "0.2.5"
+
+# Dotenvy : Charge automatiquement les variables d'environnement à partir d'un fichier `.env` (ex: pour cacher les clés secrètes ou l'URL de la base de données).
+dotenvy = "0.15.7"
+
+# Chrono : Gestion complète et moderne du temps, des dates et des fuseaux horaires (UTC).
+chrono = { version = "0.4.45", features = ["serde"] }
+
+# Time : Une autre bibliothèque de gestion du temps, souvent requise par d'autres dépendances du projet sous le capot.
+time = "0.3.55"
+
+# Async-Trait : Permet de déclarer des fonctions asynchrones à l'intérieur des 'traits' (interfaces) en Rust,
+# une fonctionnalité qui requiert ce crate dans certaines architectures complexes.
+async-trait = "0.1.92"
+
+# Regex : Moteur d'expressions régulières puissant pour effectuer des recherches de texte complexes ou des validations de chaînes.
+regex = "1.13.1"
+
+# Lettre : Le client d'envoi d'e-mails (SMTP) de référence en Rust.
+# Utilisé ici pour envoyer les alertes de sécurité, les codes 2FA ou les e-mails de réinitialisation de mot de passe.
+# Lettre : Le client d'envoi d'e-mails (SMTP) de référence en Rust.
+# Utilisé ici pour envoyer les alertes de sécurité, les codes 2FA ou les e-mails de réinitialisation de mot de passe.
+# TLS via `rustls` (implémentation 100% Rust) plutôt que `native-tls` (OpenSSL système), ET
+# `webpki-roots` (certificats racine Mozilla EMBARQUÉS DANS LE BINAIRE à la compilation) plutôt
+# que `rustls-native-certs` (magasin système) : ce dernier nécessite le paquet Debian
+# `ca-certificates`, qui a lui-même une dépendance OBLIGATOIRE sur `openssl` (pour un vieux
+# script `c_rehash`) — impossible à retirer de l'image tant qu'on garde `ca-certificates`.
+# Avec `webpki-roots`,0.11.23esoin d'AUCUN paquet système pour le TLS, donc plus d'OpenSSL du
+# tout dans l'image finale.
+lettre = { version = "0.11.22", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls", "rustls-tls", "webpki-roots", "hostname", "builder"] }

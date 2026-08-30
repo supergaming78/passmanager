@@ -1,0 +1,107 @@
+[package]
+name = "passmanager-app"
+version = "0.1.0"
+description = "Gestionnaire de mots de passe Zero-Knowledge - client desktop"
+authors = ["supergaming78"]
+edition = "2021"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "passmanager_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+# Boîtes de dialogue natives (choisir un fichier à importer / où sauvegarder un export).
+tauri-plugin-dialog = "2"
+# Lecture/écriture de fichiers depuis le frontend (import/export du coffre) — accès limité par
+# les permissions déclarées dans capabilities/default.json, pas un accès disque libre.
+tauri-plugin-fs = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# ==========================================
+# Mise à jour automatique (voir lib.rs, tauri.conf.json::plugins.updater)
+# ==========================================
+# DESKTOP UNIQUEMENT : `[target."cfg(not(any(target_os = "android", target_os = "ios")))".dependencies]`
+# plutôt que `[dependencies]` — même piège de portabilité mobile que `windows`/`windows-future`
+# plus bas (voir leur commentaire), sauf qu'ici c'est le plugin officiel Tauri lui-même qui ne
+# supporte pas mobile (l'update d'une app mobile passe par le store — Play Store/App Store — pas
+# par ce mécanisme). L'enregistrement du plugin dans lib.rs est de toute façon aussi gardé par
+# #[cfg(desktop)] (le cfg fourni nativement par Tauri) — le doublon ici évite en plus de tenter de
+# COMPILER une dépendance qui échouerait ou n'aurait aucun sens sur Android.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+# Nécessaire pour relancer l'app juste après avoir appliqué une mise à jour téléchargée
+# (`app.restart()` côté JS, voir Settings.tsx) — sans ce plugin, l'utilisateur devrait fermer et
+# rouvrir l'app lui-même après chaque mise à jour.
+tauri-plugin-process = "2"
+
+# ==========================================
+# Cryptographie côté client (Zero-Knowledge)
+# ==========================================
+# Toute la dérivation de clé et le chiffrement du coffre se font en Rust natif — jamais côté
+# JS/WebView. C'est l'intérêt spécifique de Tauri par rapport à une app web classique : le
+# frontend ne reçoit jamais la clé de chiffrement du coffre, seulement le hash d'authentification
+# à envoyer au serveur (voir crypto-core/src/crypto.rs).
+#
+# La logique elle-même (crypto.rs/emergency.rs/sharing.rs, autrefois dans ce crate) vit maintenant
+# dans `crypto-core`, à la racine du dépôt (voir son Cargo.toml pour les dépendances RustCrypto
+# détaillées commentées une par une) — PARTAGÉE avec la future extension navigateur
+# (extension/wasm-bindings, compilée en WebAssembly à partir du MÊME code), pour ne jamais avoir
+# deux implémentations de la cryptographie à maintenir en parallèle. Ce crate-ci ne fait plus que
+# la réexporter (voir lib.rs::`pub use crypto_core::{crypto, emergency, sharing};`) et l'entourer
+# de la couche Tauri (commandes, état en mémoire) — voir aussi le Cargo.toml racine du dépôt pour
+# le workspace qui relie les deux.
+crypto-core = { path = "../../crypto-core" }
+
+# `base64`/`zeroize` restent AUSSI des dépendances directes ici (en plus d'être déjà utilisées à
+# l'intérieur de crypto-core) : lib.rs les utilise lui-même directement — encoder/décoder la clé
+# de coffre d'urgence (voir generate_emergency_keypair/unlock_emergency_vault) et effacer des
+# buffers de clé en mémoire à la fin de plusieurs commandes — une dépendance de crypto-core ne
+# rend pas automatiquement son propre contenu utilisable ici sans être aussi déclarée ici.
+base64 = "0.23.1"
+zeroize = "1"
+
+# ==========================================
+# Déverrouillage rapide (Windows UNIQUEMENT, voir dpapi.rs/quick_unlock.rs)
+# ==========================================
+# `[target.'cfg(windows)'.dependencies]` plutôt que `[dependencies]` : CORRECTIF portabilité
+# mobile — `windows-future` (voir plus bas) ne compile tout simplement PAS en dehors de Windows
+# (erreur réelle rencontrée en compilant pour Android : `windows_threading::submit` introuvable,
+# la crate suppose un environnement Windows jusque dans son propre code, pas seulement dans ce
+# qu'on en appelle). Tout le code qui utilise ces deux crates est de toute façon déjà gardé par
+# #[cfg(target_os = "windows")] (voir dpapi.rs/quick_unlock.rs) — les exclure du tout sur les
+# autres cibles ne change donc rien au comportement Windows, et rend Android/iOS compilables.
+[target.'cfg(windows)'.dependencies]
+# Win32_Security_Cryptography/Win32_Foundation : DPAPI (CryptProtectData/CryptUnprotectData), pour
+# protéger le blob de clé du coffre en le liant au compte Windows de la session en cours.
+# Security_Credentials_UI/Foundation : UserConsentVerifier (invite Windows Hello — empreinte/
+# visage/code PIN), le geste demandé à CHAQUE tentative de déverrouillage rapide. Version alignée
+# sur celle que Tauri lui-même tire déjà en interne (tao/webview2-com) plutôt que la toute
+# dernière : évite deux copies incompatibles de windows-core dans l'arbre de dépendances (vu en
+# pratique : la plus récente casse la résolution de trait sur des appels FFI pourtant valides).
+windows = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Security_Credentials_UI", "Foundation"] }
+# windows-future en dépendance DIRECTE, avec sa fonctionnalité "std" (désactivée par défaut par
+# `windows` lui-même) : c'est elle qui fournit l'impl IntoFuture permettant de faire
+# `.await` sur un IAsyncOperation<T> (voir RequestVerificationAsync() dans quick_unlock.rs) — sans
+# ça, seule une attente BLOQUANTE via .get() serait disponible.
+# CORRECTIF : version alignée sur celle que `windows 0.61.3` exige déjà en interne (0.2.1, voir
+# son propre Cargo.toml) — PAS la toute dernière (0.3.2, ce qui était fixé ici avant), qui entraîne
+# elle-même windows-core 0.62.x alors que `windows` s'en tient à 0.61.x : Cargo ne peut alors pas
+# unifier les deux et compile DEUX copies incompatibles de windows-future/windows-core (le même
+# piège que le commentaire ci-dessus décrit déjà pour `windows` lui-même, ici non appliqué à cette
+# dépendance) — le type IAsyncOperation<T> alors visible dans quick_unlock.rs (via `windows`, copie
+# 0.2.1) n'est plus le même type que celui portant l'impl IntoFuture (copie 0.3.2 direct), et
+# `.await` échoue à la compilation avec "is not a future".
+windows-future = { version = "0.2.1", features = ["std"] }
+

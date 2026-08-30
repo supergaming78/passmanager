@@ -1,0 +1,30 @@
+[package]
+name = "wasm-bindings"
+version = "0.1.0"
+description = "Pont wasm-bindgen autour de crypto-core, pour la future extension navigateur — voir extension/wasm-bindings/src/lib.rs."
+edition = "2021"
+license = "MIT"
+
+[lib]
+# "cdylib" : seul crate-type que wasm-pack sait transformer en module .wasm chargeable côté
+# navigateur/Node. "rlib" en plus : permet à un éventuel test Rust natif (`cargo test`, ciblant
+# l'hôte plutôt que wasm32) de linker cette crate normalement pendant le développement.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+crypto-core = { path = "../../crypto-core" }
+wasm-bindgen = "0.2"
+
+# Backend WASM pour `getrandom` (dépendance transitive de `rand`/`x25519-dalek` dans crypto-core) —
+# voir le commentaire de crypto-core/Cargo.toml : volontairement activé ICI, dans la crate FEUILLE
+# qui produit le binaire final, jamais dans la lib partagée elle-même. `Crypto.getRandomValues` du
+# navigateur devient la source d'aléa, via wasm-bindgen.
+#
+# DEUX lignées de `getrandom` coexistent dans l'arbre de dépendances (constaté à la compilation,
+# pas une supposition) : 0.4.x via `rand`/`x25519-dalek` (feature `wasm_js`), ET 0.2.x via
+# `aes-gcm` -> `crypto-common` 0.1 -> `rand_core` 0.6 (feature `js`, nom différent sur cette
+# ancienne lignée) — Cargo ne les unifie PAS entre elles (versions majeures différentes), donc les
+# DEUX doivent être activées explicitement, sinon seule celle réellement absente de la commande
+# `cargo build`/`wasm-pack build` fait échouer la compilation pour wasm32-unknown-unknown.
+getrandom = { version = "0.4", features = ["wasm_js"] }
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }

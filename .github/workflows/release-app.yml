@@ -1,0 +1,149 @@
+# Construit et publie l'app desktop (Windows/macOS/Linux) ET l'app Android sur GitHub Releases, à
+# chaque tag `app-v*` — un SEUL tag/une seule version pour les deux, dans la MÊME release (préfixe
+# dédié, pas juste `v*`, pour ne pas entrer en collision avec de futurs tags backend/extension dans
+# ce même dépôt).
+#
+# ⚠️ NON EXÉCUTÉ EN VRAI à l'écriture de ce fichier (pas de dépôt GitHub encore créé) — écrit du
+# mieux possible à partir de la doc officielle Tauri/tauri-action, mais à déboguer pour de vrai au
+# premier tag poussé, comme n'importe quel nouveau pipeline CI.
+#
+# Ce que fait le job `desktop` (via `tauri-apps/tauri-action`, en une étape) : compile pour chaque
+# OS du matrix, SIGNE les installeurs (secret TAURI_SIGNING_PRIVATE_KEY, voir le `.gitignore`
+# racine pour comment cette clé a été générée), génère le manifeste `latest.json` que le plugin
+# updater interroge (voir tauri.conf.json::plugins.updater), et publie tout ça en brouillon sur une
+# nouvelle GitHub Release.
+#
+# Ce que fait le job `android` : compile un APK universel signé (`tauri android build --apk`, PAS
+# `--aab` — un `.aab` n'est installable que via le Play Store, qu'on n'utilise pas ici), puis
+# l'ajoute comme asset SUPPLÉMENTAIRE à la MÊME release que le job `desktop` vient de créer (attend
+# `needs: desktop`, puis retrouve la release par son tag via `softprops/action-gh-release` plutôt
+# que d'en créer une seconde). C'est cet APK que l'app Android va lier en clair dans sa bannière
+# "nouvelle version disponible" (voir src/lib/mobileUpdateCheck.ts) — PAS d'installation automatique
+# possible côté Android (confirmation système obligatoire à l'installation d'un APK, même signé).
+#
+# Secrets à créer une seule fois (Settings > Secrets and variables > Actions, sur ce dépôt) :
+# - TAURI_SIGNING_PRIVATE_KEY          : contenu de frontend(app)/src-tauri/tauri-updater.key
+# - TAURI_SIGNING_PRIVATE_KEY_PASSWORD : le mot de passe généré avec cette clé
+# - ANDROID_KEYSTORE_BASE64   : `base64 -w0 passmanager-release.keystore` (le fichier généré
+#   localement, voir frontend(app)/src-tauri/gen/android/.gitignore — jamais commité)
+# - ANDROID_KEYSTORE_PASSWORD : mot de passe du keystore (et de la clé, générés identiques ici)
+# - ANDROID_KEY_ALIAS         : "passmanager" (alias utilisé à la génération du keystore)
+# (GITHUB_TOKEN est fourni automatiquement par GitHub Actions, pas besoin de le créer)
+name: Release app
+
+on:
+  push:
+    tags:
+      - "app-v*"
+
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: "windows-latest"
+          - platform: "macos-latest"
+          - platform: "ubuntu-latest"
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Installer les dépendances système Linux (webkit2gtk, etc.)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: "frontend(app)/package-lock.json"
+
+      - name: Installer les dépendances npm
+        working-directory: frontend(app)
+        run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: "frontend(app)"
+          tagName: app-v__VERSION__
+          releaseName: "PassManager v__VERSION__"
+          releaseBody: "Voir les notes de version ci-dessous, ou le journal des modifications du dépôt."
+          releaseDraft: true
+          prerelease: false
+
+  android:
+    needs: desktop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Installer le NDK Android
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: "frontend(app)/package-lock.json"
+
+      - name: Installer les dépendances npm
+        working-directory: frontend(app)
+        run: npm ci
+
+      - name: Décoder le keystore de signature Android
+        working-directory: frontend(app)/src-tauri/gen/android
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > passmanager-release.keystore
+
+      - name: Construire l'APK Android (signé, universel)
+        working-directory: frontend(app)
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_KEYSTORE_PATH: gen/android/passmanager-release.keystore
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        # Pas de `--target`/`--split-per-abi` : tous les ABI par défaut, regroupés dans un seul APK
+        # "universel" — un seul lien de téléchargement à donner dans la bannière de mise à jour,
+        # au prix d'un fichier un peu plus gros que des APK par-architecture.
+        run: npm run tauri android build -- --apk
+
+      - name: Supprimer le keystore décodé (ne doit pas survivre au job)
+        if: always()
+        working-directory: frontend(app)/src-tauri/gen/android
+        run: rm -f passmanager-release.keystore
+
+      - name: Ajouter l'APK à la release déjà créée par le job desktop
+        uses: softprops/action-gh-release@v2
+        with:
+          # `github.ref_name`, sur un déclenchement par tag, EST DÉJÀ le nom complet du tag
+          # (ex: "app-v1.2.3") — pas la partie après "app-v" seule. Rajouter le préfixe ici
+          # produirait "app-vapp-v1.2.3", un tag qui ne correspondrait à AUCUNE release existante.
+          tag_name: ${{ github.ref_name }}
+          files: "frontend(app)/src-tauri/gen/android/app/build/outputs/apk/release/*.apk"
+          # IMPORTANT : `draft: true` est nécessaire ici pour PRÉSERVER le brouillon créé par le
+          # job desktop — si ce champ est omis, cette action publie automatiquement la release en
+          # l'ajoutant, ce qui la rendrait visible aux utilisateurs AVANT toute relecture manuelle.
+          draft: true

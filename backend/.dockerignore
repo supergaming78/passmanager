@@ -1,0 +1,10 @@
+target
+data
+logs
+.git
+.env
+.cargo
+.claude
+*.db
+*.db-shm
+*.db-wal
