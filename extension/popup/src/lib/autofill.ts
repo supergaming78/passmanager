@@ -119,3 +119,21 @@ export async function getActiveTabUrl(): Promise<string | null> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab?.url ?? null;
 }
+
+/**
+ * Vérification RAPIDE, avant tout appel serveur, qu'un remplissage a une chance raisonnable de
+ * réussir sur l'onglet actif — heuristique sur le schéma de l'URL (chrome://, la Web Store, un
+ * PDF...), pas une garantie absolue (une page https normale sans aucun champ mot de passe passera
+ * quand même ce test). Utilisée par lib/blindShare.ts::useBlindShareAndFill() pour éviter de
+ * consommer un usage LIMITÉ (parfois un seul, jamais récupérable) sur un onglet manifestement
+ * incompatible — l'erreur reste possible malgré tout (page sans champ mot de passe), mais le cas le
+ * plus fréquent (mauvais onglet actif, page restreinte) est écarté AVANT de toucher le compteur.
+ */
+export async function canLikelyAutofillActiveTab(): Promise<boolean> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id || !tab.url) return false;
+  const restricted = /^(chrome|chrome-extension|edge|about|devtools|view-source):/i.test(tab.url)
+    || tab.url.startsWith("https://chrome.google.com/webstore")
+    || tab.url.startsWith("https://chromewebstore.google.com");
+  return !restricted;
+}

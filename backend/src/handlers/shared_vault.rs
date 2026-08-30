@@ -543,4 +543,39 @@ mod tests {
         ).await;
         assert!(matches!(result, Err(AppError::ValidationError(_))));
     }
+
+    /// RÉGRESSION : un coffre partagé ne doit jamais pouvoir accumuler un nombre de membres non
+    /// borné (voir MAX_MEMBERS_PER_SHARED_VAULT dans repository.rs — protège contre l'épuisement
+    /// de ressources via `broadcast_to_members`, qui notifie CHAQUE membre à chaque modification).
+    #[tokio::test]
+    async fn test_shared_vault_member_limit_is_enforced() {
+        let state = build_test_state().await;
+        register_test_user(&state, "owner11@example.com").await;
+
+        let create_result = create_shared_vault(
+            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner11@example.com"),
+            Json(CreateSharedVaultPayload { encrypted_name: "nom".to_string(), sealed_vault_key: "cle".to_string() }),
+        ).await.unwrap();
+        let vault_id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
+
+        // Remplit le coffre jusqu'à la limite (24 membres invités + le propriétaire = 25 = la limite).
+        for i in 0..24 {
+            let email = format!("member11-{i}@example.com");
+            register_test_user(&state, &email).await;
+            invite_shared_vault_member(
+                State(state.clone()), test_addr(), HeaderMap::new(), auth("owner11@example.com"),
+                Path(vault_id.clone()),
+                Json(InviteSharedVaultMemberPayload { member_email: email, sealed_vault_key: "cle".to_string() }),
+            ).await.expect("chaque invitation jusqu'à la limite doit réussir");
+        }
+
+        // La 26e personne (limite déjà atteinte) doit être refusée.
+        register_test_user(&state, "over-the-limit@example.com").await;
+        let result = invite_shared_vault_member(
+            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner11@example.com"),
+            Path(vault_id),
+            Json(InviteSharedVaultMemberPayload { member_email: "over-the-limit@example.com".to_string(), sealed_vault_key: "x".to_string() }),
+        ).await;
+        assert!(matches!(result, Err(AppError::ValidationError(_))), "au-delà de la limite de membres, l'invitation doit être refusée");
+    }
 }

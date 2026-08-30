@@ -1009,6 +1009,8 @@ impl SharingRepository {
 /// MAX_SHARES_PER_OWNER ci-dessus (protection contre l'épuisement de stockage), pas une limite
 /// fonctionnelle réaliste pour un usage familial.
 const MAX_SHARED_VAULTS_PER_CREATOR: i64 = 50;
+/// Par coffre partagé (pas par créateur) — voir invite_member() pour le raisonnement.
+const MAX_MEMBERS_PER_SHARED_VAULT: i64 = 25;
 
 pub struct SharedVaultRepository;
 
@@ -1080,6 +1082,26 @@ impl SharedVaultRepository {
         .await?;
         if is_owner.is_none() {
             return Err(AppError::Forbidden);
+        }
+
+        // CORRECTIF : contrairement à toutes les autres collections de ce fichier (coffres
+        // partagés par créateur, partages à usage limité par propriétaire, pièces jointes...),
+        // rien ne plafonnait le nombre de membres d'UN coffre partagé — repéré lors d'une relecture
+        // de sécurité, pas par un incident réel. Sans cette limite, `broadcast_to_members` (voir
+        // handlers/shared_vault.rs) enverrait un événement WebSocket à un nombre de membres non
+        // borné à CHAQUE modification d'entrée, et la table `shared_vault_members` pourrait croître
+        // sans limite — un vecteur d'épuisement de ressources, même si peu probable dans ce
+        // déploiement mono-tenant entre proches.
+        let member_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM shared_vault_members WHERE shared_vault_id = ?",
+        )
+        .bind(shared_vault_id)
+        .fetch_one(db)
+        .await?;
+        if member_count >= MAX_MEMBERS_PER_SHARED_VAULT {
+            return Err(AppError::ValidationError(format!(
+                "Limite de {MAX_MEMBERS_PER_SHARED_VAULT} membres atteinte pour ce coffre partagé."
+            )));
         }
 
         let result = sqlx::query(
@@ -1449,6 +1471,16 @@ impl BlindShareRepository {
     /// LIGNE dans sa liste même si l'entrée source a depuis été supprimée, mais ne doit plus
     /// pouvoir en consommer le contenu.
     pub async fn consume_use(db: &SqlitePool, id: &str, recipient_email: &str) -> Result<BlindShareCredentialsView, AppError> {
+        // Le décrément ET la lecture des identifiants scellés qui suit sont dans la MÊME
+        // transaction — CORRECTIF (trouvé lors d'une relecture, pas par un test qui échouait) :
+        // séparées en deux requêtes indépendantes, un `revoke()` concurrent aurait pu supprimer la
+        // ligne ENTRE le décrément (qui aurait réussi, consommant un usage pour rien) et cette
+        // lecture (qui aurait alors échoué avec une erreur de base de données générique au lieu
+        // d'un 404 propre). Une transaction fait que SQLite sérialise cette écriture face à la
+        // suppression concurrente d'un `revoke()` (verrouillage d'écriture, voir le mode WAL déjà
+        // en place) plutôt que de simplement rendre l'incohérence moins probable.
+        let mut tx = db.begin().await?;
+
         let res = sqlx::query(
             "UPDATE vault_blind_shares SET remaining_uses = remaining_uses - 1
              WHERE id = ? AND shared_with_email = ? AND remaining_uses > 0
@@ -1456,7 +1488,7 @@ impl BlindShareRepository {
         )
         .bind(id)
         .bind(recipient_email)
-        .execute(db)
+        .execute(&mut *tx)
         .await?;
 
         if res.rows_affected() == 0 {
@@ -1476,7 +1508,7 @@ impl BlindShareRepository {
             )
             .bind(id)
             .bind(recipient_email)
-            .fetch_optional(db)
+            .fetch_optional(&mut *tx)
             .await?;
             if still_usable_in_principle.is_some() {
                 return Err(AppError::ValidationError("Plus aucun usage disponible pour ce partage.".to_string()));
@@ -1484,13 +1516,15 @@ impl BlindShareRepository {
             return Err(AppError::NotFound);
         }
 
-        sqlx::query_as::<_, BlindShareCredentialsView>(
+        let view = sqlx::query_as::<_, BlindShareCredentialsView>(
             "SELECT sealed_credentials, remaining_uses FROM vault_blind_shares WHERE id = ?",
         )
         .bind(id)
-        .fetch_one(db)
-        .await
-        .map_err(AppError::from)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(view)
     }
 
     /// Révoque un partage à usage limité — l'un OU l'autre côté peut y mettre fin (même principe

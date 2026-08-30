@@ -121,7 +121,13 @@ jobs:
         working-directory: frontend(app)
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          ANDROID_KEYSTORE_PATH: gen/android/passmanager-release.keystore
+          # CHEMIN ABSOLU obligatoire (${{ github.workspace }} = racine du checkout) — CORRECTIF :
+          # un chemin relatif ici (essayé d'abord) ne se résout PAS par rapport au `working-directory`
+          # de CETTE étape (`frontend(app)`) comme on pourrait s'y attendre, mais par rapport au
+          # répertoire du module Gradle qui le lit (`file(it)` dans app/build.gradle.kts, exécuté
+          # depuis .../gen/android/app/) — un chemin relatif écrit en pensant au premier aurait donc
+          # pointé nulle part pour le second, faisant échouer la signature au premier vrai run.
+          ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/frontend(app)/src-tauri/gen/android/passmanager-release.keystore
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -137,6 +143,13 @@ jobs:
 
       - name: Ajouter l'APK à la release déjà créée par le job desktop
         uses: softprops/action-gh-release@v2
+        env:
+          # CORRECTIF : sans ce token explicite, cette étape échoue à l'authentification — le
+          # `GITHUB_TOKEN` fourni automatiquement par Actions n'est PAS repris automatiquement par
+          # cette action tierce, contrairement à `tauri-apps/tauri-action` ci-dessus (qui, lui, le
+          # lit bien depuis son propre bloc `env:`, présent) — chaque action tierce doit le recevoir
+          # explicitement.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           # `github.ref_name`, sur un déclenchement par tag, EST DÉJÀ le nom complet du tag
           # (ex: "app-v1.2.3") — pas la partie après "app-v" seule. Rajouter le préfixe ici

@@ -15,7 +15,7 @@
 import * as api from "../api/client";
 import * as wasmCrypto from "./wasmCrypto";
 import { ensureEmergencyKeys } from "./emergencyAccess";
-import { runAutofill, type FillResult } from "./autofill";
+import { runAutofill, canLikelyAutofillActiveTab, type FillResult } from "./autofill";
 import type { AuthorizedRequest } from "./session";
 
 interface SealableCredentials {
@@ -100,6 +100,16 @@ export async function useBlindShareAndFill(
   vaultKey: Uint8Array,
   authorizedRequest: AuthorizedRequest,
 ): Promise<{ result: FillResult; remainingUses: number }> {
+  // CORRECTIF : vérifié AVANT tout appel serveur — le compteur d'usages (parfois un SEUL, jamais
+  // récupérable une fois épuisé) était auparavant décrémenté même quand l'onglet actif ne pouvait
+  // de toute façon pas recevoir de remplissage (page chrome://, Web Store, aucun onglet...), un
+  // simple mauvais clic gaspillait alors définitivement l'unique usage d'un partage. Cette
+  // vérification n'est qu'une heuristique (une page https sans aucun champ mot de passe la passera
+  // quand même) — pas une garantie totale, mais elle écarte le cas le plus fréquent.
+  if (!(await canLikelyAutofillActiveTab())) {
+    throw new Error("Ouvre d'abord la page de connexion sur laquelle utiliser cet identifiant, puis réessaie.");
+  }
+
   const ownKeys = await authorizedRequest((token) => api.getOwnEmergencyKeys(token));
   const { sealed_credentials, remaining_uses } = await authorizedRequest((token) => api.useBlindShare(token, id));
 
