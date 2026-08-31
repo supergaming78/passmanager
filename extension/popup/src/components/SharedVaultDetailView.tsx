@@ -12,7 +12,7 @@ import { runAutofill, getActiveTabUrl, domainsLikelyMatch } from "../lib/autofil
 import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { getErrorMessage } from "../lib/errors";
 
-const EMPTY_FORM = { siteName: "", username: "", loginEmail: "", password: "", preferredLoginType: "username" as const, notes: "", url: "" };
+const EMPTY_FORM = { siteName: "", username: "", loginEmail: "", password: "", preferredLoginType: "username" as "username" | "email", notes: "", url: "" };
 
 export default function SharedVaultDetailView({
   vaultId,
@@ -76,9 +76,14 @@ export default function SharedVaultDetailView({
 
   function openEditForm(entry: PlainSharedVaultEntry) {
     setEditingEntry(entry);
+    // CORRECTIF (même bug que côté desktop, voir SharedVaultDetailPage.tsx) : inversait
+    // silencieusement "email" en "identifiant" à chaque modification — sans même de sélecteur dans
+    // ce formulaire pour le corriger à la main (ajouté plus bas). Faussait ensuite handleFill()
+    // ci-dessus, qui pouvait remplir un champ identifiant VIDE plutôt que l'email réellement
+    // enregistré pour cette entrée.
     setForm({
       siteName: entry.siteName, username: entry.username, loginEmail: entry.loginEmail,
-      password: entry.password, preferredLoginType: entry.preferredLoginType === "email" ? "username" : entry.preferredLoginType,
+      password: entry.password, preferredLoginType: entry.preferredLoginType,
       notes: entry.notes, url: entry.url,
     });
     setShowEntryForm(true);
@@ -138,7 +143,10 @@ export default function SharedVaultDetailView({
         }
       }
 
-      const usernameOrEmail = entry.preferredLoginType === "email" ? entry.loginEmail : entry.username;
+      // CORRECTIF : sans repli sur loginEmail, une entrée "identifiant" avec un champ username vide
+      // (identifiant/email tous deux optionnels, voir le formulaire) remplissait un champ vide
+      // plutôt que la valeur réellement disponible — même repli que l'affichage juste en dessous.
+      const usernameOrEmail = entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail;
       const result = await runAutofill(usernameOrEmail, entry.password);
       if (!result.passwordFilled) {
         setError("Aucun champ mot de passe trouvé sur cette page.");
@@ -276,6 +284,14 @@ export default function SharedVaultDetailView({
               onChange={(e) => setForm((f) => ({ ...f, loginEmail: e.target.value }))}
               className="rounded-md border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
             />
+            <select
+              value={form.preferredLoginType}
+              onChange={(e) => setForm((f) => ({ ...f, preferredLoginType: e.target.value as "username" | "email" }))}
+              className="rounded-md border border-neutral-300 px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+            >
+              <option value="email">Préférer l'email à la connexion</option>
+              <option value="username">Préférer l'identifiant à la connexion</option>
+            </select>
             <input
               type="text" placeholder="Mot de passe *" value={form.password}
               onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}

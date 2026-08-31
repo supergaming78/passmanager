@@ -9,7 +9,7 @@ import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { openEntryUrl } from "../lib/openExternalUrl";
 import { getErrorMessage } from "../lib/errors";
 
-const EMPTY_FORM = { siteName: "", username: "", loginEmail: "", password: "", preferredLoginType: "username" as const, notes: "", url: "" };
+const EMPTY_FORM = { siteName: "", username: "", loginEmail: "", password: "", preferredLoginType: "username" as "username" | "email", notes: "", url: "" };
 
 /** Un coffre partagé précis : ses entrées (ajout/modification/suppression), ses membres
  * (invitation/retrait/départ). Voir lib/sharedVault.ts pour toute l'orchestration crypto —
@@ -81,9 +81,15 @@ export default function SharedVaultDetailPage() {
 
   function openEditForm(entry: PlainSharedVaultEntry) {
     setEditingEntry(entry);
+    // CORRECTIF : reprenait auparavant `entry.preferredLoginType === "email" ? "username" :
+    // entry.preferredLoginType` — inversait silencieusement la préférence "email" en "identifiant"
+    // à chaque modification d'une entrée qui préférait l'email (aucun sélecteur n'existait non plus
+    // dans ce formulaire pour la corriger à la main, voir le <select> ajouté plus bas). Une entrée
+    // ainsi modifiée se retrouvait donc avec un `preferredLoginType` erroné, ce qui pouvait faire
+    // remplir automatiquement (côté extension) le mauvais champ à la prochaine utilisation.
     setForm({
       siteName: entry.siteName, username: entry.username, loginEmail: entry.loginEmail,
-      password: entry.password, preferredLoginType: entry.preferredLoginType === "email" ? "username" : entry.preferredLoginType,
+      password: entry.password, preferredLoginType: entry.preferredLoginType,
       notes: entry.notes, url: entry.url,
     });
     setShowEntryForm(true);
@@ -268,6 +274,19 @@ export default function SharedVaultDetailPage() {
               onChange={(e) => setForm((f) => ({ ...f, loginEmail: e.target.value }))}
               className="rounded-lg border border-neutral-300 px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
             />
+            <div>
+              <label className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                Méthode de connexion préférée
+              </label>
+              <select
+                value={form.preferredLoginType}
+                onChange={(e) => setForm((f) => ({ ...f, preferredLoginType: e.target.value as "username" | "email" }))}
+                className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100"
+              >
+                <option value="email">Email</option>
+                <option value="username">Identifiant</option>
+              </select>
+            </div>
             <div className="flex gap-2">
               <input
                 type="text" placeholder="Mot de passe *" value={form.password}
