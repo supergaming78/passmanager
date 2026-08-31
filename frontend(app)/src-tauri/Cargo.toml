@@ -18,6 +18,16 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# CORRECTIF CRITIQUE : TOUTES les dépendances INCONDITIONNELLES (celles qui doivent compiler sur
+# TOUTES les cibles, desktop ET Android/iOS) DOIVENT rester dans CETTE table, avant toute table
+# `[target.'cfg(...)'.dependencies]` — TOML ne permet pas de "rouvrir" `[dependencies]` une seconde
+# fois plus bas dans le fichier (erreur "duplicate key"), et sans un second en-tête `[dependencies]`
+# explicite, tout ce qui suit un `[target.'cfg(...)'.dependencies]` reste rattaché À CETTE table-là,
+# pas à `[dependencies]`. Bug réel rencontré au premier vrai build Android CI : crypto-core/base64/
+# zeroize avaient été ajoutés APRÈS la table `cfg(not(any(target_os = "android"...)))` sans nouvel
+# en-tête — sur Android précisément, où ce cfg est FAUX, les trois crates disparaissaient donc
+# silencieusement du graphe de dépendances ("unresolved import crypto_core/base64/zeroize"), alors
+# que le desktop compilait sans problème (même cfg, vrai là-bas, masquant complètement l'erreur).
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -28,23 +38,6 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# ==========================================
-# Mise à jour automatique (voir lib.rs, tauri.conf.json::plugins.updater)
-# ==========================================
-# DESKTOP UNIQUEMENT : `[target."cfg(not(any(target_os = "android", target_os = "ios")))".dependencies]`
-# plutôt que `[dependencies]` — même piège de portabilité mobile que `windows`/`windows-future`
-# plus bas (voir leur commentaire), sauf qu'ici c'est le plugin officiel Tauri lui-même qui ne
-# supporte pas mobile (l'update d'une app mobile passe par le store — Play Store/App Store — pas
-# par ce mécanisme). L'enregistrement du plugin dans lib.rs est de toute façon aussi gardé par
-# #[cfg(desktop)] (le cfg fourni nativement par Tauri) — le doublon ici évite en plus de tenter de
-# COMPILER une dépendance qui échouerait ou n'aurait aucun sens sur Android.
-[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-updater = "2"
-# Nécessaire pour relancer l'app juste après avoir appliqué une mise à jour téléchargée
-# (`app.restart()` côté JS, voir Settings.tsx) — sans ce plugin, l'utilisateur devrait fermer et
-# rouvrir l'app lui-même après chaque mise à jour.
-tauri-plugin-process = "2"
 
 # ==========================================
 # Cryptographie côté client (Zero-Knowledge)
@@ -71,6 +64,23 @@ crypto-core = { path = "../../crypto-core" }
 # rend pas automatiquement son propre contenu utilisable ici sans être aussi déclarée ici.
 base64 = "0.23.1"
 zeroize = "1"
+
+# ==========================================
+# Mise à jour automatique (voir lib.rs, tauri.conf.json::plugins.updater)
+# ==========================================
+# DESKTOP UNIQUEMENT : `[target."cfg(not(any(target_os = "android", target_os = "ios")))".dependencies]`
+# plutôt que `[dependencies]` — même piège de portabilité mobile que `windows`/`windows-future`
+# plus bas (voir leur commentaire), sauf qu'ici c'est le plugin officiel Tauri lui-même qui ne
+# supporte pas mobile (l'update d'une app mobile passe par le store — Play Store/App Store — pas
+# par ce mécanisme). L'enregistrement du plugin dans lib.rs est de toute façon aussi gardé par
+# #[cfg(desktop)] (le cfg fourni nativement par Tauri) — le doublon ici évite en plus de tenter de
+# COMPILER une dépendance qui échouerait ou n'aurait aucun sens sur Android.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+# Nécessaire pour relancer l'app juste après avoir appliqué une mise à jour téléchargée
+# (`app.restart()` côté JS, voir Settings.tsx) — sans ce plugin, l'utilisateur devrait fermer et
+# rouvrir l'app lui-même après chaque mise à jour.
+tauri-plugin-process = "2"
 
 # ==========================================
 # Déverrouillage rapide (Windows UNIQUEMENT, voir dpapi.rs/quick_unlock.rs)
@@ -104,4 +114,3 @@ windows = { version = "0.61", features = ["Win32_Security_Cryptography", "Win32_
 # 0.2.1) n'est plus le même type que celui portant l'impl IntoFuture (copie 0.3.2 direct), et
 # `.await` échoue à la compilation avec "is not a future".
 windows-future = { version = "0.2.1", features = ["std"] }
-
