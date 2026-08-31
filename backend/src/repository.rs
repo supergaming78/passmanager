@@ -1560,19 +1560,23 @@ pub(crate) const MAX_BUG_REPORTS_TOTAL: i64 = 500;
 pub struct BugReportRepository;
 
 impl BugReportRepository {
+    /// CORRECTIF (repéré en relecture, pas par un incident réel) : la version précédente faisait
+    /// un `SELECT COUNT(*)` PUIS un `INSERT` séparés — un TOCTOU classique (deux requêtes
+    /// concurrentes pourraient toutes les deux lire un compte encore sous la limite, puis toutes
+    /// les deux insérer, dépassant MAX_BUG_REPORTS_TOTAL). Le même motif existe ailleurs dans ce
+    /// fichier (MAX_SHARED_VAULTS_PER_CREATOR, MAX_BLIND_SHARES_PER_OWNER...) mais reste un risque
+    /// accepté LÀ-BAS car ces routes exigent un compte authentifié — ICI, `create()` est appelée
+    /// depuis une route PUBLIQUE/anonyme (voir handlers/bug_report.rs), donc bien plus exposée à
+    /// des appels concurrents délibérés. `INSERT ... SELECT ... WHERE (SELECT COUNT...) < N` : UNE
+    /// SEULE instruction SQL, atomique par nature (SQLite ne peut pas entrelacer l'exécution de
+    /// deux instructions différentes sur la même table), élimine complètement la fenêtre de course
+    /// plutôt que de la rendre juste moins probable.
     pub async fn create(db: &SqlitePool, payload: &CreateBugReportPayload) -> Result<String, AppError> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bug_reports")
-            .fetch_one(db)
-            .await?;
-        if count >= MAX_BUG_REPORTS_TOTAL {
-            return Err(AppError::ValidationError(
-                "Trop de signalements en attente de traitement — réessaie plus tard.".to_string(),
-            ));
-        }
-
         let id = uuid::Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO bug_reports (id, reporter_email, description, app_version, platform, category) VALUES (?, ?, ?, ?, ?, ?)",
+        let res = sqlx::query(
+            "INSERT INTO bug_reports (id, reporter_email, description, app_version, platform, category)
+             SELECT ?, ?, ?, ?, ?, ?
+             WHERE (SELECT COUNT(*) FROM bug_reports) < ?",
         )
         .bind(&id)
         .bind(&payload.reporter_email)
@@ -1580,13 +1584,21 @@ impl BugReportRepository {
         .bind(&payload.app_version)
         .bind(&payload.platform)
         .bind(&payload.category)
+        .bind(MAX_BUG_REPORTS_TOTAL)
         .execute(db)
         .await?;
+
+        if res.rows_affected() == 0 {
+            return Err(AppError::ValidationError(
+                "Trop de signalements en attente de traitement — réessaie plus tard.".to_string(),
+            ));
+        }
 
         Ok(id)
     }
 
-    /// Réservé au modérateur (vérifié dans le handler, comme le reste du panneau Administration).
+    /// Réservé au SEUL Admin (vérifié dans le handler via user.is_admin(&state), PAS is_moderator
+    /// — demande explicite de l'utilisateur, voir handlers/bug_report.rs).
     pub async fn list_all(db: &SqlitePool) -> Result<Vec<BugReportView>, AppError> {
         sqlx::query_as::<_, BugReportView>(
             "SELECT id, reporter_email, description, app_version, platform, category, created_at FROM bug_reports ORDER BY created_at DESC",

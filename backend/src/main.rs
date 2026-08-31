@@ -478,13 +478,14 @@ fn build_router(state: Arc<AppState>) -> Router {
         // connexion, voir models.rs) : sur sensitive_governor, PAS global_governor, exactement comme
         // /auth/register ci-dessus, puisque c'est aussi une route publique/anonyme qui pourrait
         // sinon être utilisée pour remplir la table sans limite réelle. GET/DELETE restent réservés
-        // au modérateur (vérifié dans le handler) et sur global_governor, comme le reste du panneau
+        // au SEUL Admin — PAS un modérateur (vérifié dans le handler via user.is_admin(&state),
+        // demande explicite de l'utilisateur) — et sur global_governor, comme le reste du panneau
         // Administration en lecture (voir /admin/users GET plus haut).
         .merge(Router::new()
             .route("/bug-reports", post(handlers::create_bug_report))
             .route_layer(GovernorLayer::new(sensitive_governor.clone())))
-        .route("/admin/bug-reports", get(handlers::list_bug_reports)) // Modérateur : tous les signalements
-        .route("/admin/bug-reports/{id}", delete(handlers::delete_bug_report)) // Modérateur : marquer traité (suppression)
+        .route("/admin/bug-reports", get(handlers::list_bug_reports)) // Admin SEUL : tous les signalements
+        .route("/admin/bug-reports/{id}", delete(handlers::delete_bug_report)) // Admin SEUL : marquer traité (suppression)
 
         // Application des middlewares globaux de Tower
         .layer(TraceLayer::new_for_http()) // Génère des logs automatiques pour chaque requête HTTP reçue

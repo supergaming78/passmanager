@@ -338,8 +338,17 @@ function BugReportsSection() {
     void load();
   }, [load]);
 
-  async function handleDelete(id: string) {
-    if (!confirm("Marquer ce signalement comme traité (le supprimer de la liste) ?")) return;
+  async function handleDelete(report: BugReportView) {
+    // AVERTISSEMENT EXPLICITE si un email de contact est présent : cette route est PUBLIQUE (voir
+    // POST /bug-reports, accessible sans compte) — n'importe qui a pu y mettre N'IMPORTE QUELLE
+    // adresse, pas forcément la sienne. Marquer "traité" envoie un email à CETTE adresse (voir
+    // mailer::send_bug_report_resolved côté serveur) — sans cet avertissement, il serait facile de
+    // cliquer sans réaliser qu'un tiers potentiellement non consentant en reçoit un.
+    const warning = report.reporter_email
+      ? `Marquer ce signalement comme traité ? Un email sera envoyé à "${report.reporter_email}" — cette adresse n'a jamais été vérifiée (le formulaire est accessible sans compte), assure-toi qu'elle a un sens avant de continuer.`
+      : "Marquer ce signalement comme traité (le supprimer de la liste) ?";
+    if (!confirm(warning)) return;
+    const id = report.id;
     setBusyId(id);
     setError(null);
     try {
@@ -371,7 +380,7 @@ function BugReportsSection() {
             <button
               type="button"
               disabled={busyId === report.id}
-              onClick={() => void handleDelete(report.id)}
+              onClick={() => void handleDelete(report)}
               className="shrink-0 rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
             >
               Marquer traité

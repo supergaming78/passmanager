@@ -159,6 +159,19 @@ export default function BugReportModal({ onClose, defaultEmail, initialDescripti
               placeholder="Ce qui s'est passé, ce que tu attendais à la place..."
               className="w-full rounded-lg border border-neutral-300 px-3 py-2 font-mono text-xs outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-950"
             />
+
+            {/* Transparence : le bloc technique est composé silencieusement à l'envoi (voir
+                composeFinalDescription) — sans cet aperçu, la personne n'aurait aucun moyen de voir
+                ce qui est réellement joint avant que ce soit parti. Repliable par défaut : utile à
+                vérifier, pas la peine de l'imposer visuellement à chaque fois. */}
+            <details className="rounded-lg border border-neutral-200 dark:border-neutral-800">
+              <summary className="cursor-pointer px-3 py-1.5 text-xs font-medium text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300">
+                Voir les informations techniques jointes automatiquement
+              </summary>
+              <pre className="whitespace-pre-wrap break-words border-t border-neutral-200 px-3 py-2 text-[11px] text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+                {`Écran : ${currentScreen}\nBackend : ${backendStatus}\nJournal récent :\n${getRecentDiagnosticLog()}`}
+              </pre>
+            </details>
             <div>
               <label className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-400">
                 Email de contact (facultatif)
