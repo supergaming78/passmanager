@@ -103,6 +103,17 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ steps.clean-secrets.outputs.key }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ steps.clean-secrets.outputs.password }}
+          # CORRECTIF, trouvé au run précédent : "Error: No artifacts were found" alors que le
+          # build ET l'empaquetage avaient RÉUSSI (voir les logs — .dmg/.app/.tar.gz.sig bien
+          # produits). Cause : ce dépôt est un WORKSPACE Cargo (voir Cargo.toml racine, qui inclut
+          # frontend(app)/src-tauri comme membre) — Cargo met alors TOUJOURS la sortie de build dans
+          # UN SEUL `target/` À LA RACINE DU DÉPÔT, partagé entre tous les membres, jamais un
+          # `target/` local à chaque membre. tauri-action, lui, cherche les artefacts à l'endroit
+          # conventionnel d'un projet Tauri SANS workspace (`frontend(app)/src-tauri/target/`) — un
+          # dossier qui n'existe tout simplement pas ici. CARGO_TARGET_DIR force Cargo à écrire là où
+          # tauri-action regarde, sans rien changer au reste (dev local inclus, cette variable n'est
+          # définie que pour cette étape de CI).
+          CARGO_TARGET_DIR: ${{ github.workspace }}/frontend(app)/src-tauri/target
         with:
           projectPath: "frontend(app)"
           tagName: app-v__VERSION__
