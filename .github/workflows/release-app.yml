@@ -36,6 +36,15 @@ on:
     tags:
       - "app-v*"
 
+# CORRECTIF, trouvé au run précédent : "Error: Resource not accessible by integration" en essayant
+# de créer la release — le GITHUB_TOKEN fourni automatiquement est en LECTURE SEULE par défaut sur
+# les dépôts créés récemment (réglage de sécurité GitHub), quel que soit ce que les secrets/étapes
+# du workflow font par ailleurs. `contents: write` ici, explicitement dans le fichier, évite de
+# dépendre d'un réglage caché dans Settings > Actions > General à retrouver/changer sur GitHub —
+# le workflow reste portable et fonctionne tel quel sur n'importe quel dépôt.
+permissions:
+  contents: write
+
 jobs:
   desktop:
     strategy:
