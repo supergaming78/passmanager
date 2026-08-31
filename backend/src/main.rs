@@ -255,6 +255,22 @@ fn build_router(state: Arc<AppState>) -> Router {
             .finish()
             .unwrap()
     );
+    // Palier DÉDIÉ à POST /bug-reports — CORRECTIF (demande explicite de l'utilisateur) : cette
+    // route partageait auparavant sensitive_governor (4 req/s, réservé au brute-force sur des
+    // endpoints d'authentification — register/login/reset...), un seuil pensé pour empêcher de
+    // deviner un mot de passe, pas pour un usage familial normal. Plusieurs personnes derrière la
+    // MÊME IP (box internet partagée) signalant un bug à quelques secondes d'écart pouvaient se
+    // bloquer mutuellement. Deux fois plus permissif que sensitive_governor, mais toujours bien EN
+    // DEÇÀ de global_governor (40/s) — cette route reste publique/anonyme, un abus délibéré (voir
+    // aussi MAX_BUG_REPORTS_TOTAL et son insertion atomique, repository.rs) doit rester coûteux.
+    let bug_report_governor = Arc::new(
+        tower_governor::governor::GovernorConfigBuilder::default()
+            .per_second(8)
+            .burst_size(16)
+            .key_extractor(ip_key_extractor)
+            .finish()
+            .unwrap()
+    );
     let auth_governor = Arc::new(
         tower_governor::governor::GovernorConfigBuilder::default()
             .per_second(15)
@@ -475,15 +491,16 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/blind-shares/{id}", delete(handlers::revoke_blind_share)) // Révoquer (l'un ou l'autre côté, à tout moment)
 
         // Signalement de bug (voir handlers/bug_report.rs) — POST est PUBLIC (accessible même sans
-        // connexion, voir models.rs) : sur sensitive_governor, PAS global_governor, exactement comme
-        // /auth/register ci-dessus, puisque c'est aussi une route publique/anonyme qui pourrait
-        // sinon être utilisée pour remplir la table sans limite réelle. GET/DELETE restent réservés
-        // au SEUL Admin — PAS un modérateur (vérifié dans le handler via user.is_admin(&state),
-        // demande explicite de l'utilisateur) — et sur global_governor, comme le reste du panneau
-        // Administration en lecture (voir /admin/users GET plus haut).
+        // connexion, voir models.rs) : sur bug_report_governor (voir sa déclaration plus haut pour
+        // le raisonnement — deux fois plus permissif que sensitive_governor, mais toujours PAS
+        // global_governor, cette route publique/anonyme doit rester plus protégée que le reste de
+        // l'API). GET/DELETE restent réservés au SEUL Admin — PAS un modérateur (vérifié dans le
+        // handler via user.is_admin(&state), demande explicite de l'utilisateur) — et sur
+        // global_governor, comme le reste du panneau Administration en lecture (voir /admin/users
+        // GET plus haut).
         .merge(Router::new()
             .route("/bug-reports", post(handlers::create_bug_report))
-            .route_layer(GovernorLayer::new(sensitive_governor.clone())))
+            .route_layer(GovernorLayer::new(bug_report_governor)))
         .route("/admin/bug-reports", get(handlers::list_bug_reports)) // Admin SEUL : tous les signalements
         .route("/admin/bug-reports/{id}", delete(handlers::delete_bug_report)) // Admin SEUL : marquer traité (suppression)
 

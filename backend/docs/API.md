@@ -77,6 +77,7 @@ explicitement déclaré derrière un reverse proxy de confiance) :
 | Palier | Routes concernées | Limite |
 |---|---|---|
 | Sensible | `POST /auth/register`, `/login`, `/verify-email`, `/resend-verification`, `/forgot-password`, `/reset-password`, `/verify-device` ; `PUT /auth/email`, `/auth/password` ; `PUT /admin/users/{email}/role`, `/admin/users/{email}/email`, `/admin/users/{email}/extension-email-change`, `/admin/users/extension-email-change-all` ; `POST /admin/users/{email}/revoke-sessions` ; `DELETE /admin/users/{email}` | 4 req/s, rafale de 8 |
+| Signalement de bug | `POST /bug-reports` | 8 req/s, rafale de 16 — palier dédié, plus permissif que "Sensible" (pas de risque de brute-force ici, juste éviter qu'une famille derrière la même IP se bloque mutuellement) mais toujours en deçà du palier Global |
 | Auth (reste) | `POST /auth/logout`, `/refresh` | 15 req/s, rafale de 30 |
 | Global | Toutes les autres routes (`/vault/*`, `/devices/*`, `/ws/*`, `/me`, `/audit`, `GET /admin/users`...) | 40 req/s, rafale de 80 |
 
@@ -1209,9 +1210,10 @@ un texte technique destiné à être lu directement par un modérateur, pas une 
 
 **Route PUBLIQUE — aucune authentification requise.** Accessible même sans compte/connexion,
 volontairement : un bug qui empêche justement de se connecter doit pouvoir être signalé depuis
-l'app elle-même. Rate-limitée strictement (voir `sensitive_governor`, 4 req/s par IP, même palier
-que `/auth/register`) et plafonnée à 500 signalements en attente au total (au-delà, `400` — protège
-contre un remplissage de la table par une route anonyme).
+l'app elle-même. Rate-limitée (voir `bug_report_governor`, 8 req/s par IP — palier dédié, plus
+permissif que le palier "Sensible" réservé au brute-force sur l'authentification) et plafonnée à
+500 signalements en attente au total via une insertion SQL atomique (au-delà, `400` — protège
+contre un remplissage de la table par une route anonyme, sans fenêtre de course exploitable).
 
 | Champ | Type | Obligatoire |
 |---|---|---|
