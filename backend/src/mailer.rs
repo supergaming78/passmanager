@@ -143,6 +143,29 @@ pub async fn send_reset_email(to_email: &str, code: &str, config: &crate::config
     Ok(())
 }
 
+/// Prévient la personne qui a signalé un bug (si elle a laissé son email) que le modérateur l'a
+/// marqué traité — voir handlers/bug_report.rs::delete_bug_report, appelée en `let _ =` (best
+/// effort, ne fait jamais échouer la suppression elle-même si l'envoi rate).
+pub async fn send_bug_report_resolved(to_email: &str, description_snippet: &str, config: &crate::config::Config) -> Result<(), AppError> {
+    let email = Message::builder()
+        .from(parse_sender(format!("Mon App <{}>", config.smtp_user))?)
+        .to(parse_recipient(to_email)?)
+        .subject("Ton signalement de bug a été traité")
+        .body(format!(
+            "Bonjour,\n\nLe bug que tu avais signalé (\"{}\") a été marqué comme traité.\n\nMerci pour ton signalement !",
+            description_snippet
+        ))
+        .map_err(|_| AppError::Internal("Erreur construction email".to_string()))?;
+
+    let mailer = get_mailer(config)?;
+    mailer.send(email).await.map_err(|e| {
+        error!(target: "mailer", error = ?e, "échec d'envoi de l'email de suivi de signalement de bug");
+        AppError::Internal("Échec envoi suivi signalement".to_string())
+    })?;
+
+    Ok(())
+}
+
 // =========================================================================
 // TESTS
 // =========================================================================

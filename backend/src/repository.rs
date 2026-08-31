@@ -1572,13 +1572,14 @@ impl BugReportRepository {
 
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO bug_reports (id, reporter_email, description, app_version, platform) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO bug_reports (id, reporter_email, description, app_version, platform, category) VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&payload.reporter_email)
         .bind(&payload.description)
         .bind(&payload.app_version)
         .bind(&payload.platform)
+        .bind(&payload.category)
         .execute(db)
         .await?;
 
@@ -1588,7 +1589,7 @@ impl BugReportRepository {
     /// Réservé au modérateur (vérifié dans le handler, comme le reste du panneau Administration).
     pub async fn list_all(db: &SqlitePool) -> Result<Vec<BugReportView>, AppError> {
         sqlx::query_as::<_, BugReportView>(
-            "SELECT id, reporter_email, description, app_version, platform, created_at FROM bug_reports ORDER BY created_at DESC",
+            "SELECT id, reporter_email, description, app_version, platform, category, created_at FROM bug_reports ORDER BY created_at DESC",
         )
         .fetch_all(db)
         .await
@@ -1597,14 +1598,26 @@ impl BugReportRepository {
 
     /// Supprime un signalement une fois traité — pas de statut "résolu" séparé dans cette première
     /// version, la suppression EST la façon de marquer "traité" (garde le panneau simple à trier).
-    pub async fn delete(db: &SqlitePool, id: &str) -> Result<(), AppError> {
-        let res = sqlx::query("DELETE FROM bug_reports WHERE id = ?")
-            .bind(id)
-            .execute(db)
-            .await?;
-        if res.rows_affected() == 0 {
-            return Err(AppError::NotFound);
-        }
-        Ok(())
+    /// `RETURNING` (lecture + suppression en UNE requête atomique, même pattern déjà utilisé pour
+    /// les ws_tickets/refresh tokens ailleurs dans ce fichier) : le handler s'en sert pour prévenir
+    /// la personne par email si elle en avait laissé un — voir mailer::send_bug_report_resolved.
+    pub async fn delete(db: &SqlitePool, id: &str) -> Result<DeletedBugReport, AppError> {
+        let deleted: Option<DeletedBugReport> = sqlx::query_as::<_, DeletedBugReport>(
+            "DELETE FROM bug_reports WHERE id = ? RETURNING reporter_email, description",
+        )
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
+
+        deleted.ok_or(AppError::NotFound)
     }
+}
+
+/// Résultat de BugReportRepository::delete() — juste ce qu'il faut pour, éventuellement, prévenir
+/// la personne (voir handlers/bug_report.rs::delete_bug_report). Pas un type public de models.rs :
+/// n'a de sens que comme valeur de retour interne à ce repository.
+#[derive(sqlx::FromRow)]
+pub struct DeletedBugReport {
+    pub reporter_email: Option<String>,
+    pub description: String,
 }

@@ -14,7 +14,7 @@ use axum::{
 };
 use std::sync::Arc;
 use tracing::warn;
-use crate::{AppState, error::AppError, middleware::AuthUser, repository::BugReportRepository, models::CreateBugReportPayload};
+use crate::{AppState, error::AppError, mailer, middleware::AuthUser, repository::BugReportRepository, models::CreateBugReportPayload};
 use validator::Validate;
 
 /// Route PUBLIQUE — aucun `AuthUser` en paramètre, volontairement (voir le commentaire en tête de
@@ -44,7 +44,9 @@ pub async fn list_bug_reports(State(state): State<Arc<AppState>>, user: AuthUser
 
 /// Réservé au modérateur — supprime le signalement (voir BugReportRepository::delete, pas de
 /// statut "résolu" séparé dans cette première version : la suppression EST la façon de marquer
-/// "traité").
+/// "traité"). Si un email de contact avait été laissé, prévient la personne — en `let _ =`
+/// (best-effort, un échec d'envoi ne doit jamais faire échouer la suppression elle-même, comme
+/// tous les autres envois "de courtoisie" de cette app, voir invite_shared_vault_member par ex.).
 pub async fn delete_bug_report(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
@@ -55,7 +57,15 @@ pub async fn delete_bug_report(
         return Err(AppError::Forbidden);
     }
 
-    BugReportRepository::delete(&state.db, &id).await?;
+    let deleted = BugReportRepository::delete(&state.db, &id).await?;
+
+    if let Some(reporter_email) = deleted.reporter_email {
+        // Tronqué à 200 caractères pour l'email de suivi — pas la peine de renvoyer les 4000
+        // caractères possibles d'une description dans un simple rappel de courtoisie.
+        let snippet: String = deleted.description.chars().take(200).collect();
+        let _ = mailer::send_bug_report_resolved(&reporter_email, &snippet, &state.config).await;
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -124,6 +134,7 @@ mod tests {
             reporter_email: Some("quelqu-un@example.com".to_string()),
             app_version: "0.1.0".to_string(),
             platform: "Windows".to_string(),
+            category: "Autre".to_string(),
         }
     }
 

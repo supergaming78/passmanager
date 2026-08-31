@@ -452,11 +452,16 @@ export interface BlindShareCredentialsView {
 // connecter doit pouvoir être signalé depuis l'app elle-même. PAS chiffré : un texte technique
 // destiné à être lu par un modérateur, pas une donnée du coffre. ---
 
+/** Liste fermée, voir BugReportModal.tsx — le backend accepte n'importe quelle chaîne (1-30
+ * caractères, voir models.rs::CreateBugReportPayload) mais ne propose que ces choix côté UI. */
+export type BugReportCategory = "Affichage" | "Synchronisation" | "Plantage" | "Autre";
+
 export interface CreateBugReportPayload {
   description: string;
   reporter_email?: string;
   app_version: string;
   platform: string;
+  category: BugReportCategory;
 }
 
 /** Vue modérateur (GET /admin/bug-reports). */
@@ -466,6 +471,7 @@ export interface BugReportView {
   description: string;
   app_version: string;
   platform: string;
+  category: string;
   created_at: string;
 }
 

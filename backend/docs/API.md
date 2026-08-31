@@ -1216,9 +1216,10 @@ contre un remplissage de la table par une route anonyme).
 | Champ | Type | Obligatoire |
 |---|---|---|
 | `description` | string (1-4000) | oui |
-| `reporter_email` | string (email) | non — simple info de contact, jamais vérifiée contre un compte |
+| `reporter_email` | string (email) | non — simple info de contact, jamais vérifiée contre un compte, sert aussi à prévenir la personne quand le signalement est marqué traité (voir `DELETE /admin/bug-reports/{id}`) |
 | `app_version` | string (1-50) | oui |
 | `platform` | string (1-50) | oui |
+| `category` | string (1-30) | non — "Autre" par défaut si absent, n'importe quelle chaîne est acceptée (liste fermée uniquement côté client, voir `BugReportModal.tsx`) |
 
 **Réponse** : `201 Created` :
 ```json
@@ -1239,6 +1240,7 @@ au plus ancien.
   "description": "...",
   "app_version": "0.1.0",
   "platform": "Windows",
+  "category": "Plantage",
   "created_at": "..."
 }]
 ```
@@ -1248,6 +1250,10 @@ au plus ancien.
 
 *Authentification requise, réservé aux modérateurs.* Supprime un signalement — pas de statut
 "résolu" séparé, la suppression EST la façon de le marquer traité.
+
+**Effets de bord** : si un `reporter_email` avait été laissé, un email de courtoisie lui est envoyé
+("ton signalement a été traité") — best-effort, un échec d'envoi ne fait jamais échouer la
+suppression elle-même.
 
 **Réponse** : `204 No Content`.
 **Erreurs** : `403` non-modérateur. `404` signalement inconnu.

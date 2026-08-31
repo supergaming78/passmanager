@@ -362,6 +362,9 @@ function BugReportsSection() {
         <li key={report.id} className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-800">
           <div className="mb-1 flex items-center justify-between gap-2">
             <span className="text-xs text-neutral-500">
+              <span className="mr-1.5 rounded-full bg-neutral-100 px-2 py-0.5 font-medium text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300">
+                {report.category}
+              </span>
               {new Date(report.created_at).toLocaleString()} · {report.platform} · v{report.app_version}
               {report.reporter_email && <> · {report.reporter_email}</>}
             </span>

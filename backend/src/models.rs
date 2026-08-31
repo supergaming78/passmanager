@@ -933,18 +933,32 @@ pub struct BlindShareCredentialsView {
 // un bug qui empêche justement de se connecter doit pouvoir être signalé depuis l'app elle-même.
 // =========================================================================
 
+/// "Autre" si le client n'envoie rien — jamais bloquant, cette catégorie n'est qu'un aide au tri
+/// côté Administration, pas une donnée qui doit faire échouer l'envoi si absente.
+fn default_bug_category() -> String {
+    "Autre".to_string()
+}
+
 #[derive(Deserialize, Validate)]
 pub struct CreateBugReportPayload {
     #[validate(length(min = 1, max = 4000, message = "La description doit faire entre 1 et 4000 caractères"))]
     pub description: String,
     /// Facultatif — pré-rempli côté client avec l'email du compte connecté s'il y en a un
     /// (éditable), mais JAMAIS vérifié contre un vrai compte : une simple information de contact.
+    /// Sert aussi à prévenir la personne quand le modérateur marque le signalement traité (voir
+    /// BugReportRepository::delete/mailer::send_bug_report_resolved).
     #[validate(email(message = "Format d'email invalide"))]
     pub reporter_email: Option<String>,
     #[validate(length(min = 1, max = 50))]
     pub app_version: String,
     #[validate(length(min = 1, max = 50))]
     pub platform: String,
+    /// Choisie dans une liste fermée côté client (voir BugReportModal.tsx) mais volontairement
+    /// PAS un enum ici — une valeur imprévue ne doit jamais faire échouer tout l'envoi, juste
+    /// atterrir telle quelle dans la colonne (Administration l'affiche brute).
+    #[serde(default = "default_bug_category")]
+    #[validate(length(min = 1, max = 30))]
+    pub category: String,
 }
 
 /// Un signalement de bug vu par un modérateur (GET /admin/bug-reports).
@@ -955,6 +969,7 @@ pub struct BugReportView {
     pub description: String,
     pub app_version: String,
     pub platform: String,
+    pub category: String,
     pub created_at: chrono::NaiveDateTime,
 }
 
