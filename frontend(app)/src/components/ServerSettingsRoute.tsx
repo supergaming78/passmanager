@@ -1,23 +1,27 @@
 import type { ReactNode } from "react";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
-import { isDev } from "../lib/env";
 
 /**
- * Garde d'accès à /server (voir pages/ServerSettings.tsx) : réservé aux développeurs (build de
- * dev, voir lib/env.ts) et aux modérateurs (ou l'Admin) déjà connectés — pas à un utilisateur
- * final en production, qui n'a aucune raison de changer à quel backend l'app se connecte. En
- * production ET pas encore connecté, impossible de vérifier isModerator (pas de session) : on
- * redirige vers /login plutôt que de laisser passer par défaut.
+ * Garde d'accès à /server (voir pages/ServerSettings.tsx) — DEUX cas d'accès légitimes, PAS UN
+ * SEUL :
+ * 1. Pas encore connecté (build de dev OU production, `isDev` ou pas) — premier lancement, aucun
+ *    compte/session n'existe encore, cet écran est justement ce qui permet de pointer l'app vers
+ *    le bon backend AVANT de pouvoir s'inscrire/se connecter (voir le commentaire en tête de
+ *    ServerSettings.tsx — un problème de l'œuf et de la poule, PAS quelque chose à restreindre).
+ * 2. Déjà connecté ET modérateur (ou l'Admin) — repointer une app DÉJÀ configurée et utilisée vers
+ *    un autre serveur reste réservé à un modérateur, pour qu'un compte familial normal ne puisse
+ *    pas être amené (erreur, ingénierie sociale) à envoyer son mot de passe maître vers un serveur
+ *    différent de celui prévu.
+ * CORRECTIF : la version précédente bloquait aussi le cas 1 en production (seul `isDev` passait),
+ * rendant impossible tout premier lancement pointé vers un backend auto-hébergé pour quiconque
+ * n'est pas déjà modérateur — cassant exactement le scénario que ce fichier a été écrit pour
+ * résoudre (voir ServerSettings.tsx), et bloquant purement et simplement l'installation de l'app
+ * par la famille/les proches visés par ce projet.
  */
 export default function ServerSettingsRoute({ children }: { children: ReactNode }) {
-  // useAuth() appelé inconditionnellement (règle des Hooks) même si isDev court-circuite le
-  // résultat juste en dessous — isDev est une constante figée à la compilation, jamais un état
-  // qui changerait entre deux rendus, donc aucun risque réel de bascule de branche en cours de
-  // session, mais on respecte quand même l'ordre d'appel attendu par React.
   const { isAuthenticated, isModerator } = useAuth();
-  if (isDev) return <>{children}</>;
-  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (!isAuthenticated) return <>{children}</>;
   if (!isModerator) return <Navigate to="/vault" replace />;
   return <>{children}</>;
 }

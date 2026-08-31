@@ -2,7 +2,6 @@ import { useState, type FormEvent } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import { getErrorMessage } from "../lib/errors";
-import { isDev } from "../lib/env";
 import AuthCard from "../components/AuthCard";
 
 interface LocationState {
@@ -106,13 +105,16 @@ export default function Login() {
           Créer un compte
         </Link>
       </div>
-      {isDev && (
-        <div className="mt-3 text-center">
-          <Link to="/server" className="text-xs text-neutral-400 hover:underline dark:text-neutral-500">
-            Configurer le serveur
-          </Link>
-        </div>
-      )}
+      {/* CORRECTIF : affiché auparavant seulement en dev (`isDev &&`), rendant ce lien introuvable
+          en production — hors, c'est le SEUL chemin pour un premier lancement de pointer l'app vers
+          le bon backend auto-hébergé avant même de pouvoir se connecter (voir ServerSettings.tsx et
+          ServerSettingsRoute.tsx). Toujours affiché, discrètement, pour ne pas distraire un
+          utilisateur déjà correctement configuré. */}
+      <div className="mt-3 text-center">
+        <Link to="/server" className="text-xs text-neutral-400 hover:underline dark:text-neutral-500">
+          Configurer le serveur
+        </Link>
+      </div>
     </AuthCard>
   );
 }
