@@ -385,6 +385,12 @@ function BugReportsSection() {
 }
 
 export default function Admin() {
+  // isAdmin : vrai UNIQUEMENT pour le compte ADMIN_EMAIL (voir la note en tête de UsersSection) —
+  // les signalements de bug sont réservés au SEUL Admin, PAS aux modérateurs (demande explicite),
+  // contrairement au reste de cet écran. Masqué ici en plus de la garde côté serveur (déjà
+  // suffisante à elle seule) : un modérateur ne doit même pas voir la section exister.
+  const { isAdmin } = useAuth();
+
   return (
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
       <div className="mx-auto flex max-w-3xl flex-col gap-4">
@@ -403,9 +409,11 @@ export default function Admin() {
           <AuditSection />
         </Section>
 
-        <Section title="Signalements de bug (desktop/Android)">
-          <BugReportsSection />
-        </Section>
+        {isAdmin && (
+          <Section title="Signalements de bug (desktop/Android) — visible par toi seul">
+            <BugReportsSection />
+          </Section>
+        )}
 
         <Section title="Serveur (cet appareil uniquement)">
           <ServerUrlForm />

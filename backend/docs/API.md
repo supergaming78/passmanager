@@ -1229,8 +1229,10 @@ contre un remplissage de la table par une route anonyme).
 
 ### `GET /admin/bug-reports`
 
-*Authentification requise, réservé aux modérateurs.* Liste tous les signalements, du plus récent
-au plus ancien.
+*Authentification requise, réservé au SEUL Admin (`ADMIN_EMAIL`) — PAS aux modérateurs*,
+contrairement au reste de ce panneau (demande explicite : les signalements peuvent contenir des
+détails techniques que le propriétaire de l'instance préfère garder pour lui seul). Liste tous les
+signalements, du plus récent au plus ancien.
 
 **Réponse** : `200 OK` :
 ```json
@@ -1244,19 +1246,21 @@ au plus ancien.
   "created_at": "..."
 }]
 ```
-**Erreurs** : `403` si l'appelant n'est pas modérateur.
+**Erreurs** : `403` si l'appelant n'est pas l'Admin (même un modérateur reçoit `403`).
 
 ### `DELETE /admin/bug-reports/{id}`
 
-*Authentification requise, réservé aux modérateurs.* Supprime un signalement — pas de statut
-"résolu" séparé, la suppression EST la façon de le marquer traité.
+*Authentification requise, réservé au SEUL Admin — même restriction que `GET /admin/bug-reports`
+ci-dessus.* Supprime un signalement — pas de statut "résolu" séparé, la suppression EST la façon de
+le marquer traité.
 
 **Effets de bord** : si un `reporter_email` avait été laissé, un email de courtoisie lui est envoyé
 ("ton signalement a été traité") — best-effort, un échec d'envoi ne fait jamais échouer la
 suppression elle-même.
 
 **Réponse** : `204 No Content`.
-**Erreurs** : `403` non-modérateur. `404` signalement inconnu.
+**Erreurs** : `403` si l'appelant n'est pas l'Admin (même un modérateur reçoit `403`). `404`
+signalement inconnu.
 
 ## Endpoints — Divers
 

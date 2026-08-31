@@ -31,10 +31,14 @@ pub async fn create_bug_report(
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
 }
 
-/// Réservé au modérateur.
+/// Réservé au SEUL Admin (`user.is_admin(&state)`, vrai uniquement pour le compte `ADMIN_EMAIL` —
+/// voir middleware.rs) — PAS un modérateur, contrairement au reste du panneau Administration.
+/// Demande explicite de l'utilisateur : les signalements de bug peuvent contenir des détails
+/// techniques (journal de diagnostic, écran, éventuel email de contact) qu'il préfère garder
+/// visibles uniquement par lui, même vis-à-vis de modérateurs de confiance par ailleurs.
 pub async fn list_bug_reports(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
-    if !user.is_moderator {
-        warn!("Tentative d'accès non autorisé aux signalements de bug par {}", user.email);
+    if !user.is_admin(&state) {
+        warn!("Tentative d'accès non autorisé aux signalements de bug par {} (pas l'Admin)", user.email);
         return Err(AppError::Forbidden);
     }
 
@@ -42,18 +46,19 @@ pub async fn list_bug_reports(State(state): State<Arc<AppState>>, user: AuthUser
     Ok(Json(reports))
 }
 
-/// Réservé au modérateur — supprime le signalement (voir BugReportRepository::delete, pas de
-/// statut "résolu" séparé dans cette première version : la suppression EST la façon de marquer
-/// "traité"). Si un email de contact avait été laissé, prévient la personne — en `let _ =`
-/// (best-effort, un échec d'envoi ne doit jamais faire échouer la suppression elle-même, comme
-/// tous les autres envois "de courtoisie" de cette app, voir invite_shared_vault_member par ex.).
+/// Réservé au SEUL Admin (voir list_bug_reports ci-dessus pour le raisonnement) — supprime le
+/// signalement (voir BugReportRepository::delete, pas de statut "résolu" séparé dans cette première
+/// version : la suppression EST la façon de marquer "traité"). Si un email de contact avait été
+/// laissé, prévient la personne — en `let _ =` (best-effort, un échec d'envoi ne doit jamais faire
+/// échouer la suppression elle-même, comme tous les autres envois "de courtoisie" de cette app,
+/// voir invite_shared_vault_member par ex.).
 pub async fn delete_bug_report(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    if !user.is_moderator {
-        warn!("Tentative de suppression non autorisée d'un signalement de bug par {}", user.email);
+    if !user.is_admin(&state) {
+        warn!("Tentative de suppression non autorisée d'un signalement de bug par {} (pas l'Admin)", user.email);
         return Err(AppError::Forbidden);
     }
 
@@ -123,6 +128,24 @@ mod tests {
         AuthUser { email: email.to_string(), is_moderator }
     }
 
+    /// Variante de build_test_state() avec `ADMIN_EMAIL` configuré (même pattern que
+    /// handlers/admin.rs::build_test_state_with_admin_email — nécessaire ici puisque
+    /// list_bug_reports/delete_bug_report sont réservés au SEUL Admin, calculé depuis cette
+    /// config, jamais depuis is_moderator).
+    async fn build_test_state_with_admin_email(admin_email: &str) -> Arc<AppState> {
+        let state = build_test_state().await;
+        Arc::new(AppState {
+            encoding_key: state.encoding_key.clone(),
+            decoding_key: state.decoding_key.clone(),
+            app_env: state.app_env.clone(),
+            db: state.db.clone(),
+            config: Config { admin_email: Some(admin_email.to_lowercase()), ..state.config.clone() },
+            sync_tx: state.sync_tx.clone(),
+            shutdown_tx: state.shutdown_tx.clone(),
+            ws_connections: state.ws_connections.clone(),
+        })
+    }
+
     async fn read_json_body(response: axum::response::Response) -> serde_json::Value {
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).expect("le corps doit être du JSON valide")
@@ -158,29 +181,38 @@ mod tests {
         assert!(result.is_ok(), "l'email de contact doit rester facultatif");
     }
 
+    /// RÉGRESSION : réservé au SEUL Admin — ni un compte ordinaire, NI un modérateur (même promu)
+    /// ne doit pouvoir consulter les signalements de bug (demande explicite de l'utilisateur).
     #[tokio::test]
-    async fn test_only_moderator_can_list_bug_reports() {
-        let state = build_test_state().await;
+    async fn test_only_admin_can_list_bug_reports() {
+        let state = build_test_state_with_admin_email("admin@example.com").await;
         create_bug_report(State(state.clone()), Json(sample_payload("Bug visible"))).await.unwrap();
 
         let stranger_attempt = list_bug_reports(State(state.clone()), auth("stranger@example.com", false)).await;
-        assert!(matches!(stranger_attempt, Err(AppError::Forbidden)), "un compte non-modérateur ne doit jamais voir les signalements");
+        assert!(matches!(stranger_attempt, Err(AppError::Forbidden)), "un compte ordinaire ne doit jamais voir les signalements");
 
-        let moderator_list = read_json_body(list_bug_reports(State(state.clone()), auth("mod@example.com", true)).await.unwrap().into_response()).await;
-        assert_eq!(moderator_list.as_array().unwrap().len(), 1);
+        let moderator_attempt = list_bug_reports(State(state.clone()), auth("mod@example.com", true)).await;
+        assert!(matches!(moderator_attempt, Err(AppError::Forbidden)), "un modérateur (même promu, pas l'Admin) ne doit PAS voir les signalements");
+
+        let admin_list = read_json_body(list_bug_reports(State(state.clone()), auth("admin@example.com", true)).await.unwrap().into_response()).await;
+        assert_eq!(admin_list.as_array().unwrap().len(), 1, "seul l'Admin doit voir les signalements");
     }
 
+    /// RÉGRESSION : même garde-fou que ci-dessus, côté suppression.
     #[tokio::test]
-    async fn test_only_moderator_can_delete_bug_report() {
-        let state = build_test_state().await;
+    async fn test_only_admin_can_delete_bug_report() {
+        let state = build_test_state_with_admin_email("admin2@example.com").await;
         let create_result = create_bug_report(State(state.clone()), Json(sample_payload("À supprimer"))).await.unwrap();
         let id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         let stranger_attempt = delete_bug_report(State(state.clone()), auth("stranger2@example.com", false), Path(id.clone())).await;
         assert!(matches!(stranger_attempt, Err(AppError::Forbidden)));
 
-        delete_bug_report(State(state.clone()), auth("mod2@example.com", true), Path(id)).await
-            .expect("un modérateur doit pouvoir supprimer un signalement traité");
+        let moderator_attempt = delete_bug_report(State(state.clone()), auth("mod2@example.com", true), Path(id.clone())).await;
+        assert!(matches!(moderator_attempt, Err(AppError::Forbidden)), "un modérateur (même promu, pas l'Admin) ne doit PAS pouvoir supprimer un signalement");
+
+        delete_bug_report(State(state.clone()), auth("admin2@example.com", true), Path(id)).await
+            .expect("seul l'Admin doit pouvoir supprimer/marquer traité un signalement");
     }
 
     #[tokio::test]
