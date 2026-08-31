@@ -221,7 +221,13 @@ jobs:
           # (ex: "app-v1.2.3") — pas la partie après "app-v" seule. Rajouter le préfixe ici
           # produirait "app-vapp-v1.2.3", un tag qui ne correspondrait à AUCUNE release existante.
           tag_name: ${{ github.ref_name }}
-          files: "frontend(app)/src-tauri/gen/android/app/build/outputs/apk/release/*.apk"
+          # CORRECTIF, trouvé au premier vrai run : job "réussi" mais l'APK absent de la release —
+          # ce chemin ne correspondait à rien (aucune erreur levée pour autant, juste 0 fichier
+          # uploadé en silence). Sans `--split-per-abi`, Tauri place l'APK "universel" sous un
+          # sous-dossier `universal/` supplémentaire (`.../apk/universal/release/`), pas directement
+          # sous `.../apk/release/` comme pour un build avec cibles séparées — vérifié contre le
+          # comportement documenté de Tauri, pas juste deviné une seconde fois.
+          files: "frontend(app)/src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk"
           # IMPORTANT : `draft: true` est nécessaire ici pour PRÉSERVER le brouillon créé par le
           # job desktop — si ce champ est omis, cette action publie automatiquement la release en
           # l'ajoutant, ce qui la rendrait visible aux utilisateurs AVANT toute relecture manuelle.
