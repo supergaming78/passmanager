@@ -926,6 +926,39 @@ pub struct BlindShareCredentialsView {
 
 
 // =========================================================================
+// 5quater. SIGNALEMENT DE BUG — voir migration 20260901000000_bug_reports.sql et
+// handlers/bug_report.rs. PAS chiffré (contrairement au coffre) : un texte technique écrit par
+// l'utilisateur, destiné à être lu directement par un modérateur, pas une donnée du coffre.
+// Accessible SANS connexion (voir POST /bug-reports, route publique mais fortement rate-limitée) :
+// un bug qui empêche justement de se connecter doit pouvoir être signalé depuis l'app elle-même.
+// =========================================================================
+
+#[derive(Deserialize, Validate)]
+pub struct CreateBugReportPayload {
+    #[validate(length(min = 1, max = 4000, message = "La description doit faire entre 1 et 4000 caractères"))]
+    pub description: String,
+    /// Facultatif — pré-rempli côté client avec l'email du compte connecté s'il y en a un
+    /// (éditable), mais JAMAIS vérifié contre un vrai compte : une simple information de contact.
+    #[validate(email(message = "Format d'email invalide"))]
+    pub reporter_email: Option<String>,
+    #[validate(length(min = 1, max = 50))]
+    pub app_version: String,
+    #[validate(length(min = 1, max = 50))]
+    pub platform: String,
+}
+
+/// Un signalement de bug vu par un modérateur (GET /admin/bug-reports).
+#[derive(Serialize, sqlx::FromRow)]
+pub struct BugReportView {
+    pub id: String,
+    pub reporter_email: Option<String>,
+    pub description: String,
+    pub app_version: String,
+    pub platform: String,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+// =========================================================================
 // 6. STRUCTURES DIVERSES (PAGINATION & RÉPONSES API)
 // =========================================================================
 

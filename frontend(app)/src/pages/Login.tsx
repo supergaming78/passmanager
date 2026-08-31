@@ -3,6 +3,7 @@ import { useLocation, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import { getErrorMessage } from "../lib/errors";
 import AuthCard from "../components/AuthCard";
+import BugReportModal from "../components/BugReportModal";
 
 interface LocationState {
   email?: string;
@@ -20,6 +21,7 @@ export default function Login() {
   const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showBugReport, setShowBugReport] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -110,11 +112,21 @@ export default function Login() {
           le bon backend auto-hébergé avant même de pouvoir se connecter (voir ServerSettings.tsx et
           ServerSettingsRoute.tsx). Toujours affiché, discrètement, pour ne pas distraire un
           utilisateur déjà correctement configuré. */}
-      <div className="mt-3 text-center">
+      <div className="mt-3 flex justify-center gap-3 text-center">
         <Link to="/server" className="text-xs text-neutral-400 hover:underline dark:text-neutral-500">
           Configurer le serveur
         </Link>
+        {/* Accessible AVANT toute connexion — un bug qui empêche justement de se connecter doit
+            pouvoir être signalé depuis l'app elle-même (voir components/BugReportModal.tsx). */}
+        <button
+          type="button"
+          onClick={() => setShowBugReport(true)}
+          className="text-xs text-neutral-400 hover:underline dark:text-neutral-500"
+        >
+          Signaler un bug
+        </button>
       </div>
+      {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} />}
     </AuthCard>
   );
 }

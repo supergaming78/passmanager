@@ -18,6 +18,7 @@ import VaultHistoryModal from "../components/VaultHistoryModal";
 import AttachmentsModal from "../components/AttachmentsModal";
 import ShareEntryModal from "../components/ShareEntryModal";
 import BlindShareModal from "../components/BlindShareModal";
+import BugReportModal from "../components/BugReportModal";
 import { reseedEntryShares } from "../lib/entrySharing";
 import EntryActionsMenu from "../components/EntryActionsMenu";
 import KeyboardShortcutsModal from "../components/KeyboardShortcutsModal";
@@ -79,6 +80,7 @@ export default function Vault() {
   const [showTrash, setShowTrash] = useState(false);
   const [showHealth, setShowHealth] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
+  const [showBugReport, setShowBugReport] = useState(false);
   const [historyEntry, setHistoryEntry] = useState<PlainVaultEntry | null>(null);
   const [attachmentsEntry, setAttachmentsEntry] = useState<PlainVaultEntry | null>(null);
   const [sharingEntry, setSharingEntry] = useState<PlainVaultEntry | null>(null);
@@ -703,8 +705,17 @@ export default function Vault() {
             >
               Réglages
             </Link>
+            <button
+              type="button"
+              onClick={() => setShowBugReport(true)}
+              className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
+            >
+              Signaler un bug
+            </button>
           </nav>
         </header>
+
+        {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} defaultEmail={email ?? undefined} />}
 
         {/* Trois rangées INDÉPENDANTES (pas une seule rangée flex-wrap partagée) plutôt qu'une
          * seule rangée de 10 éléments indifférenciés : 1) recherche + tri/dossier, 2) filtres

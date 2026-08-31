@@ -180,6 +180,9 @@ state.rs            État partagé du processus (clé du coffre actuellement dé
 - Historique de sécurité consultable (connexions, changements, partages) et alerte email sur
   connexion depuis une adresse IP inhabituelle.
 - Icônes de marque reconnues automatiquement pour la plupart des sites courants.
+- Signalement de bug (`components/BugReportModal.tsx`) — accessible même sans être connecté (un
+  bug qui empêche justement la connexion doit pouvoir être signalé), consultable par un modérateur
+  dans Administration.
 
 ## Mises à jour automatiques
 

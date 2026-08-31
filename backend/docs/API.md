@@ -1200,6 +1200,58 @@ supprimé, un admin "normal" ne peut supprimer que des comptes non-admin.
 **Erreurs** : `403` non-admin, ou tentative de cibler un admin sans être le premier admin. `400`
 tentative d'auto-suppression. `404` email inconnu.
 
+## Endpoints — Signalement de bug
+
+Envoyé depuis l'app desktop/Android (voir `components/BugReportModal.tsx`), **jamais chiffré** :
+un texte technique destiné à être lu directement par un modérateur, pas une donnée du coffre.
+
+### `POST /bug-reports`
+
+**Route PUBLIQUE — aucune authentification requise.** Accessible même sans compte/connexion,
+volontairement : un bug qui empêche justement de se connecter doit pouvoir être signalé depuis
+l'app elle-même. Rate-limitée strictement (voir `sensitive_governor`, 4 req/s par IP, même palier
+que `/auth/register`) et plafonnée à 500 signalements en attente au total (au-delà, `400` — protège
+contre un remplissage de la table par une route anonyme).
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `description` | string (1-4000) | oui |
+| `reporter_email` | string (email) | non — simple info de contact, jamais vérifiée contre un compte |
+| `app_version` | string (1-50) | oui |
+| `platform` | string (1-50) | oui |
+
+**Réponse** : `201 Created` :
+```json
+{ "id": "..." }
+```
+**Erreurs** : `400` validation, ou plafond global atteint. `429` si le taux de requêtes est dépassé.
+
+### `GET /admin/bug-reports`
+
+*Authentification requise, réservé aux modérateurs.* Liste tous les signalements, du plus récent
+au plus ancien.
+
+**Réponse** : `200 OK` :
+```json
+[{
+  "id": "...",
+  "reporter_email": "...",
+  "description": "...",
+  "app_version": "0.1.0",
+  "platform": "Windows",
+  "created_at": "..."
+}]
+```
+**Erreurs** : `403` si l'appelant n'est pas modérateur.
+
+### `DELETE /admin/bug-reports/{id}`
+
+*Authentification requise, réservé aux modérateurs.* Supprime un signalement — pas de statut
+"résolu" séparé, la suppression EST la façon de le marquer traité.
+
+**Réponse** : `204 No Content`.
+**Erreurs** : `403` non-modérateur. `404` signalement inconnu.
+
 ## Endpoints — Divers
 
 ### `GET /health`

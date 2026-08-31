@@ -53,6 +53,8 @@ import {
   type VaultBlindShare,
   type BlindShareReceivedView,
   type BlindShareCredentialsView,
+  type CreateBugReportPayload,
+  type BugReportView,
 } from "./types";
 
 /**
@@ -606,6 +608,14 @@ export function revokeBlindShare(accessToken: string, id: string): Promise<void>
   });
 }
 
+// --- Signalement de bug — PUBLIC, aucun `accessToken` en paramètre (voir models.rs côté backend :
+// route accessible même sans être connecté, un bug qui empêche justement de se connecter doit
+// pouvoir être signalé depuis l'app elle-même). ---
+
+export function createBugReport(payload: CreateBugReportPayload): Promise<{ id: string }> {
+  return request<{ id: string }>("/bug-reports", { method: "POST", body: JSON.stringify(payload) });
+}
+
 // --- Administration (routes authentifiées, réservées à is_moderator — voir GET /me) ---
 // Le serveur revérifie is_moderator (et is_admin pour certaines) lui-même à chaque appel (voir
 // handlers/admin.rs côté backend) : masquer ces boutons côté client (voir components/AdminRoute.tsx) est une commodité d'UX, jamais
@@ -666,6 +676,17 @@ export function revokeUserSessions(accessToken: string, targetEmail: string): Pr
 
 export function deleteUser(accessToken: string, targetEmail: string): Promise<void> {
   return request<void>(`/admin/users/${encodeURIComponent(targetEmail)}`, {
+    method: "DELETE",
+    headers: authHeaders(accessToken),
+  });
+}
+
+export function listBugReports(accessToken: string): Promise<BugReportView[]> {
+  return request<BugReportView[]>("/admin/bug-reports", { headers: authHeaders(accessToken) });
+}
+
+export function deleteBugReport(accessToken: string, id: string): Promise<void> {
+  return request<void>(`/admin/bug-reports/${encodeURIComponent(id)}`, {
     method: "DELETE",
     headers: authHeaders(accessToken),
   });

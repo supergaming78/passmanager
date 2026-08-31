@@ -13,6 +13,7 @@ mod emergency;
 mod sharing;
 mod shared_vault;
 mod blind_share;
+mod bug_report;
 
 pub use common::health_check;
 pub use auth::*;
@@ -24,3 +25,4 @@ pub use emergency::*;
 pub use sharing::*;
 pub use shared_vault::*;
 pub use blind_share::*;
+pub use bug_report::*;

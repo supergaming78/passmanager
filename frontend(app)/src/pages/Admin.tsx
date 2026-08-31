@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
-import type { AdminUserView, AuditLog } from "../api/types";
+import type { AdminUserView, AuditLog, BugReportView } from "../api/types";
 import ServerUrlForm from "../components/ServerUrlForm";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -312,6 +312,75 @@ function AuditSection() {
   );
 }
 
+/** Signalements de bug envoyés depuis l'app desktop/Android (voir components/BugReportModal.tsx,
+ * accessible même sans connexion) — pas de statut "résolu" séparé, supprimer un signalement EST
+ * la façon de le marquer traité (voir handlers/bug_report.rs côté backend). */
+function BugReportsSection() {
+  const { authorizedRequest } = useAuth();
+  const [reports, setReports] = useState<BugReportView[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      setReports(await authorizedRequest((token) => api.listBugReports(token)));
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [authorizedRequest]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function handleDelete(id: string) {
+    if (!confirm("Marquer ce signalement comme traité (le supprimer de la liste) ?")) return;
+    setBusyId(id);
+    setError(null);
+    try {
+      await authorizedRequest((token) => api.deleteBugReport(token, id));
+      setReports((prev) => prev.filter((r) => r.id !== id));
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  if (isLoading) return <p className="text-sm text-neutral-500">Chargement…</p>;
+  if (error) return <p className="text-sm text-red-600 dark:text-red-400">{error}</p>;
+  if (reports.length === 0) return <p className="text-sm text-neutral-500">Aucun signalement en attente.</p>;
+
+  return (
+    <ul className="flex max-h-96 flex-col gap-2 overflow-y-auto">
+      {reports.map((report) => (
+        <li key={report.id} className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-800">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-xs text-neutral-500">
+              {new Date(report.created_at).toLocaleString()} · {report.platform} · v{report.app_version}
+              {report.reporter_email && <> · {report.reporter_email}</>}
+            </span>
+            <button
+              type="button"
+              disabled={busyId === report.id}
+              onClick={() => void handleDelete(report.id)}
+              className="shrink-0 rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              Marquer traité
+            </button>
+          </div>
+          <p className="whitespace-pre-wrap text-sm text-neutral-800 dark:text-neutral-200">{report.description}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export default function Admin() {
   return (
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
@@ -329,6 +398,10 @@ export default function Admin() {
 
         <Section title="Journal d'audit (100 dernières entrées, tous comptes)">
           <AuditSection />
+        </Section>
+
+        <Section title="Signalements de bug (desktop/Android)">
+          <BugReportsSection />
         </Section>
 
         <Section title="Serveur (cet appareil uniquement)">

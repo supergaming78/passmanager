@@ -447,6 +447,28 @@ export interface BlindShareCredentialsView {
   remaining_uses: number;
 }
 
+// --- Signalement de bug — desktop/Android. POST /bug-reports est PUBLIC (accessible sans être
+// connecté, voir backend/src/handlers/bug_report.rs) : un bug qui empêche justement de se
+// connecter doit pouvoir être signalé depuis l'app elle-même. PAS chiffré : un texte technique
+// destiné à être lu par un modérateur, pas une donnée du coffre. ---
+
+export interface CreateBugReportPayload {
+  description: string;
+  reporter_email?: string;
+  app_version: string;
+  platform: string;
+}
+
+/** Vue modérateur (GET /admin/bug-reports). */
+export interface BugReportView {
+  id: string;
+  reporter_email: string | null;
+  description: string;
+  app_version: string;
+  platform: string;
+  created_at: string;
+}
+
 // --- Import / export du coffre ---
 
 export interface ImportVaultPayload {

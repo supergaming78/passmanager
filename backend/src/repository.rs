@@ -1,5 +1,5 @@
 use sqlx::SqlitePool;
-use crate::{models::{VaultEntry, VaultEntryInput, TrashedVaultEntry, PasswordHistoryEntry, ReencryptedHistoryEntry, VaultAttachment, VaultAttachmentInput, VaultAttachmentMeta, UserKeysInput, UserPublicKey, EmergencyContact, VaultShare, SharedWithMeEntry, SharedEntryView, SharedVaultView, SharedVaultMemberView, SharedVaultEntry, SharedVaultEntryInput, VaultBlindShare, BlindShareReceivedView, BlindShareCredentialsView}, error::AppError};
+use crate::{models::{VaultEntry, VaultEntryInput, TrashedVaultEntry, PasswordHistoryEntry, ReencryptedHistoryEntry, VaultAttachment, VaultAttachmentInput, VaultAttachmentMeta, UserKeysInput, UserPublicKey, EmergencyContact, VaultShare, SharedWithMeEntry, SharedEntryView, SharedVaultView, SharedVaultMemberView, SharedVaultEntry, SharedVaultEntryInput, VaultBlindShare, BlindShareReceivedView, BlindShareCredentialsView, CreateBugReportPayload, BugReportView}, error::AppError};
 
 /// Historique des mots de passe : garde au plus ce nombre de versions PAR ENTRÉE — au-delà, les
 /// plus anciennes sont purgées automatiquement (voir VaultRepository::archive_password_history).
@@ -1534,6 +1534,72 @@ impl BlindShareRepository {
             .bind(id)
             .bind(caller_email)
             .bind(caller_email)
+            .execute(db)
+            .await?;
+        if res.rows_affected() == 0 {
+            return Err(AppError::NotFound);
+        }
+        Ok(())
+    }
+}
+
+// =========================================================================
+// SIGNALEMENT DE BUG — voir migration 20260901000000_bug_reports.sql et models.rs pour le détail
+// du modèle. `create()` est appelée depuis une route PUBLIQUE (voir handlers/bug_report.rs) : pas
+// de `caller_email` à vérifier ici, contrairement à toutes les autres tables de ce fichier.
+// =========================================================================
+
+/// Plafond GLOBAL (pas par utilisateur, puisque la route est publique/anonyme) — une route
+/// publique sans ce garde-fou pourrait voir sa table croître sans limite même avec le rate
+/// limiting par IP déjà en place (voir main.rs), qui ralentit un abus mais ne l'empêche pas
+/// totalement dans le temps. `pub(crate)` (pas juste privé) : réutilisée telle quelle par le test
+/// de régression sur ce plafond dans handlers/bug_report.rs, pour ne jamais avoir à synchroniser
+/// deux valeurs à la main si elle change un jour.
+pub(crate) const MAX_BUG_REPORTS_TOTAL: i64 = 500;
+
+pub struct BugReportRepository;
+
+impl BugReportRepository {
+    pub async fn create(db: &SqlitePool, payload: &CreateBugReportPayload) -> Result<String, AppError> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM bug_reports")
+            .fetch_one(db)
+            .await?;
+        if count >= MAX_BUG_REPORTS_TOTAL {
+            return Err(AppError::ValidationError(
+                "Trop de signalements en attente de traitement — réessaie plus tard.".to_string(),
+            ));
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO bug_reports (id, reporter_email, description, app_version, platform) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(&payload.reporter_email)
+        .bind(&payload.description)
+        .bind(&payload.app_version)
+        .bind(&payload.platform)
+        .execute(db)
+        .await?;
+
+        Ok(id)
+    }
+
+    /// Réservé au modérateur (vérifié dans le handler, comme le reste du panneau Administration).
+    pub async fn list_all(db: &SqlitePool) -> Result<Vec<BugReportView>, AppError> {
+        sqlx::query_as::<_, BugReportView>(
+            "SELECT id, reporter_email, description, app_version, platform, created_at FROM bug_reports ORDER BY created_at DESC",
+        )
+        .fetch_all(db)
+        .await
+        .map_err(AppError::from)
+    }
+
+    /// Supprime un signalement une fois traité — pas de statut "résolu" séparé dans cette première
+    /// version, la suppression EST la façon de marquer "traité" (garde le panneau simple à trier).
+    pub async fn delete(db: &SqlitePool, id: &str) -> Result<(), AppError> {
+        let res = sqlx::query("DELETE FROM bug_reports WHERE id = ?")
+            .bind(id)
             .execute(db)
             .await?;
         if res.rows_affected() == 0 {
