@@ -77,11 +77,32 @@ jobs:
         working-directory: frontend(app)
         run: npm ci
 
+      # CORRECTIF, trouvé au tout premier run réel : "failed to decode secret key ... Invalid
+      # symbol 10, offset 348" — un retour à la ligne parasite (symbole 10 = \n) s'était glissé à la
+      # fin de la valeur du secret TAURI_SIGNING_PRIVATE_KEY (probablement ajouté par le
+      # copier-coller dans le formulaire GitHub, un piège classique et facile à reproduire). Plutôt
+      # que de compter sur un copier-coller parfait à chaque fois qu'un secret est recréé, cette
+      # étape nettoie systématiquement tout retour à la ligne en trop AVANT de passer les valeurs à
+      # tauri-action. `::add-mask::` EXPLICITE sur chaque valeur nettoyée avant de l'écrire dans
+      # GITHUB_OUTPUT : le masquage automatique de GitHub ne reconnaît que la valeur EXACTE d'un
+      # secret déjà enregistré — une version tronquée (même juste d'un octet) est une chaîne
+      # DIFFÉRENTE à ses yeux, qui ne serait sinon plus masquée dans le reste des logs de ce run.
+      - name: Nettoyer les secrets de signature (retours à la ligne parasites)
+        id: clean-secrets
+        shell: bash
+        run: |
+          clean_key="$(printf '%s' "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" | tr -d '\n\r')"
+          clean_password="$(printf '%s' "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}" | tr -d '\n\r')"
+          echo "::add-mask::$clean_key"
+          echo "::add-mask::$clean_password"
+          printf 'key<<__EOF__\n%s\n__EOF__\n' "$clean_key" >> "$GITHUB_OUTPUT"
+          printf 'password<<__EOF__\n%s\n__EOF__\n' "$clean_password" >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.clean-secrets.outputs.key }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ steps.clean-secrets.outputs.password }}
         with:
           projectPath: "frontend(app)"
           tagName: app-v__VERSION__
@@ -123,9 +144,24 @@ jobs:
         working-directory: frontend(app)
         run: npm ci
 
+      # Même précaution que côté desktop (voir son commentaire "Nettoyer les secrets de signature")
+      # — un retour à la ligne parasite dans ANDROID_KEYSTORE_PASSWORD/ANDROID_KEY_ALIAS ferait
+      # échouer la signature Android avec un mot de passe qui ne correspondrait plus exactement à
+      # celui donné à `keytool` lors de la génération du keystore (voir le README pour le détail).
+      - name: Nettoyer les secrets Android (retours à la ligne parasites)
+        id: clean-android-secrets
+        shell: bash
+        run: |
+          clean_password="$(printf '%s' "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" | tr -d '\n\r')"
+          clean_alias="$(printf '%s' "${{ secrets.ANDROID_KEY_ALIAS }}" | tr -d '\n\r')"
+          echo "::add-mask::$clean_password"
+          echo "::add-mask::$clean_alias"
+          printf 'password<<__EOF__\n%s\n__EOF__\n' "$clean_password" >> "$GITHUB_OUTPUT"
+          printf 'alias<<__EOF__\n%s\n__EOF__\n' "$clean_alias" >> "$GITHUB_OUTPUT"
+
       - name: Décoder le keystore de signature Android
         working-directory: frontend(app)/src-tauri/gen/android
-        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > passmanager-release.keystore
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | tr -d '\n\r' | base64 --decode > passmanager-release.keystore
 
       - name: Construire l'APK Android (signé, universel)
         working-directory: frontend(app)
@@ -138,9 +174,9 @@ jobs:
           # depuis .../gen/android/app/) — un chemin relatif écrit en pensant au premier aurait donc
           # pointé nulle part pour le second, faisant échouer la signature au premier vrai run.
           ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/frontend(app)/src-tauri/gen/android/passmanager-release.keystore
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ steps.clean-android-secrets.outputs.password }}
+          ANDROID_KEY_ALIAS: ${{ steps.clean-android-secrets.outputs.alias }}
+          ANDROID_KEY_PASSWORD: ${{ steps.clean-android-secrets.outputs.password }}
         # Pas de `--target`/`--split-per-abi` : tous les ABI par défaut, regroupés dans un seul APK
         # "universel" — un seul lien de téléchargement à donner dans la bannière de mise à jour,
         # au prix d'un fichier un peu plus gros que des APK par-architecture.
