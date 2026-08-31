@@ -51,9 +51,19 @@ jobs:
 
       - name: Installer les dépendances système Linux (webkit2gtk, etc.)
         if: matrix.platform == 'ubuntu-latest'
+        # CORRECTIF : liste vérifiée contre les prérequis officiels Tauri v2 (v2.tauri.app/start/
+        # prerequisites), pas seulement écrite de mémoire — deux erreurs réelles trouvées : (1)
+        # `libappindicator3-dev` n'existe plus/entre en conflit sur les Ubuntu récents (22.04+,
+        # dont `ubuntu-latest`), remplacé par `libayatana-appindicator3-dev` — l'ancien nom aurait
+        # fait échouer `apt-get install` lui-même, avant même toute compilation ; (2)
+        # `libxdo-dev`/`libssl-dev` manquaient, requis au lien par Tauri mais PAS forcément déjà
+        # présents sur l'image `ubuntu-latest` (contrairement à `build-essential`/`curl`/`wget`/
+        # `file`, déjà là sur toute image Ubuntu CI standard, gardés quand même par exhaustivité).
+        # `patchelf` conservé en plus (nécessaire à l'empaquetage AppImage, absent de cette liste
+        # officielle mais requis par un autre maillon de la chaîne de build Tauri).
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - uses: dtolnay/rust-toolchain@stable
 
