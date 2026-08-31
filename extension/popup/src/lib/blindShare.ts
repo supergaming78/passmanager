@@ -129,7 +129,10 @@ export async function useBlindShareAndFill(
     credentials = { username: "", loginEmail: "", password: "", preferredLoginType: "username" };
   }
 
-  const usernameOrEmail = credentials.preferredLoginType === "email" ? credentials.loginEmail : credentials.username;
+  // CORRECTIF (même bug que App.tsx::handleFill du coffre personnel) : sans repli, un partage
+  // "identifiant" avec un champ username vide remplissait un champ vide au lieu de l'email
+  // réellement scellé pour ce partage.
+  const usernameOrEmail = credentials.preferredLoginType === "email" ? credentials.loginEmail : credentials.username || credentials.loginEmail;
   const result = await runAutofill(usernameOrEmail, credentials.password);
 
   return { result, remainingUses: remaining_uses };

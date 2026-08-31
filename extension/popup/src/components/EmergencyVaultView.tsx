@@ -68,7 +68,7 @@ export default function EmergencyVaultView({
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
                 <p className="truncate text-xs text-neutral-500">
-                  {entry.preferredLoginType === "email" ? entry.loginEmail : entry.username}
+                  {entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">

@@ -58,7 +58,7 @@ export default function SharedEntryView({ shareId, vaultKey, onBack }: { shareId
             <div>
               <p className="text-xs text-neutral-500">Identifiant</p>
               <p className="text-sm text-neutral-900 dark:text-neutral-100">
-                {entry.preferredLoginType === "email" ? entry.loginEmail : entry.username}
+                {entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail}
               </p>
             </div>
           )}

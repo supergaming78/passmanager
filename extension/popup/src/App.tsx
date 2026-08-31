@@ -327,7 +327,10 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
         }
       }
 
-      const usernameOrEmail = entry.preferredLoginType === "email" ? entry.loginEmail : entry.username;
+      // CORRECTIF : sans repli, une entrée "identifiant" avec un champ username vide (les deux
+      // champs identifiant/email sont optionnels indépendamment l'un de l'autre, voir
+      // VaultEntryForm.tsx) remplissait un champ VIDE plutôt que la valeur réellement disponible.
+      const usernameOrEmail = entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail;
       const result = await runAutofill(usernameOrEmail, entry.password);
       if (!result.passwordFilled) {
         setError("Aucun champ mot de passe trouvé sur cette page.");
@@ -565,7 +568,7 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
                 <p className="truncate text-xs text-neutral-500">
-                  {entry.preferredLoginType === "email" ? entry.loginEmail : entry.username}
+                  {entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail}
                 </p>
               </div>
             </div>
