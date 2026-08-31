@@ -3,8 +3,26 @@ import { getVersion } from "@tauri-apps/api/app";
 import { createBugReport } from "../api/client";
 import { getDetailedPlatformInfo } from "../lib/platform";
 import { getBackendUrl } from "../lib/settings";
+import { getRecentDiagnosticLog } from "../lib/diagnosticLog";
 import { getErrorMessage } from "../lib/errors";
 import type { BugReportCategory } from "../api/types";
+
+// Doit rester cohérent avec la limite serveur (4000, voir models.rs::CreateBugReportPayload) —
+// une marge est gardée (pas pile 4000) pour ne jamais dépendre d'un décompte de caractères
+// identique au caractère près des deux côtés.
+const MAX_DESCRIPTION_LENGTH = 3900;
+
+/** Compose la description finale envoyée : le texte de l'utilisateur D'ABORD (jamais tronqué,
+ * c'est lui qui compte le plus), puis l'écran actuel + l'état du backend + le journal de
+ * diagnostic (voir lib/diagnosticLog.ts) — TRONQUÉS si besoin pour respecter la limite serveur,
+ * plutôt que de faire échouer tout l'envoi sur un dépassement causé par le contexte technique
+ * auto-collecté, pas par ce que la personne a réellement écrit. */
+function composeFinalDescription(userText: string, screen: string, backendStatus: string): string {
+  const technicalBlock = `\n\n[Écran : ${screen}]\n[Backend : ${backendStatus}]\n[Journal récent :\n${getRecentDiagnosticLog()}]`;
+  const budget = MAX_DESCRIPTION_LENGTH - userText.length;
+  if (budget <= 0) return userText.slice(0, MAX_DESCRIPTION_LENGTH);
+  return userText + technicalBlock.slice(0, budget);
+}
 
 const CATEGORIES: BugReportCategory[] = ["Plantage", "Affichage", "Synchronisation", "Autre"];
 
@@ -47,6 +65,10 @@ export default function BugReportModal({ onClose, defaultEmail, initialDescripti
   const [email, setEmail] = useState(defaultEmail ?? "");
   const [appVersion, setAppVersion] = useState("inconnue");
   const [backendStatus, setBackendStatus] = useState("vérification…");
+  // Capturé UNE FOIS au montage (pas recalculé à l'envoi) : reflète l'écran depuis lequel la
+  // personne a cliqué "Signaler un bug", pas un écran vers lequel elle aurait navigué entre-temps
+  // en rédigeant sa description.
+  const [currentScreen] = useState(() => window.location.hash || "/");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
@@ -64,8 +86,11 @@ export default function BugReportModal({ onClose, defaultEmail, initialDescripti
     setIsSubmitting(true);
     setError(null);
     try {
+      // window.location.hash : HashRouter (voir main.tsx) — reflète l'écran affiché AU MOMENT DE
+      // L'OUVERTURE de ce formulaire (capturé une fois au montage, pas ici, au cas où la personne
+      // aurait navigué pendant qu'elle rédigeait — voir le useEffect ci-dessus).
       await createBugReport({
-        description: `${description.trim()}\n\n[Backend : ${backendStatus}]`,
+        description: composeFinalDescription(description.trim(), currentScreen, backendStatus),
         reporter_email: email.trim() || undefined,
         app_version: appVersion,
         platform: getDetailedPlatformInfo(),
@@ -105,9 +130,9 @@ export default function BugReportModal({ onClose, defaultEmail, initialDescripti
         ) : (
           <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-3">
             <p className="text-xs text-neutral-500">
-              Décris ce qui s'est passé — la version de l'app ({appVersion}), la plateforme, et si le
-              backend répond ({backendStatus}) sont jointes automatiquement. Rien de ton coffre n'est
-              jamais inclus.
+              Décris ce qui s'est passé — la version de l'app ({appVersion}), la plateforme, l'écran
+              actuel, si le backend répond ({backendStatus}) et un journal technique récent sont
+              joints automatiquement. Rien de ton coffre n'est jamais inclus.
             </p>
 
             <div>

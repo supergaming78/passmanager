@@ -2,6 +2,7 @@
 // d'URL/gestion d'erreur dupliquée ailleurs dans l'app (voir request() ci-dessous).
 
 import { getBackendUrl } from "../lib/settings";
+import { recordApiFailure } from "../lib/diagnosticLog";
 import {
   ApiError,
   type AddEmergencyContactPayload,
@@ -78,6 +79,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     // backend (voir lib/settings.ts), ou requête bloquée par CORS. Le message natif du navigateur
     // ("Failed to fetch") ne dit rien d'exploitable à l'utilisateur — on le remplace par quelque
     // chose d'actionnable plutôt que de laisser l'appelant retomber sur un message générique.
+    recordApiFailure(path, "réseau");
     throw new ApiError(0, `Impossible de contacter le serveur à ${getBackendUrl()} — vérifie qu'il est démarré et que l'adresse est correcte.`);
   }
 
@@ -87,6 +89,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const body = text ? safeJsonParse(text) : undefined;
 
   if (!response.ok) {
+    // Chemin + code HTTP UNIQUEMENT (voir lib/diagnosticLog.ts) — jamais le corps de la requête/
+    // réponse, qui pourrait contenir des champs chiffrés du coffre.
+    recordApiFailure(path, response.status);
     const message = isApiErrorBody(body) ? body.error : formatErrorMessage(response);
     throw new ApiError(response.status, message);
   }
