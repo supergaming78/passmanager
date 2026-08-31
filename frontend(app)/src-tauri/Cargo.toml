@@ -1,6 +1,6 @@
 [package]
 name = "passmanager-app"
-version = "0.1.0"
+version = "0.2.0"
 description = "Gestionnaire de mots de passe Zero-Knowledge - client desktop"
 authors = ["supergaming78"]
 edition = "2021"
