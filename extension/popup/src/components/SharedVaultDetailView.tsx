@@ -11,6 +11,7 @@ import type { SharedVaultMemberView } from "../api/types";
 import { runAutofill, getActiveTabUrl, domainsLikelyMatch } from "../lib/autofill";
 import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { getErrorMessage } from "../lib/errors";
+import { getPreferredIdentifier } from "../lib/entryIdentifier";
 
 const EMPTY_FORM = { siteName: "", username: "", loginEmail: "", password: "", preferredLoginType: "username" as "username" | "email", notes: "", url: "" };
 
@@ -143,10 +144,7 @@ export default function SharedVaultDetailView({
         }
       }
 
-      // CORRECTIF : sans repli sur loginEmail, une entrée "identifiant" avec un champ username vide
-      // (identifiant/email tous deux optionnels, voir le formulaire) remplissait un champ vide
-      // plutôt que la valeur réellement disponible — même repli que l'affichage juste en dessous.
-      const usernameOrEmail = entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail;
+      const usernameOrEmail = getPreferredIdentifier(entry);
       const result = await runAutofill(usernameOrEmail, entry.password);
       if (!result.passwordFilled) {
         setError("Aucun champ mot de passe trouvé sur cette page.");
@@ -340,7 +338,7 @@ export default function SharedVaultDetailView({
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
                 <p className="truncate text-xs text-neutral-500">
-                  {entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail || "—"}
+                  {getPreferredIdentifier(entry) || "—"}
                 </p>
               </div>
             </div>

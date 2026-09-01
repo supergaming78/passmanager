@@ -10,6 +10,7 @@ import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { openEntryUrl } from "../lib/openExternalUrl";
 import { WEAK_THRESHOLD_BITS, estimatePasswordEntropyBits, rateEntropy } from "../lib/passwordGenerator";
 import { OLD_PASSWORD_DAYS, daysSince, formatRelativeAge } from "../lib/age";
+import { getPreferredIdentifier } from "../lib/entryIdentifier";
 import VaultEntryForm, { type VaultEntryFormValues } from "../components/VaultEntryForm";
 import ImportExportBar, { type ImportExportBarHandle } from "../components/ImportExportBar";
 import TrashModal from "../components/TrashModal";
@@ -335,7 +336,7 @@ export default function Vault() {
   }
 
   async function handleCopyIdentifier(entry: PlainVaultEntry) {
-    const identifier = entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail;
+    const identifier = getPreferredIdentifier(entry);
     if (!identifier) return;
     await navigator.clipboard.writeText(identifier);
     setCopiedIdentifierId(entry.id);
@@ -583,11 +584,7 @@ export default function Vault() {
             </div>
             {entry.entryType !== "note" && (
               <p className="truncate text-sm text-neutral-500">
-                {entry.entryType === "login"
-                  ? entry.preferredLoginType === "email"
-                    ? entry.loginEmail
-                    : entry.username || entry.loginEmail || "—"
-                  : entry.username || "—"}
+                {entry.entryType === "login" ? getPreferredIdentifier(entry) || "—" : entry.username || "—"}
               </p>
             )}
             {entry.updatedAt &&

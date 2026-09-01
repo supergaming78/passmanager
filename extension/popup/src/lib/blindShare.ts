@@ -17,6 +17,7 @@ import * as wasmCrypto from "./wasmCrypto";
 import { ensureEmergencyKeys } from "./emergencyAccess";
 import { runAutofill, canLikelyAutofillActiveTab, type FillResult } from "./autofill";
 import type { AuthorizedRequest } from "./session";
+import { getPreferredIdentifier } from "./entryIdentifier";
 
 interface SealableCredentials {
   username: string;
@@ -129,10 +130,7 @@ export async function useBlindShareAndFill(
     credentials = { username: "", loginEmail: "", password: "", preferredLoginType: "username" };
   }
 
-  // CORRECTIF (même bug que App.tsx::handleFill du coffre personnel) : sans repli, un partage
-  // "identifiant" avec un champ username vide remplissait un champ vide au lieu de l'email
-  // réellement scellé pour ce partage.
-  const usernameOrEmail = credentials.preferredLoginType === "email" ? credentials.loginEmail : credentials.username || credentials.loginEmail;
+  const usernameOrEmail = getPreferredIdentifier(credentials);
   const result = await runAutofill(usernameOrEmail, credentials.password);
 
   return { result, remainingUses: remaining_uses };

@@ -6,6 +6,7 @@ import { openEntryUrl } from "../lib/openExternalUrl";
 import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { getErrorMessage } from "../lib/errors";
 import type { PlainVaultEntry } from "../lib/vaultCrypto";
+import { getPreferredIdentifier } from "../lib/entryIdentifier";
 
 /** Consultation d'urgence d'un coffre distant, en LECTURE SEULE — voir lib/emergencyAccess.ts
  * pour le déchiffrement (Zero-Knowledge de bout en bout, la clé du coffre distant ne quitte
@@ -95,7 +96,7 @@ export default function EmergencyVaultPage() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
                   <p className="truncate text-sm text-neutral-500">
-                    {entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail || "—"}
+                    {getPreferredIdentifier(entry) || "—"}
                   </p>
                   {revealedId === entry.id && (
                     <p className="mt-1 select-all font-mono text-sm text-neutral-700 dark:text-neutral-300">{entry.password}</p>

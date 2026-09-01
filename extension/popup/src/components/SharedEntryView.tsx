@@ -7,6 +7,7 @@ import * as entrySharing from "../lib/entrySharing";
 import type { PlainVaultEntry } from "../lib/vaultCrypto";
 import { getErrorMessage } from "../lib/errors";
 import { copyPasswordWithAutoClear } from "../lib/clipboard";
+import { getPreferredIdentifier } from "../lib/entryIdentifier";
 
 export default function SharedEntryView({ shareId, vaultKey, onBack }: { shareId: string; vaultKey: Uint8Array; onBack: () => void }) {
   const [entry, setEntry] = useState<PlainVaultEntry | null>(null);
@@ -58,7 +59,7 @@ export default function SharedEntryView({ shareId, vaultKey, onBack }: { shareId
             <div>
               <p className="text-xs text-neutral-500">Identifiant</p>
               <p className="text-sm text-neutral-900 dark:text-neutral-100">
-                {entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail}
+                {getPreferredIdentifier(entry)}
               </p>
             </div>
           )}

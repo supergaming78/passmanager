@@ -6,6 +6,7 @@ import { openEntryUrl } from "../lib/openExternalUrl";
 import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { getErrorMessage } from "../lib/errors";
 import type { PlainVaultEntry } from "../lib/vaultCrypto";
+import { getPreferredIdentifier } from "../lib/entryIdentifier";
 
 /** Consultation d'une entrée partagée avec l'utilisateur courant, en LECTURE SEULE — voir
  * lib/entrySharing.ts::openSharedEntry pour le descellement (Zero-Knowledge de bout en bout, la
@@ -78,7 +79,7 @@ export default function SharedEntryPage() {
           <div className="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900">
             <p className="text-lg font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
             <p className="mt-1 text-sm text-neutral-500">
-              {entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail || "—"}
+              {getPreferredIdentifier(entry) || "—"}
             </p>
 
             <div className="mt-3 flex items-center gap-2">

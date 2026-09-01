@@ -8,6 +8,7 @@ import { generatePassword, DEFAULT_GENERATOR_OPTIONS } from "../lib/passwordGene
 import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { openEntryUrl } from "../lib/openExternalUrl";
 import { getErrorMessage } from "../lib/errors";
+import { getPreferredIdentifier } from "../lib/entryIdentifier";
 
 const EMPTY_FORM = { siteName: "", username: "", loginEmail: "", password: "", preferredLoginType: "username" as "username" | "email", notes: "", url: "" };
 
@@ -350,7 +351,7 @@ export default function SharedVaultDetailPage() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
                   <p className="truncate text-xs text-neutral-500">
-                    {entry.preferredLoginType === "email" ? entry.loginEmail : entry.username || entry.loginEmail || "—"}
+                    {getPreferredIdentifier(entry) || "—"}
                     {" · ajouté par "}{entry.createdBy}
                   </p>
                   {revealedId === entry.id && <p className="mt-1 select-all font-mono text-xs text-neutral-700 dark:text-neutral-300">{entry.password}</p>}
