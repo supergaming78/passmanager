@@ -15,7 +15,7 @@ mod shared_vault;
 mod blind_share;
 mod bug_report;
 
-pub use common::health_check;
+pub use common::{health_check, get_public_config};
 pub use auth::*;
 pub use vault::*;
 pub use devices::*;

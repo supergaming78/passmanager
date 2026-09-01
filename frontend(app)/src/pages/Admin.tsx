@@ -4,7 +4,6 @@ import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
 import type { AdminUserView, AuditLog, BugReportView } from "../api/types";
-import ServerUrlForm from "../components/ServerUrlForm";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -96,6 +95,35 @@ function UsersSection() {
     }
   }
 
+  // Réservé à l'Admin SEUL (pas juste modérateur, contrairement au changement d'email via
+  // l'extension ci-dessus) — voir handlers/admin.rs::update_server_choice_in_settings().
+  async function handleToggleServerChoiceInSettings(user: AdminUserView) {
+    setBusyEmail(user.email);
+    setError(null);
+    try {
+      await authorizedRequest((token) =>
+        api.updateServerChoiceInSettings(token, user.email, { enabled: !user.can_choose_server_in_settings }),
+      );
+      await load();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setBusyEmail(null);
+    }
+  }
+
+  async function handleSetServerChoiceInSettingsForAll(enabled: boolean) {
+    const action = enabled ? "activer" : "désactiver";
+    if (!confirm(`Confirmer : ${action} le choix du serveur dans les Réglages pour TOUS les comptes ?`)) return;
+    setError(null);
+    try {
+      await authorizedRequest((token) => api.updateServerChoiceInSettingsAll(token, { enabled }));
+      await load();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }
+
   async function handleChangeEmail(user: AdminUserView) {
     const newEmail = window.prompt(`Nouvel email pour ${user.email} :`, user.email);
     if (!newEmail || newEmail.trim().toLowerCase() === user.email) return;
@@ -145,6 +173,26 @@ function UsersSection() {
           <button
             type="button"
             onClick={() => void handleSetExtensionEmailChangeForAll(false)}
+            className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            Désactiver pour tous
+          </button>
+        </div>
+      )}
+
+      {isAdmin && (
+        <div className="mb-3 flex items-center gap-2 text-xs text-neutral-500">
+          <span>Choix du serveur dans les Réglages, pour tout le monde :</span>
+          <button
+            type="button"
+            onClick={() => void handleSetServerChoiceInSettingsForAll(true)}
+            className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            Activer pour tous
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleSetServerChoiceInSettingsForAll(false)}
             className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
           >
             Désactiver pour tous
@@ -229,6 +277,17 @@ function UsersSection() {
                           className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
                         >
                           {user.can_change_email_via_extension ? "Retirer email/ext." : "Autoriser email/ext."}
+                        </button>
+                      )}
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          disabled={isSelf || isBusy}
+                          onClick={() => void handleToggleServerChoiceInSettings(user)}
+                          title={isSelf ? "Tu as déjà toujours accès à ce choix, indépendamment de ce réglage" : "Autoriser/interdire le choix du serveur dans les Réglages pour ce compte"}
+                          className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                        >
+                          {user.can_choose_server_in_settings ? "Retirer choix serveur" : "Autoriser choix serveur"}
                         </button>
                       )}
                       {canActOnTarget && (
@@ -393,6 +452,68 @@ function BugReportsSection() {
   );
 }
 
+/** Réglage GLOBAL (pas par compte, voir handlers/admin.rs::update_server_choice_at_login() côté
+ * backend) : visibilité du lien "Configurer le serveur" sur l'écran de connexion, AVANT toute
+ * authentification. Lu via GET /public-config (sans auth, même endpoint que pages/Login.tsx) —
+ * réutilisé ici tel quel plutôt que d'ajouter un endpoint GET admin dédié rien que pour ça. */
+function ServerChoiceAtLoginSection() {
+  const { authorizedRequest } = useAuth();
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isBusy, setIsBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const config = await api.getPublicConfig();
+      setEnabled(config.server_choice_at_login_enabled);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function handleToggle() {
+    if (enabled === null) return;
+    setIsBusy(true);
+    setError(null);
+    try {
+      await authorizedRequest((token) => api.updateServerChoiceAtLogin(token, { enabled: !enabled }));
+      await load();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <p className="mb-3 text-xs text-neutral-500">
+        Contrôle si le lien "Configurer le serveur" est visible sur l'écran de connexion, AVANT
+        toute authentification — réglage global (pas par compte), puisqu'aucun compte n'est encore
+        identifié à ce stade.
+      </p>
+      {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {enabled === null ? (
+        <p className="text-sm text-neutral-500">Chargement…</p>
+      ) : (
+        <button
+          type="button"
+          disabled={isBusy}
+          onClick={() => void handleToggle()}
+          className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        >
+          {enabled ? "Désactiver le lien à la connexion" : "Activer le lien à la connexion"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function Admin() {
   // isAdmin : vrai UNIQUEMENT pour le compte ADMIN_EMAIL (voir la note en tête de UsersSection) —
   // les signalements de bug sont réservés au SEUL Admin, PAS aux modérateurs (demande explicite),
@@ -424,11 +545,13 @@ export default function Admin() {
           </Section>
         )}
 
-        {/* Admin SEUL (pas modérateur) — voir lib/settings.ts et components/ServerUrlForm.tsx.
-            Override purement local à CET appareil, jamais avant connexion. */}
+        {/* L'override de CET appareil (isAdmin && ...) vit désormais dans pages/Settings.tsx —
+            visible pour toi comme pour n'importe quel compte à qui tu as accordé l'accès
+            (ci-dessus, dans "Comptes utilisateurs"). Ici : le réglage GLOBAL équivalent côté écran
+            de connexion (Admin SEUL, voir handlers/admin.rs::update_server_choice_at_login()). */}
         {isAdmin && (
-          <Section title="Serveur (cet appareil uniquement) — visible par toi seul">
-            <ServerUrlForm />
+          <Section title="Choix du serveur à la connexion — visible par toi seul">
+            <ServerChoiceAtLoginSection />
           </Section>
         )}
       </div>

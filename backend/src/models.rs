@@ -95,6 +95,12 @@ pub struct AdminUserView {
     /// handlers/auth/account.rs::update_email(). Sans rapport avec is_moderator/email_verified :
     /// l'Admin reste toujours autorisé indépendamment de cette colonne.
     pub can_change_email_via_extension: bool,
+    /// Autorisation à changer l'adresse du backend DEPUIS LES RÉGLAGES, une fois connecté (voir
+    /// frontend(app)/src/components/ServerUrlForm.tsx) — même principe que le champ ci-dessus,
+    /// l'Admin reste toujours autorisé indépendamment de cette colonne. Voir aussi
+    /// server_choice_at_login_enabled (table app_settings) : réglage GLOBAL distinct, pour la
+    /// visibilité du même choix AVANT connexion (aucun compte identifié à ce stade).
+    pub can_choose_server_in_settings: bool,
     /// Vrai UNIQUEMENT pour le compte configuré via ADMIN_EMAIL — il n'existe qu'UN SEUL "Admin"
     /// (ce compte) ; tout autre compte avec `is_moderator = true` est un "Modérateur" (voir
     /// handlers/admin.rs::list_users(), qui remplit ce champ après coup via
@@ -586,6 +592,19 @@ pub struct UpdateUserRolePayload {
 /// minimum) de l'appelant compte ici.
 #[derive(Deserialize)]
 pub struct UpdateExtensionEmailChangePayload {
+    pub enabled: bool,
+}
+
+/// Voir handlers/admin.rs::update_server_choice_in_settings() (par compte) /
+/// update_server_choice_in_settings_all() (tous les comptes).
+#[derive(Deserialize)]
+pub struct UpdateServerChoiceInSettingsPayload {
+    pub enabled: bool,
+}
+
+/// Voir handlers/admin.rs::update_server_choice_at_login() — réglage GLOBAL (pas par compte).
+#[derive(Deserialize)]
+pub struct UpdateServerChoiceAtLoginPayload {
     pub enabled: bool,
 }
 

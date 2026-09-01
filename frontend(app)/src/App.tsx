@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "./state/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import AdminRoute from "./components/AdminRoute";
+import ServerSettingsRoute from "./components/ServerSettingsRoute";
 import Register from "./pages/Register";
 import VerifyEmail from "./pages/VerifyEmail";
 import Login from "./pages/Login";
@@ -16,6 +17,7 @@ import SharedReceivedPage from "./pages/SharedReceivedPage";
 import SharedVaultsPage from "./pages/SharedVaultsPage";
 import SharedVaultDetailPage from "./pages/SharedVaultDetailPage";
 import Admin from "./pages/Admin";
+import ServerSettings from "./pages/ServerSettings";
 import MobileUpdateBanner from "./components/MobileUpdateBanner";
 import DesktopAutoUpdater from "./components/DesktopAutoUpdater";
 import "./App.css";
@@ -35,6 +37,14 @@ function App() {
       <Route path="/verify-2fa" element={<Verify2fa />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route
+        path="/server"
+        element={
+          <ServerSettingsRoute>
+            <ServerSettings />
+          </ServerSettingsRoute>
+        }
+      />
       <Route
         path="/vault"
         element={

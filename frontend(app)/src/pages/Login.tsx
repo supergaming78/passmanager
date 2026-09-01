@@ -1,7 +1,8 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import { getErrorMessage } from "../lib/errors";
+import { getPublicConfig } from "../api/client";
 import AuthCard from "../components/AuthCard";
 import BugReportModal from "../components/BugReportModal";
 
@@ -22,6 +23,25 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showBugReport, setShowBugReport] = useState(false);
+  // Réglage GLOBAL côté Admin (voir pages/Admin.tsx::ServerChoiceAtLoginSection et
+  // handlers/admin.rs::update_server_choice_at_login()) : le lien "Configurer le serveur" reste
+  // masqué par défaut sur cet écran pré-connexion, sauf activation explicite. Best-effort (échec
+  // silencieux) : une coupure réseau ne doit jamais bloquer l'écran de connexion lui-même, juste
+  // laisser ce lien caché — cohérent avec le fait que /server reste de toute façon accessible par
+  // URL directe (voir ServerSettingsRoute.tsx), ce n'est qu'un lien en moins, pas une vraie panne.
+  const [showServerChoiceLink, setShowServerChoiceLink] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getPublicConfig()
+      .then((config) => {
+        if (!cancelled) setShowServerChoiceLink(config.server_choice_at_login_enabled);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -107,10 +127,16 @@ export default function Login() {
           Créer un compte
         </Link>
       </div>
-      {/* Plus de lien "Configurer le serveur" ici (voir lib/settings.ts) : l'adresse du backend est
-          désormais codée en dur, l'écran /server (ServerSettings.tsx/ServerSettingsRoute.tsx) a été
-          retiré — voir la conversation du 2026-09-01. */}
+      {/* "Configurer le serveur" : masqué par défaut (voir showServerChoiceLink plus haut) —
+          l'Admin doit l'activer explicitement (réglage global, voir pages/Admin.tsx et
+          handlers/admin.rs::update_server_choice_at_login()) pour qu'il apparaisse ici, avant
+          toute connexion. */}
       <div className="mt-3 flex justify-center gap-3 text-center">
+        {showServerChoiceLink && (
+          <Link to="/server" className="text-xs text-neutral-400 hover:underline dark:text-neutral-500">
+            Configurer le serveur
+          </Link>
+        )}
         {/* Accessible AVANT toute connexion — un bug qui empêche justement de se connecter doit
             pouvoir être signalé depuis l'app elle-même (voir components/BugReportModal.tsx). */}
         <button

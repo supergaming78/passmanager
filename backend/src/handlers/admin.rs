@@ -53,7 +53,7 @@ pub async fn list_users(
     }
 
     let mut users = sqlx::query_as::<_, AdminUserView>(
-        "SELECT email, is_moderator, email_verified, created_at, max_trusted_devices, can_change_email_via_extension FROM users ORDER BY created_at DESC"
+        "SELECT email, is_moderator, email_verified, created_at, max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings FROM users ORDER BY created_at DESC"
     )
     .fetch_all(&state.db)
     .await?;
@@ -314,6 +314,109 @@ pub async fn update_extension_email_change_setting_all(
     // contrairement à la variante par compte ci-dessus).
     state.log_audit(&user.email, action, addr.to_string(), agent).await;
     info!("Changement d'email via extension réglé pour TOUS les comptes par {} (enabled={})", user.email, payload.enabled);
+
+    Ok(StatusCode::OK)
+}
+
+/// Autorise ou interdit à UN compte précis de changer l'adresse du backend DEPUIS LES RÉGLAGES,
+/// une fois connecté (voir frontend(app)/src/components/ServerUrlForm.tsx) — désactivé par défaut
+/// pour tout le monde (voir la migration), l'Admin reste toujours autorisé indépendamment de cette
+/// colonne. Voir aussi update_server_choice_in_settings_all() pour l'activer/désactiver en masse,
+/// et update_server_choice_at_login() pour le réglage GLOBAL équivalent côté écran de connexion.
+///
+/// GARDE-FOU délibérément plus strict que update_extension_email_change_setting() ci-dessus
+/// (réservé aux modérateurs) : réservé à l'ADMIN SEUL. Rediriger l'app de quelqu'un vers un autre
+/// backend est un vecteur d'hameçonnage bien plus sensible qu'autoriser un changement d'email —
+/// un faux backend pourrait capter le hash du mot de passe maître envoyé à la connexion.
+pub async fn update_server_choice_in_settings(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Path(target_email): Path<String>,
+    Json(payload): Json<UpdateServerChoiceInSettingsPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin(&state) {
+        warn!("Tentative d'accès non autorisé au réglage choix de serveur par {} (pas l'Admin)", user.email);
+        return Err(AppError::Forbidden);
+    }
+
+    let target_email = target_email.to_lowercase();
+    check_can_act_on_target(&state, &user, &target_email).await?;
+
+    let res = sqlx::query("UPDATE users SET can_choose_server_in_settings = ? WHERE email = ?")
+        .bind(payload.enabled)
+        .bind(&target_email)
+        .execute(&state.db)
+        .await?;
+
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    let action = if payload.enabled { "SERVER_CHOICE_IN_SETTINGS_ENABLED" } else { "SERVER_CHOICE_IN_SETTINGS_DISABLED" };
+    let agent = get_user_agent(&headers);
+    state.log_audit(&target_email, action, addr.to_string(), agent).await;
+    info!("Choix du serveur dans les réglages pour {} réglé par {} (enabled={})", target_email, user.email, payload.enabled);
+
+    Ok(StatusCode::OK)
+}
+
+/// Même réglage que ci-dessus, mais appliqué à TOUS les comptes d'un coup — voir
+/// update_extension_email_change_setting_all() pour le raisonnement identique (Admin uniquement,
+/// touche potentiellement des modérateurs sans clause d'exclusion possible dans un `UPDATE` seul).
+pub async fn update_server_choice_in_settings_all(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(payload): Json<UpdateServerChoiceInSettingsPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin(&state) {
+        warn!("Tentative d'accès non autorisé au réglage choix de serveur (global) par {} (pas l'Admin)", user.email);
+        return Err(AppError::Forbidden);
+    }
+
+    sqlx::query("UPDATE users SET can_choose_server_in_settings = ?")
+        .bind(payload.enabled)
+        .execute(&state.db)
+        .await?;
+
+    let action = if payload.enabled { "SERVER_CHOICE_IN_SETTINGS_ENABLED_ALL" } else { "SERVER_CHOICE_IN_SETTINGS_DISABLED_ALL" };
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, action, addr.to_string(), agent).await;
+    info!("Choix du serveur dans les réglages réglé pour TOUS les comptes par {} (enabled={})", user.email, payload.enabled);
+
+    Ok(StatusCode::OK)
+}
+
+/// Réglage GLOBAL (PAS par compte, voir la table app_settings/migration) : contrôle si le lien
+/// "Configurer le serveur" est visible sur l'écran de connexion, AVANT toute authentification (voir
+/// pages/Login.tsx, qui lit ce réglage via l'endpoint public GET /public-config, et
+/// handlers/common.rs::get_public_config()). Réservé à l'Admin seul, même raisonnement que
+/// update_server_choice_in_settings() ci-dessus — encore plus sensible ici : quiconque ouvre l'app,
+/// même sans compte, verrait ce lien si activé.
+pub async fn update_server_choice_at_login(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(payload): Json<UpdateServerChoiceAtLoginPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin(&state) {
+        warn!("Tentative d'accès non autorisé au réglage choix de serveur à la connexion par {} (pas l'Admin)", user.email);
+        return Err(AppError::Forbidden);
+    }
+
+    sqlx::query("UPDATE app_settings SET server_choice_at_login_enabled = ? WHERE id = 1")
+        .bind(payload.enabled)
+        .execute(&state.db)
+        .await?;
+
+    let action = if payload.enabled { "SERVER_CHOICE_AT_LOGIN_ENABLED" } else { "SERVER_CHOICE_AT_LOGIN_DISABLED" };
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, action, addr.to_string(), agent).await;
+    info!("Choix du serveur à la connexion (global) réglé par {} (enabled={})", user.email, payload.enabled);
 
     Ok(StatusCode::OK)
 }
@@ -1014,5 +1117,89 @@ mod tests {
             AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
             Json(UpdateExtensionEmailChangePayload { enabled: true }),
         ).await.expect("le premier admin doit pouvoir activer ce réglage pour tout le monde");
+    }
+
+    /// update_server_choice_in_settings() : réservé à l'ADMIN SEUL, PAS un simple modérateur —
+    /// contrairement à update_extension_email_change_setting() (moins sensible), voir le
+    /// commentaire du handler. Un modérateur non-admin doit être rejeté AVANT même
+    /// check_can_act_on_target (donc y compris sur une cible non-modérateur, sans rapport avec le
+    /// tiering habituel).
+    #[tokio::test]
+    async fn test_update_server_choice_in_settings_requires_admin_not_just_moderator() {
+        let state = build_test_state_with_admin_email("owner@example.com").await;
+        register_test_user(&state, "owner@example.com", true).await;
+        register_test_user(&state, "moderator@example.com", true).await;
+        register_test_user(&state, "regular@example.com", false).await;
+
+        let denied = update_server_choice_in_settings(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            AuthUser { email: "moderator@example.com".to_string(), is_moderator: true },
+            Path("regular@example.com".to_string()), Json(UpdateServerChoiceInSettingsPayload { enabled: true }),
+        ).await;
+        assert!(matches!(denied, Err(AppError::Forbidden)), "un modérateur non-admin ne doit jamais pouvoir régler ce paramètre, même pour un compte non-modérateur");
+
+        let denied_on_self = update_server_choice_in_settings(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            Path("owner@example.com".to_string()), Json(UpdateServerChoiceInSettingsPayload { enabled: true }),
+        ).await;
+        assert!(matches!(denied_on_self, Err(AppError::Forbidden)), "l'Admin ne peut pas être la cible de ce réglage, même par lui-même (il y est toujours autorisé indépendamment de la colonne)");
+
+        update_server_choice_in_settings(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            Path("moderator@example.com".to_string()), Json(UpdateServerChoiceInSettingsPayload { enabled: true }),
+        ).await.expect("l'Admin doit pouvoir régler ce paramètre pour n'importe quel compte, modérateur compris");
+    }
+
+    /// update_server_choice_in_settings_all() : réservé à l'Admin, même raisonnement que
+    /// update_extension_email_change_setting_all().
+    #[tokio::test]
+    async fn test_update_server_choice_in_settings_all_requires_admin() {
+        let state = build_test_state_with_admin_email("owner@example.com").await;
+        register_test_user(&state, "owner@example.com", true).await;
+        register_test_user(&state, "moderator@example.com", true).await;
+
+        let denied = update_server_choice_in_settings_all(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            AuthUser { email: "moderator@example.com".to_string(), is_moderator: true },
+            Json(UpdateServerChoiceInSettingsPayload { enabled: true }),
+        ).await;
+        assert!(matches!(denied, Err(AppError::Forbidden)), "un modérateur non-admin ne doit pas pouvoir activer ce réglage pour tout le monde");
+
+        update_server_choice_in_settings_all(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            Json(UpdateServerChoiceInSettingsPayload { enabled: true }),
+        ).await.expect("l'Admin doit pouvoir activer ce réglage pour tout le monde");
+    }
+
+    /// update_server_choice_at_login() : réglage GLOBAL, réservé à l'Admin — vérifie en plus que
+    /// la valeur est bien persistée (relue directement via la table app_settings), pas juste que
+    /// l'appel réussit.
+    #[tokio::test]
+    async fn test_update_server_choice_at_login_requires_admin_and_persists() {
+        let state = build_test_state_with_admin_email("owner@example.com").await;
+        register_test_user(&state, "owner@example.com", true).await;
+        register_test_user(&state, "moderator@example.com", true).await;
+
+        let denied = update_server_choice_at_login(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            AuthUser { email: "moderator@example.com".to_string(), is_moderator: true },
+            Json(UpdateServerChoiceAtLoginPayload { enabled: true }),
+        ).await;
+        assert!(matches!(denied, Err(AppError::Forbidden)), "un modérateur non-admin ne doit pas pouvoir changer ce réglage global");
+
+        update_server_choice_at_login(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            Json(UpdateServerChoiceAtLoginPayload { enabled: true }),
+        ).await.expect("l'Admin doit pouvoir changer ce réglage global");
+
+        let persisted: bool = sqlx::query_scalar("SELECT server_choice_at_login_enabled FROM app_settings WHERE id = 1")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert!(persisted, "la valeur doit être réellement persistée en base, pas juste acceptée par le handler");
     }
 }

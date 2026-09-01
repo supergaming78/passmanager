@@ -492,6 +492,7 @@ fn build_router(state: Arc<AppState>) -> Router {
 
         // --- Routes générales de l'API ---
         .route("/health", get(handlers::health_check)) // Healthcheck pour load balancer/orchestrateur (Docker, k8s...)
+        .route("/public-config", get(handlers::get_public_config)) // Réglages globaux lisibles SANS authentification (voir handlers/common.rs) — utilisé par l'écran de connexion
         // Échange l'access token (Bearer classique) contre un ticket WS à usage unique — voir
         // le commentaire en tête de handlers/sync.rs pour le pourquoi de cette indirection.
         .route("/ws/ticket", post(handlers::create_ws_ticket))
@@ -514,6 +515,9 @@ fn build_router(state: Arc<AppState>) -> Router {
             .route("/admin/users/{email}/email", put(handlers::admin_update_user_email)) // Changer l'email d'un AUTRE compte (jamais le mot de passe maître)
             .route("/admin/users/{email}/extension-email-change", put(handlers::update_extension_email_change_setting)) // Autoriser/interdire le changement d'email via l'extension, pour CE compte
             .route("/admin/users/extension-email-change-all", put(handlers::update_extension_email_change_setting_all)) // Idem, pour TOUS les comptes d'un coup (Admin uniquement)
+            .route("/admin/users/{email}/server-choice", put(handlers::update_server_choice_in_settings)) // Autoriser/interdire le choix du serveur dans les Réglages, pour CE compte (Admin uniquement)
+            .route("/admin/users/server-choice-all", put(handlers::update_server_choice_in_settings_all)) // Idem, pour TOUS les comptes d'un coup (Admin uniquement)
+            .route("/admin/server-choice-at-login", put(handlers::update_server_choice_at_login)) // Réglage GLOBAL : visibilité du lien "Configurer le serveur" avant connexion (Admin uniquement)
             .route("/admin/users/{email}/revoke-sessions", post(handlers::revoke_user_sessions)) // Déconnecter un compte à distance
             .route("/admin/users/{email}", delete(handlers::delete_user)) // Supprimer définitivement un compte
             .route_layer(GovernorLayer::new(sensitive_governor.clone())))

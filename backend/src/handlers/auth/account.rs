@@ -219,8 +219,8 @@ pub async fn update_email(
 /// moyen de connaître son propre plafond actuel avant de le modifier (voir update_device_limit()) —
 /// PUT /devices/limit ne renvoie qu'un 200 vide, jamais la valeur en vigueur.
 pub async fn get_me(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
-    let (max_trusted_devices, can_change_email_via_extension): (i64, bool) = sqlx::query_as(
-        "SELECT max_trusted_devices, can_change_email_via_extension FROM users WHERE email = ?"
+    let (max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings): (i64, bool, bool) = sqlx::query_as(
+        "SELECT max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings FROM users WHERE email = ?"
     )
         .bind(&user.email)
         .fetch_one(&state.db)
@@ -231,6 +231,11 @@ pub async fn get_me(State(state): State<Arc<AppState>>, user: AuthUser) -> Resul
         "is_moderator": user.is_moderator,
         "max_trusted_devices": max_trusted_devices,
         "can_change_email_via_extension": can_change_email_via_extension,
+        // Valeur BRUTE de la colonne (PAS OR'ée avec is_admin) — même convention que le champ
+        // ci-dessus : c'est au CLIENT de combiner `isAdmin || canChooseServerInSettings` pour
+        // décider d'afficher la section (voir pages/Settings.tsx), is_admin étant déjà exposé
+        // séparément juste en dessous.
+        "can_choose_server_in_settings": can_choose_server_in_settings,
         // Voir handlers/admin.rs::update_user_role() : SEUL ce compte (ADMIN_EMAIL) peut changer
         // un rôle modérateur — exposé ici pour que l'écran Administration puisse masquer les
         // boutons promouvoir/rétrograder pour tout le monde d'autre, plutôt que de laisser un

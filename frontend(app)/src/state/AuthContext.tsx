@@ -28,6 +28,11 @@ interface AuthState {
   /** Vrai UNIQUEMENT pour le compte configuré via ADMIN_EMAIL — il n'existe qu'UN SEUL "Admin",
    * seul autorisé à gérer les rôles modérateur d'autres comptes (voir Admin.tsx). */
   isAdmin: boolean;
+  /** Autorisation à changer l'adresse du backend depuis les Réglages (voir
+   * components/ServerUrlForm.tsx, monté dans pages/Settings.tsx) — valeur BRUTE de GET /me, PAS
+   * OR'ée avec isAdmin ici : c'est à Settings.tsx de combiner les deux (isAdmin y a toujours accès
+   * indépendamment de cette valeur, voir handlers/admin.rs côté backend). */
+  canChooseServerInSettings: boolean;
 }
 
 export type LoginResult = { status: "OK" } | { status: "2FA_REQUIRED"; authHash: string };
@@ -104,7 +109,7 @@ interface AuthContextValue extends AuthState {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const LOGGED_OUT_STATE: AuthState = { email: null, accessToken: null, refreshToken: null, isModerator: false, isAdmin: false };
+const LOGGED_OUT_STATE: AuthState = { email: null, accessToken: null, refreshToken: null, isModerator: false, isAdmin: false, canChooseServerInSettings: false };
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(LOGGED_OUT_STATE);
@@ -152,11 +157,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const currentIsModerator = stateRef.current.isModerator;
     const currentIsAdmin = stateRef.current.isAdmin;
+    const currentCanChooseServerInSettings = stateRef.current.canChooseServerInSettings;
     const promise = api
       .refresh({ refresh_token: currentRefreshToken })
       .then((tokens) => {
-        // isModerator/isAdmin inchangés : un rafraîchissement de session ne modifie jamais le rôle du compte.
-        setTokens({ email: currentEmail, accessToken: tokens.access_token, refreshToken: tokens.refresh_token, isModerator: currentIsModerator, isAdmin: currentIsAdmin });
+        // isModerator/isAdmin/canChooseServerInSettings inchangés : un rafraîchissement de session
+        // ne modifie jamais les droits du compte.
+        setTokens({ email: currentEmail, accessToken: tokens.access_token, refreshToken: tokens.refresh_token, isModerator: currentIsModerator, isAdmin: currentIsAdmin, canChooseServerInSettings: currentCanChooseServerInSettings });
         return tokens.access_token;
       })
       .catch((err) => {
@@ -200,13 +207,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * authorizedRequest 401). */
   const establishSession = useCallback(
     async (userEmail: string, accessToken: string, refreshToken: string) => {
-      setTokens({ email: userEmail, accessToken, refreshToken, isModerator: false, isAdmin: false });
+      setTokens({ email: userEmail, accessToken, refreshToken, isModerator: false, isAdmin: false, canChooseServerInSettings: false });
       // Une nouvelle connexion vient de dériver la clé côté Rust (voir login()) : le coffre
       // redémarre forcément déverrouillé, même si la session précédente avait été verrouillée.
       setIsVaultLocked(false);
       try {
         const me = await api.getMe(accessToken);
-        setTokens({ email: userEmail, accessToken, refreshToken, isModerator: me.is_moderator, isAdmin: me.is_admin });
+        setTokens({ email: userEmail, accessToken, refreshToken, isModerator: me.is_moderator, isAdmin: me.is_admin, canChooseServerInSettings: me.can_choose_server_in_settings });
       } catch {
         // best-effort, voir la doc ci-dessus.
       }

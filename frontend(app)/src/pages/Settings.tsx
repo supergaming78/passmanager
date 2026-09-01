@@ -10,6 +10,7 @@ import AutoBackupSettings from "../components/AutoBackupSettings";
 import EmergencyAccessSettings from "../components/EmergencyAccessSettings";
 import SecurityHistorySettings from "../components/SecurityHistorySettings";
 import AppUpdateSettings from "../components/AppUpdateSettings";
+import ServerUrlForm from "../components/ServerUrlForm";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -21,7 +22,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export default function Settings() {
-  const { email } = useAuth();
+  const { email, isAdmin, canChooseServerInSettings } = useAuth();
 
   const [showChangeEmail, setShowChangeEmail] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
@@ -88,6 +89,16 @@ export default function Settings() {
         <Section title="Mises à jour">
           <AppUpdateSettings />
         </Section>
+
+        {/* Réservé : l'Admin y a toujours accès, un compte normal seulement si l'Admin le lui a
+            explicitement accordé (voir handlers/admin.rs::update_server_choice_in_settings() côté
+            backend, panneau Administration côté app). isAdmin OU canChooseServerInSettings — voir
+            state/AuthContext.tsx pour pourquoi ces deux valeurs restent distinctes. */}
+        {(isAdmin || canChooseServerInSettings) && (
+          <Section title="Serveur (cet appareil uniquement)">
+            <ServerUrlForm />
+          </Section>
+        )}
 
         {/* Seule l'icône "openai" (voir lib/knownLogos.ts) vient de Font Awesome Free, sous licence
             CC BY 4.0, qui EXIGE une attribution — d'où cette mention. Simple Icons et CoreUI Brands

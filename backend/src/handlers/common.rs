@@ -40,6 +40,22 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
     }
 }
 
+/// Petits réglages GLOBAUX lisibles SANS AUTHENTIFICATION, PAR NATURE (l'écran de connexion
+/// n'a encore identifié aucun compte) — voir handlers/admin.rs::update_server_choice_at_login()
+/// pour qui peut modifier ce réglage (Admin seul), et pages/Login.tsx côté app pour son usage :
+/// affiche (ou non) le lien "Configurer le serveur" avant toute connexion. Volontairement séparé
+/// de /health (rôles différents : orchestrateur/load balancer d'un côté, config produit de
+/// l'autre) plutôt que d'y ajouter ce champ.
+pub async fn get_public_config(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, crate::error::AppError> {
+    let server_choice_at_login_enabled: bool = sqlx::query_scalar(
+        "SELECT server_choice_at_login_enabled FROM app_settings WHERE id = 1"
+    )
+        .fetch_one(&state.db)
+        .await?;
+
+    Ok(Json(json!({ "server_choice_at_login_enabled": server_choice_at_login_enabled })))
+}
+
 // =========================================================================
 // TESTS SUR LES UTILITAIRES COMMUNS
 // =========================================================================
@@ -129,5 +145,37 @@ mod tests {
         let state = build_test_state().await;
         let response = health_check(State(state)).await.into_response();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// get_public_config() : accessible SANS le moindre AuthUser en paramètre (contrairement à
+    /// tout le reste du fichier admin.rs) — c'est tout le sens de ce endpoint (voir
+    /// pages/Login.tsx côté app, appelé AVANT toute connexion). Doit refléter server_choice_at_login_enabled
+    /// à false par défaut (voir la migration).
+    #[tokio::test]
+    async fn test_get_public_config_reflects_server_choice_at_login_default() {
+        let state = build_test_state().await;
+        let response = get_public_config(State(state)).await.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["server_choice_at_login_enabled"], false, "désactivé par défaut (voir la migration)");
+    }
+
+    /// Une fois le réglage activé (voir handlers/admin.rs::update_server_choice_at_login()), ce
+    /// endpoint public doit refléter le changement — sans lui, l'écran de connexion ne pourrait
+    /// jamais savoir qu'afficher le lien "Configurer le serveur".
+    #[tokio::test]
+    async fn test_get_public_config_reflects_server_choice_at_login_once_enabled() {
+        let state = build_test_state().await;
+        sqlx::query("UPDATE app_settings SET server_choice_at_login_enabled = 1 WHERE id = 1")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let response = get_public_config(State(state)).await.unwrap().into_response();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["server_choice_at_login_enabled"], true);
     }
 }

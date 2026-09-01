@@ -19,6 +19,7 @@ import {
   type LoginPayload,
   type MeResponse,
   type PasswordHistoryEntry,
+  type PublicConfig,
   type RefreshPayload,
   type RegisterPayload,
   type ResendVerificationPayload,
@@ -32,6 +33,8 @@ import {
   type UpdateDeviceLimitPayload,
   type UpdateEmailPayload,
   type UpdateExtensionEmailChangePayload,
+  type UpdateServerChoiceAtLoginPayload,
+  type UpdateServerChoiceInSettingsPayload,
   type UpdateUserRolePayload,
   type UserKeysInput,
   type UserPublicKey,
@@ -670,6 +673,40 @@ export function updateExtensionEmailChangeAll(accessToken: string, payload: Upda
     headers: authHeaders(accessToken),
     body: JSON.stringify(payload),
   });
+}
+
+/** Autorise/interdit UN compte à changer l'adresse du backend depuis les Réglages (Admin uniquement) —
+ * voir backend/src/handlers/admin.rs::update_server_choice_in_settings(). */
+export function updateServerChoiceInSettings(accessToken: string, targetEmail: string, payload: UpdateServerChoiceInSettingsPayload): Promise<void> {
+  return request<void>(`/admin/users/${encodeURIComponent(targetEmail)}/server-choice`, {
+    method: "PUT",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Même réglage, mais appliqué à TOUS les comptes d'un coup (Admin uniquement). */
+export function updateServerChoiceInSettingsAll(accessToken: string, payload: UpdateServerChoiceInSettingsPayload): Promise<void> {
+  return request<void>("/admin/users/server-choice-all", {
+    method: "PUT",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Réglage GLOBAL (pas par compte) : visibilité du lien "Configurer le serveur" sur l'écran de
+ * connexion, avant toute authentification (Admin uniquement). */
+export function updateServerChoiceAtLogin(accessToken: string, payload: UpdateServerChoiceAtLoginPayload): Promise<void> {
+  return request<void>("/admin/server-choice-at-login", {
+    method: "PUT",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+/** SANS authentification (voir Login.tsx) — lit le réglage global ci-dessus AVANT toute connexion. */
+export function getPublicConfig(): Promise<PublicConfig> {
+  return request<PublicConfig>("/public-config");
 }
 
 export function revokeUserSessions(accessToken: string, targetEmail: string): Promise<void> {

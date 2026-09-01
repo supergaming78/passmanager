@@ -76,7 +76,7 @@ explicitement déclaré derrière un reverse proxy de confiance) :
 
 | Palier | Routes concernées | Limite |
 |---|---|---|
-| Sensible | `POST /auth/register`, `/login`, `/verify-email`, `/resend-verification`, `/forgot-password`, `/reset-password`, `/verify-device` ; `PUT /auth/email`, `/auth/password` ; `PUT /admin/users/{email}/role`, `/admin/users/{email}/email`, `/admin/users/{email}/extension-email-change`, `/admin/users/extension-email-change-all` ; `POST /admin/users/{email}/revoke-sessions` ; `DELETE /admin/users/{email}` | 4 req/s, rafale de 8 |
+| Sensible | `POST /auth/register`, `/login`, `/verify-email`, `/resend-verification`, `/forgot-password`, `/reset-password`, `/verify-device` ; `PUT /auth/email`, `/auth/password` ; `PUT /admin/users/{email}/role`, `/admin/users/{email}/email`, `/admin/users/{email}/extension-email-change`, `/admin/users/extension-email-change-all`, `/admin/users/{email}/server-choice`, `/admin/users/server-choice-all`, `/admin/server-choice-at-login` ; `POST /admin/users/{email}/revoke-sessions` ; `DELETE /admin/users/{email}` | 4 req/s, rafale de 8 |
 | Signalement de bug | `POST /bug-reports` | 8 req/s, rafale de 16 — palier dédié, plus permissif que "Sensible" (pas de risque de brute-force ici, juste éviter qu'une famille derrière la même IP se bloque mutuellement) mais toujours en deçà du palier Global |
 | Auth (reste) | `POST /auth/logout`, `/refresh` | 15 req/s, rafale de 30 |
 | Global | Toutes les autres routes (`/vault/*`, `/devices/*`, `/ws/*`, `/me`, `/audit`, `GET /admin/users`...) | 40 req/s, rafale de 80 |
@@ -314,6 +314,7 @@ données liées (coffre, appareils de confiance, logs d'audit...).
   "is_moderator": false,
   "max_trusted_devices": 10,
   "can_change_email_via_extension": false,
+  "can_choose_server_in_settings": false,
   "is_admin": false
 }
 ```
@@ -324,7 +325,11 @@ actuellement en vigueur (seul moyen pour un client de le connaître avant de le 
 `PUT /devices/limit`, qui ne renvoie que 200 vide). `can_change_email_via_extension` : voir
 `PUT /auth/email` ci-dessus — permet à un client (la popup de l'extension) de savoir s'il doit
 afficher son formulaire de changement d'email plutôt que d'attendre un 403 pour le découvrir.
-`is_admin` : vrai UNIQUEMENT pour le compte configuré via `ADMIN_EMAIL` — seul compte
+`can_choose_server_in_settings` : voir `PUT /admin/users/{email}/server-choice` plus bas — permet à
+l'app (desktop/Android) de savoir si elle doit afficher la section "Serveur" dans les Réglages.
+Valeur BRUTE de la colonne, PAS combinée avec `is_admin` : c'est au client de faire
+`is_admin || can_choose_server_in_settings` (l'Admin y a toujours accès indépendamment de cette
+valeur). `is_admin` : vrai UNIQUEMENT pour le compte configuré via `ADMIN_EMAIL` — seul compte
 autorisé à appeler `PUT /admin/users/{email}/role` (voir plus bas) ; permet à l'écran
 Administration de masquer les boutons promouvoir/rétrograder pour tout le monde d'autre.
 
@@ -1096,6 +1101,7 @@ Liste tous les comptes de l'application. **Ne contient jamais `password_hash`**,
   "created_at": "...",
   "max_trusted_devices": 10,
   "can_change_email_via_extension": false,
+  "can_choose_server_in_settings": false,
   "is_admin": false
 }]
 ```
@@ -1174,6 +1180,49 @@ pouvoir les exclure proprement), elle est réservée exclusivement à `ADMIN_EMA
 
 **Réponse** : `200 OK`, corps vide.
 **Erreurs** : `403` appelant autre que le premier admin.
+
+### `PUT /admin/users/{email}/server-choice`
+
+*Authentification requise, réservé à l'Admin (`ADMIN_EMAIL`) — PAS un simple modérateur.* Autorise
+ou interdit à CE compte de changer l'adresse du backend depuis les Réglages de l'app
+(desktop/Android). Désactivé par défaut pour tout le monde ; l'Admin reste toujours autorisé
+indépendamment de ce réglage, pour son propre compte. Garde-fou volontairement plus strict que
+`PUT /admin/users/{email}/extension-email-change` ci-dessus (réservé aux modérateurs) : rediriger
+l'app de quelqu'un vers un autre backend est un vecteur d'hameçonnage bien plus sensible — un faux
+backend pourrait capter le hash du mot de passe maître envoyé à la connexion.
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `enabled` | boolean | oui |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `403` appelant non-Admin, ou tentative de cibler l'Admin lui-même. `404` email inconnu.
+
+### `PUT /admin/users/server-choice-all`
+
+*Authentification requise, réservé à l'Admin.* Même réglage que ci-dessus, mais appliqué à TOUS
+les comptes d'un coup (modérateurs compris, sans clause d'exclusion possible).
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `enabled` | boolean | oui |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `403` appelant non-Admin.
+
+### `PUT /admin/server-choice-at-login`
+
+*Authentification requise, réservé à l'Admin.* Réglage **GLOBAL** (pas par compte) : contrôle si
+le lien "Configurer le serveur" est visible sur l'écran de connexion de l'app, **avant toute
+authentification** — voir `GET /public-config` ci-dessous, qui expose cette valeur sans
+authentification (aucun compte n'est encore identifié à ce stade).
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `enabled` | boolean | oui |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `403` appelant non-Admin.
 
 ### `POST /admin/users/{email}/revoke-sessions`
 
@@ -1272,3 +1321,16 @@ signalement inconnu.
 joignable.
 
 **Réponse** : `200 OK { "status": "ok" }`, ou `503 Service Unavailable { "status": "db_unreachable" }`.
+
+### `GET /public-config`
+
+*Aucune authentification requise* — volontairement séparé de `GET /health` ci-dessus (rôles
+différents : orchestrateur/load balancer d'un côté, config produit de l'autre). Petits réglages
+GLOBAUX (pas par compte) lisibles avant toute connexion — utilisé par l'écran de connexion de l'app
+pour savoir s'il doit afficher le lien "Configurer le serveur" (voir
+`PUT /admin/server-choice-at-login` plus haut, réservé à l'Admin).
+
+**Réponse** : `200 OK` :
+```json
+{ "server_choice_at_login_enabled": false }
+```

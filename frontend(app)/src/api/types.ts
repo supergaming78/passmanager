@@ -191,10 +191,22 @@ export interface MeResponse {
   /** Autorisation à changer son email DEPUIS L'EXTENSION NAVIGATEUR — sans effet sur le desktop,
    * qui n'est jamais concerné par cette restriction (voir backend/src/handlers/auth/account.rs). */
   can_change_email_via_extension: boolean;
+  /** Autorisation à changer l'adresse du backend DEPUIS LES RÉGLAGES (voir
+   * components/ServerUrlForm.tsx, monté dans pages/Settings.tsx quand isAdmin || cette valeur).
+   * Valeur BRUTE de la colonne, PAS OR'ée avec is_admin côté serveur — c'est au client de combiner
+   * les deux (l'Admin y a toujours accès indépendamment de cette valeur). */
+  can_choose_server_in_settings: boolean;
   /** Vrai UNIQUEMENT pour le compte configuré via ADMIN_EMAIL — il n'existe qu'UN SEUL "Admin",
    * SEUL compte autorisé à changer un rôle modérateur (voir handlers/admin.rs::update_user_role()).
    * Utilisé par Admin.tsx pour masquer les boutons promouvoir/rétrograder pour tout le monde d'autre. */
   is_admin: boolean;
+}
+
+/** Réponse de GET /public-config — SANS authentification (voir Login.tsx, appelé AVANT toute
+ * connexion) : contrôle uniquement si le lien "Configurer le serveur" est visible sur l'écran de
+ * connexion (voir backend/src/handlers/admin.rs::update_server_choice_at_login(), Admin uniquement). */
+export interface PublicConfig {
+  server_choice_at_login_enabled: boolean;
 }
 
 export interface ChangeMasterPasswordPayload {
@@ -226,6 +238,9 @@ export interface AdminUserView {
   created_at: string;
   max_trusted_devices: number;
   can_change_email_via_extension: boolean;
+  /** Voir le champ de même nom sur MeResponse — ici, la valeur pour CE compte listé, pas
+   * l'appelant. */
+  can_choose_server_in_settings: boolean;
   /** Vrai UNIQUEMENT pour le compte ADMIN_EMAIL — il n'existe qu'UN SEUL "Admin" ; tout autre
    * compte avec is_moderator=true est un "Modérateur" (voir Admin.tsx). */
   is_admin: boolean;
@@ -238,6 +253,20 @@ export interface UpdateUserRolePayload {
 /** Payload admin pour PUT /admin/users/{email}/extension-email-change ET
  * PUT /admin/users/extension-email-change-all (même forme pour un compte précis ou pour tous). */
 export interface UpdateExtensionEmailChangePayload {
+  enabled: boolean;
+}
+
+/** Payload admin pour PUT /admin/users/{email}/server-choice ET
+ * PUT /admin/users/server-choice-all (même forme pour un compte précis ou pour tous — même
+ * convention que UpdateExtensionEmailChangePayload ci-dessus). Réservé à l'Admin (pas juste
+ * modérateur), voir backend/src/handlers/admin.rs::update_server_choice_in_settings(). */
+export interface UpdateServerChoiceInSettingsPayload {
+  enabled: boolean;
+}
+
+/** Payload admin pour PUT /admin/server-choice-at-login — réglage GLOBAL (pas par compte),
+ * réservé à l'Admin. Voir backend/src/handlers/admin.rs::update_server_choice_at_login(). */
+export interface UpdateServerChoiceAtLoginPayload {
   enabled: boolean;
 }
 
