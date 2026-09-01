@@ -75,7 +75,14 @@ jobs:
           mkdir -p "$staging/popup"
           cp -r extension/popup/dist "$staging/popup/dist"
           cp extension/GUIDE_INSTALLATION.md "$staging/"
-          zip -qr "PassManager-extension-$version.zip" "$staging"
+          # CORRECTIF (premier run réel) : zipper "$staging" lui-même (plutôt que SON CONTENU)
+          # place manifest.json sous un dossier interne du même nom que le zip — l'extraction
+          # "Extraire tout" de Windows crée alors un SECOND dossier par-dessus (mêmes noms), donnant
+          # un manifest.json à DEUX niveaux d'imbrication au lieu d'un seul ("fichier manifeste
+          # absent" en pointant sur le dossier extrait de premier niveau, qui ne contient qu'un
+          # sous-dossier). `cd` dans "$staging" avant de zipper avec `.` : manifest.json atterrit à
+          # la RACINE de l'archive, un seul niveau de dossier quel que soit l'outil d'extraction.
+          (cd "$staging" && zip -qr "../PassManager-extension-$version.zip" .)
           echo "PACKAGE_PATH=PassManager-extension-$version.zip" >> "$GITHUB_ENV"
 
       - name: Publier la release GitHub (brouillon)
