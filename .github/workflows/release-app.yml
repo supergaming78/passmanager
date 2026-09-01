@@ -296,6 +296,14 @@ jobs:
           scheme=$(echo "$all_schemes" | grep -i "_iOS" | head -1 | xargs)
           if [ -z "$scheme" ]; then scheme=$(echo "$all_schemes" | head -1 | xargs); fi
           echo "Scheme : $scheme"
+          # CORRECTIF (voir ios-test.yml pour le détail complet) : fichier addr factice attendu par
+          # `tauri ios xcode-script`, normalement écrit par `tauri ios build`/`dev` avant xcodebuild
+          # — sans impact en release (contenu déjà bundlé dans dist/, jamais un serveur de dev).
+          identifier=$(grep -o '"identifier"[[:space:]]*:[[:space:]]*"[^"]*"' ../../tauri.conf.json | sed -E 's/.*"([^"]+)"$/\1/')
+          tmp_dir="${TMPDIR:-/tmp}"
+          addr_file="${tmp_dir%/}/${identifier}-server-addr"
+          echo -n "127.0.0.1:1420" > "$addr_file"
+          echo "Fichier addr factice écrit : $addr_file"
           xcodebuild archive \
             -project "$project" \
             -scheme "$scheme" \
