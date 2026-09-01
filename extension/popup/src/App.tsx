@@ -9,6 +9,7 @@ import * as session from "./lib/session";
 import { decryptEntry, encryptEntry, type PlainVaultEntry } from "./lib/vaultCrypto";
 import { getPreferredIdentifier } from "./lib/entryIdentifier";
 import { isStandaloneWindow, openStandaloneAndClose } from "./lib/popupWindow";
+import { getStandaloneOnTfa } from "./lib/settings";
 import { runAutofill, getActiveTabUrl, domainsLikelyMatch } from "./lib/autofill";
 import { getErrorMessage } from "./lib/errors";
 import { copyPasswordWithAutoClear } from "./lib/clipboard";
@@ -67,10 +68,12 @@ export default function App() {
           // CORRECTIF (voir lib/popupWindow.ts) : un popup ancré se ferme dès qu'on clique
           // ailleurs — systématique en pleine saisie 2FA, le temps d'aller lire le code dans un
           // email. Bascule vers une vraie fenêtre détachée, qui ne se ferme pas en perdant le
-          // focus. Ne rien faire si on est DÉJÀ dans une fenêtre détachée (pas de bascule en
-          // cascade). Fire-and-forget : l'écran 2FA local s'affiche immédiatement pendant que la
-          // nouvelle fenêtre s'ouvre en arrière-plan, avant que celle-ci ne se ferme.
-          if (!isStandaloneWindow()) {
+          // focus. Réglable dans Réglages (getStandaloneOnTfa, voir SettingsView.tsx) — activé
+          // par défaut, mais certains préfèrent rester en popup malgré le risque. Ne rien faire
+          // si on est DÉJÀ dans une fenêtre détachée (pas de bascule en cascade). Fire-and-forget :
+          // l'écran 2FA local s'affiche immédiatement pendant que la nouvelle fenêtre s'ouvre en
+          // arrière-plan, avant que celle-ci ne se ferme.
+          if (getStandaloneOnTfa() && !isStandaloneWindow()) {
             void session.savePendingTfa(email, authHashHex, vaultKey, rememberMe).then(openStandaloneAndClose);
           }
         }}
@@ -88,7 +91,17 @@ export default function App() {
         rememberMe={screen.rememberMe}
         onVerified={() => {
           void session.clearPendingTfa();
-          void goToVault();
+          // Demande explicite : une fois le code accepté, on repasse en mode popup normal plutôt
+          // que d'afficher le coffre dans la fenêtre détachée — celle-ci n'avait de raison d'être
+          // qu'à cause de la saisie 2FA. Rouvrir l'extension depuis la barre d'outils retrouve
+          // directement le coffre (session déjà persistée par verifyDeviceAndLogin), pas besoin
+          // de se reconnecter. Un popup ancré (2FA désactivée dans Réglages, ou déjà connecté sans
+          // 2FA) n'a lui rien de spécial à faire : juste afficher le coffre normalement.
+          if (isStandaloneWindow()) {
+            window.close();
+          } else {
+            void goToVault();
+          }
         }}
         onCancel={() => {
           void session.clearPendingTfa();

@@ -63,3 +63,18 @@ export function getClipboardClearSeconds(): number {
 export function setClipboardClearSeconds(seconds: number): void {
   localStorage.setItem(CLIPBOARD_CLEAR_SECONDS_KEY, String(seconds));
 }
+
+const STANDALONE_ON_TFA_KEY = "passmanager.standaloneOnTfa";
+
+/** Ouvrir une fenêtre détachée dès que l'écran 2FA est atteint (voir App.tsx +
+ * lib/popupWindow.ts) — activé PAR DÉFAUT (un popup ancré se ferme sinon dès qu'on clique
+ * ailleurs, ex: pour aller lire le code dans un email). Réglable dans Réglages : certains
+ * préfèrent rester en popup malgré ce risque (fenêtre plus discrète/rapide à fermer). */
+export function getStandaloneOnTfa(): boolean {
+  const raw = localStorage.getItem(STANDALONE_ON_TFA_KEY);
+  return raw === null ? true : raw === "true";
+}
+
+export function setStandaloneOnTfa(enabled: boolean): void {
+  localStorage.setItem(STANDALONE_ON_TFA_KEY, String(enabled));
+}

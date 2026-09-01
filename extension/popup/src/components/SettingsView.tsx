@@ -15,6 +15,8 @@ import {
   setPopupLockMinutes,
   getClipboardClearSeconds,
   setClipboardClearSeconds,
+  getStandaloneOnTfa,
+  setStandaloneOnTfa,
 } from "../lib/settings";
 import type { TrustedDevice } from "../api/types";
 import { getErrorMessage } from "../lib/errors";
@@ -47,6 +49,7 @@ export default function SettingsView({
   const [backendUrl, setBackendUrlState] = useState(getBackendUrl());
   const [lockMinutes, setLockMinutes] = useState(getPopupLockMinutes());
   const [clipboardSeconds, setClipboardSeconds] = useState(getClipboardClearSeconds());
+  const [standaloneOnTfa, setStandaloneOnTfaState] = useState(getStandaloneOnTfa());
 
   const [newEmail, setNewEmail] = useState("");
   const [emailPassword, setEmailPassword] = useState("");
@@ -100,6 +103,11 @@ export default function SettingsView({
   function handleSaveClipboardSeconds(seconds: number) {
     setClipboardSeconds(seconds);
     setClipboardClearSeconds(seconds);
+  }
+
+  function handleToggleStandaloneOnTfa(enabled: boolean) {
+    setStandaloneOnTfaState(enabled);
+    setStandaloneOnTfa(enabled);
   }
 
   async function handleChangeEmail(e: FormEvent) {
@@ -192,6 +200,20 @@ export default function SettingsView({
             </option>
           ))}
         </select>
+        <label className="mt-3 flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-300">
+          <input
+            type="checkbox"
+            checked={standaloneOnTfa}
+            onChange={(e) => handleToggleStandaloneOnTfa(e.target.checked)}
+            className="rounded border-neutral-300 text-indigo-600 focus:ring-indigo-500"
+          />
+          Ouvrir une fenêtre séparée pour saisir le code de vérification
+        </label>
+        <p className="mt-1 text-xs text-neutral-500">
+          {standaloneOnTfa
+            ? "Une petite fenêtre s'ouvre pour la saisie du code — elle ne se ferme pas si tu vas consulter tes emails ailleurs."
+            : "Reste en popup classique — se ferme si tu cliques ailleurs, y compris pour aller lire le code reçu par email."}
+        </p>
       </Section>
 
       <Section title="Compte">
