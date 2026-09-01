@@ -62,9 +62,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Rend l'écriture dans le fichier asynchrone (non-bloquante pour le thread principal)
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
+    // CORRECTIF OPÉRATIONNEL (repéré face à un vrai déploiement Portainer bloqué en "Restarting"
+    // sans le moindre log visible) : jusqu'ici, `.with_writer(non_blocking)` seul envoyait TOUS
+    // les logs applicatifs UNIQUEMENT dans le fichier `./logs/` À L'INTÉRIEUR du conteneur —
+    // jamais sur stdout/stderr, qui est la SEULE chose que `docker logs`/Portainer capturent.
+    // Résultat concret : même une app qui tourne PARFAITEMENT ne montrerait jamais rien dans
+    // Portainer, et pire, un plantage AU DÉMARRAGE (ex: permissions refusées sur le volume
+    // ./data, un scénario réel documenté dans le README) devenait totalement invisible depuis
+    // l'outil que quiconque déploie via Portainer utiliserait en premier pour diagnostiquer.
+    // `.and(std::io::stdout)` (voir MakeWriterExt) : écrit le MÊME flux aux DEUX destinations —
+    // le fichier tournant reste pour un historique persistant/analyse ultérieure, stdout pour une
+    // visibilité immédiate via `docker logs`/Portainer, sans perdre l'un pour l'autre.
+    use tracing_subscriber::fmt::writer::MakeWriterExt;
+    let dual_writer = non_blocking.and(std::io::stdout);
+
     // Initialisation du sous-système de logs au format JSON pour l'analyse automatisée
     tracing_subscriber::fmt()
-        .with_writer(non_blocking)
+        .with_writer(dual_writer)
         .json()
         .with_current_span(true)
         .with_span_list(true)
