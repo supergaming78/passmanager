@@ -357,7 +357,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$app_path" "$RUNNER_TEMP/Payload/"
           (cd "$RUNNER_TEMP" && zip -qr unsigned.ipa Payload)
-          mkdir -p frontend(app)/src-tauri/gen/apple/build
+          mkdir -p "frontend(app)/src-tauri/gen/apple/build"
           mv "$RUNNER_TEMP/unsigned.ipa" "frontend(app)/src-tauri/gen/apple/build/PassManager-unsigned.ipa"
 
       - name: Ajouter le .ipa à la release déjà créée par le job desktop
