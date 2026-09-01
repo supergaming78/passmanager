@@ -4,7 +4,6 @@ import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
 import type { AdminUserView, AuditLog, BugReportView } from "../api/types";
-import ServerUrlForm from "../components/ServerUrlForm";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -423,10 +422,6 @@ export default function Admin() {
             <BugReportsSection />
           </Section>
         )}
-
-        <Section title="Serveur (cet appareil uniquement)">
-          <ServerUrlForm />
-        </Section>
       </div>
     </main>
   );

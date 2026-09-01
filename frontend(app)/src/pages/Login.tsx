@@ -107,15 +107,10 @@ export default function Login() {
           Créer un compte
         </Link>
       </div>
-      {/* CORRECTIF : affiché auparavant seulement en dev (`isDev &&`), rendant ce lien introuvable
-          en production — hors, c'est le SEUL chemin pour un premier lancement de pointer l'app vers
-          le bon backend auto-hébergé avant même de pouvoir se connecter (voir ServerSettings.tsx et
-          ServerSettingsRoute.tsx). Toujours affiché, discrètement, pour ne pas distraire un
-          utilisateur déjà correctement configuré. */}
+      {/* Plus de lien "Configurer le serveur" ici (voir lib/settings.ts) : l'adresse du backend est
+          désormais codée en dur, l'écran /server (ServerSettings.tsx/ServerSettingsRoute.tsx) a été
+          retiré — voir la conversation du 2026-09-01. */}
       <div className="mt-3 flex justify-center gap-3 text-center">
-        <Link to="/server" className="text-xs text-neutral-400 hover:underline dark:text-neutral-500">
-          Configurer le serveur
-        </Link>
         {/* Accessible AVANT toute connexion — un bug qui empêche justement de se connecter doit
             pouvoir être signalé depuis l'app elle-même (voir components/BugReportModal.tsx). */}
         <button

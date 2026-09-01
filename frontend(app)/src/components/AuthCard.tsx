@@ -3,12 +3,13 @@ import type { ReactNode } from "react";
 /** Mise en page partagée par tous les écrans d'authentification (register/login/2fa/...) —
  * carte centrée, cohérente sur les cinq écrans du flux plutôt que redéfinie à chaque fois.
  *
- * BADGE "Bêta" TEMPORAIRE (voir la conversation du 2026-08-31) : la période de test se fait avec
- * l'écran "Configurer le serveur" encore accessible (voir ServerSettingsRoute.tsx), avant que
- * l'adresse définitive du backend ne soit fixée en dur. Le badge ci-dessous marque cette période
- * de façon purement visuelle, sur les cinq écrans qui utilisent AuthCard (register/login/2fa/
- * forgot-password/reset-password) — RETIRER cette ligne (juste le <span> ci-dessous) quand
- * l'adresse définitive sera fixée et l'écran "Configurer le serveur" retiré. */
+ * BADGE "Bêta" (voir la conversation du 2026-08-31, puis du 2026-09-01) : l'adresse du backend est
+ * désormais fixée en dur et l'écran "Configurer le serveur" a été retiré (voir lib/settings.ts) —
+ * la condition initialement prévue pour retirer ce badge est donc remplie. Gardé pour l'instant
+ * volontairement : signaler la fin du déploiement du backend n'est pas la même chose que déclarer
+ * le LOGICIEL lui-même stable/terminé (à décider séparément). Sur les cinq écrans qui utilisent
+ * AuthCard (register/login/2fa/forgot-password/reset-password) — RETIRER cette ligne (juste le
+ * <span> ci-dessous) le jour où l'app sort officiellement de bêta. */
 export default function AuthCard({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
   return (
     <main className="flex min-h-screen items-center justify-center bg-neutral-50 px-4 dark:bg-neutral-950">

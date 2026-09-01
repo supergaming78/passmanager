@@ -1,21 +1,24 @@
 // Paramètres NON sensibles de l'app, persistés dans le stockage local du webview (contrairement
 // à la clé du coffre ou aux tokens, qui ne doivent jamais y transiter — voir state/session.ts).
 
-const BACKEND_URL_KEY = "passmanager.backendUrl";
+import { isDev } from "./env";
 
 /**
- * URL de base du backend (ex: "https://tonapp.duckdns.org" ou "http://localhost:3000" en dev).
- * Configurable par l'utilisateur (voir écran Réglages, à venir) plutôt que codée en dur au build :
- * cette app doit pouvoir pointer vers N'IMPORTE QUELLE instance du backend que l'utilisateur
- * déploie lui-même (auto-hébergement), pas une seule URL fixe.
+ * URL de base du backend — CODÉE EN DUR (voir la conversation du 2026-09-01) : l'app pointait
+ * auparavant vers une URL configurable par l'utilisateur (écran "Configurer le serveur", retiré),
+ * le temps de vérifier que le déploiement auto-hébergé définitif (NPM + DuckDNS + certificat
+ * Let's Encrypt via DNS Challenge, redirection de port 3557→443 chez le fournisseur d'accès)
+ * fonctionnait vraiment, en local ET à distance. C'est confirmé — cette adresse est désormais fixe
+ * pour TOUT le monde (famille/proches visés par ce projet, pas d'auto-hébergement tiers à prévoir).
+ *
+ * En dev (`npm run tauri dev`) : reste sur le backend local (`cargo run` dans backend/), jamais
+ * sur le serveur de prod — évite de tester par erreur contre les vraies données de production.
  */
-export function getBackendUrl(): string {
-  return localStorage.getItem(BACKEND_URL_KEY) ?? "http://localhost:3000";
-}
+const PRODUCTION_BACKEND_URL = "https://backend-passmanager.duckdns.org:3557";
+const DEV_BACKEND_URL = "http://localhost:3000";
 
-export function setBackendUrl(url: string): void {
-  // Retire un slash final éventuel pour éviter les doubles "//" lors de la concaténation des routes.
-  localStorage.setItem(BACKEND_URL_KEY, url.replace(/\/+$/, ""));
+export function getBackendUrl(): string {
+  return isDev ? DEV_BACKEND_URL : PRODUCTION_BACKEND_URL;
 }
 
 const GENERATOR_OPTIONS_KEY = "passmanager.generatorOptions";
