@@ -325,10 +325,18 @@ fn build_router(state: Arc<AppState>) -> Router {
     let ip_key_extractor = ConfigurableIpKeyExtractor {
         trust_proxy_headers: state.config.trust_proxy_headers,
     };
+    // CORRECTIF (retour utilisateur, 2026-09-02) : burst=8 restait trop strict en usage réel —
+    // cette clé est PARTAGÉE par IP (voir ip_key_extractor ci-dessus), donc plusieurs appareils
+    // personnels (téléphone, tablette, PC, extension) derrière la MÊME box internet consomment le
+    // même budget, pas un budget par appareil. Le vrai garde-fou contre le brute-force d'un compte
+    // PRÉCIS reste le verrou par compte (5 échecs, voir account_login_lockout) et le coût Argon2
+    // lui-même — ce limiteur-ci protège surtout contre l'épuisement de RAM/CPU d'un abus massif,
+    // pas la première ligne de défense anti-brute-force. burst=20/per_second=6 laisse largement
+    // plus de marge à un usage multi-appareils normal.
     let sensitive_governor = Arc::new(
         tower_governor::governor::GovernorConfigBuilder::default()
-            .per_second(4)
-            .burst_size(8)
+            .per_second(6)
+            .burst_size(20)
             .key_extractor(ip_key_extractor)
             .finish()
             .unwrap()
