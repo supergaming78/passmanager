@@ -104,11 +104,27 @@ jobs:
           HAS_AMO_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
         run: echo "configured=$([ -n "$HAS_AMO_ISSUER" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
+      # CORRECTIF (premier run réel) : "WebExtError: Upload failed: Unauthorized / Unknown JWT iss
+      # (issuer)" — même piège déjà rencontré avec TAURI_SIGNING_PRIVATE_KEY (voir release-app.yml) :
+      # un retour à la ligne parasite s'était glissé au copier-coller du secret dans le formulaire
+      # GitHub. Nettoyage systématique AVANT de passer les valeurs à web-ext, comme pour les
+      # secrets de signature desktop/Android.
+      - name: Nettoyer les secrets AMO (retours à la ligne parasites)
+        if: steps.check-amo.outputs.configured == 'true'
+        id: clean-amo
+        run: |
+          clean_issuer="$(printf '%s' "${{ secrets.AMO_JWT_ISSUER }}" | tr -d '\n\r')"
+          clean_secret="$(printf '%s' "${{ secrets.AMO_JWT_SECRET }}" | tr -d '\n\r')"
+          echo "::add-mask::$clean_issuer"
+          echo "::add-mask::$clean_secret"
+          printf 'issuer<<__EOF__\n%s\n__EOF__\n' "$clean_issuer" >> "$GITHUB_OUTPUT"
+          printf 'secret<<__EOF__\n%s\n__EOF__\n' "$clean_secret" >> "$GITHUB_OUTPUT"
+
       - name: Signer pour Firefox (unlisted, .xpi permanent)
         if: steps.check-amo.outputs.configured == 'true'
         env:
-          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
-          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+          WEB_EXT_API_KEY: ${{ steps.clean-amo.outputs.issuer }}
+          WEB_EXT_API_SECRET: ${{ steps.clean-amo.outputs.secret }}
         run: |
           set -e
           npx --yes web-ext sign \
