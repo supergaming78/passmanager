@@ -522,7 +522,15 @@ export default function Vault() {
         // (favori/force/réutilisé/dossier) : deux cartes voisines avec un contenu légèrement
         // différent finissaient avec leurs boutons à des hauteurs différentes, d'où l'impression
         // d'une mise en forme incohérente d'une carte à l'autre.
-        className={`flex items-start justify-between gap-3 rounded-xl border p-4 transition ${
+        // CORRECTIF (retour utilisateur mobile, écran étroit) : flex-col en dessous de sm (les
+        // téléphones n'ont pas tous la même largeur — plutôt que viser une taille d'écran précise,
+        // on empile systématiquement nom+badges au-dessus et actions en dessous dès que la carte
+        // n'a plus la place de mettre les deux côte à côte). En row (sm et +), comportement
+        // identique à avant. Les boutons d'action, sur leur propre ligne pleine largeur en mobile,
+        // ont enfin la place de se disposer sur 1-2 lignes au lieu d'être écrasés à droite du nom
+        // du site dans l'espace restant. CSS pur (aucune logique JS) : rendu strictement identique
+        // sur iPhone (même WebView, mêmes classes Tailwind) sans rien à adapter côté iOS.
+        className={`flex flex-col gap-3 rounded-xl border p-4 transition sm:flex-row sm:items-start sm:justify-between ${
           isSelecting ? "cursor-pointer" : ""
         } ${
           isSelecting && selectedIds.has(entry.id)
@@ -603,7 +611,10 @@ export default function Vault() {
           // sont regroupées dans le menu "⋯" (voir EntryActionsMenu) : c'est ce qui évite à cette
           // rangée de passer à la ligne différemment d'une carte à l'autre selon le nom de site ou
           // les badges affichés à gauche (voir le commentaire sur items-start plus haut).
-          <div className="ml-3 flex shrink-0 flex-wrap items-start justify-end gap-1.5">
+          // ml-3/shrink-0/justify-end n'ont de sens qu'en mode ligne (sm et +, voir le <li>
+          // ci-dessus) : en dessous de sm, cette rangée est sur sa propre ligne pleine largeur
+          // (justify-start par défaut), elle n'a donc plus besoin d'être compressée à droite.
+          <div className="flex flex-wrap items-start gap-1.5 sm:ml-3 sm:shrink-0 sm:justify-end">
             {entry.url && (
               <button
                 type="button"
@@ -669,7 +680,13 @@ export default function Vault() {
 
   return (
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
-      <div className="mx-auto max-w-2xl">
+      {/* CORRECTIF (retour utilisateur, 2026-09-01) : max-w-2xl (672px) restait fixe quelle que
+       * soit la largeur de fenêtre — sur tablette (Android/iPad) ou desktop, cette limite était
+       * atteinte bien avant le bord de l'écran, laissant de grandes marges vides des deux côtés au
+       * lieu d'exploiter l'espace disponible. md/lg élargissent progressivement le contenu à partir
+       * de la largeur d'une tablette portrait (768px) puis paysage/desktop (1024px) — CSS pur, donc
+       * un même comportement sur Android tablette et iPad (pas de détection de plateforme). */}
+      <div className="mx-auto max-w-2xl md:max-w-3xl lg:max-w-4xl">
         <header className="mb-6 flex flex-col gap-3">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">

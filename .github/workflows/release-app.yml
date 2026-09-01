@@ -32,15 +32,29 @@
 #
 # Ce que fait le job `ios` — EXPÉRIMENTAL, voir la conversation du 2026-09-01 : l'utilisateur n'a
 # PAS de compte Apple Developer payant (99$/an, autrement obligatoire pour toute signature Apple
-# "normale") — construit donc volontairement un .ipa NON SIGNÉ (CODE_SIGNING_ALLOWED=NO côté
-# xcodebuild, en contournant complètement `tauri ios build`, qui EXIGE lui une équipe de signature
-# configurée). Ce .ipa n'est PAS installable tel quel : chaque personne (utilisateur ou
-# famille/amis) doit le signer lui-même avec SON PROPRE Apple ID gratuit via AltStore/SideStore +
-# AltServer (existe en version Windows, pas besoin de Mac) — voir le README pour la marche à
-# suivre. Aucun secret Apple à créer : ce job ne signe rien, ne connaît aucun compte Apple. Pas
-# testé en conditions réelles avant le premier vrai run de ce job (aucun Mac disponible en local
-# pour ce projet) — comme chaque autre job de ce fichier à sa création, à déboguer pour de vrai au
-# premier run, voir les CORRECTIFs déjà accumulés ci-dessus pour desktop/android.
+# "normale") — construit donc volontairement un .ipa NON SIGNÉ. Ce .ipa n'est PAS installable tel
+# quel : chaque personne (utilisateur ou famille/amis) doit le signer lui-même avec SON PROPRE
+# Apple ID gratuit via AltStore/SideStore + AltServer (existe en version Windows, pas besoin de
+# Mac) — voir le README pour la marche à suivre. Aucun secret Apple à créer : ce job ne signe
+# rien, ne connaît aucun compte Apple.
+#
+# Recette VALIDÉE par un vrai run (voir la conversation du 2026-09-01, mise au point dans le
+# workflow temporaire `ios-test.yml` avant d'être portée ici, ce dernier maintenant supprimé) —
+# `tauri ios build` DOIT réellement tourner (pas un `xcodebuild` manuel séparé) : la phase de
+# build Xcode "Build Rust Code" se connecte à un pont WebSocket/JSON-RPC hébergé par le PROCESSUS
+# `tauri ios build` lui-même pour récupérer ses options (cible, etc.) — un `xcodebuild archive`
+# manuel, même avec un faux fichier addr, échoue avec "Connection refused" (rien n'écoute côté
+# serveur). `tauri ios build` n'a lui-même aucun flag pour désactiver la signature (vérifié contre
+# la doc CLI officielle) : sans configuration, Xcode refuse même de démarrer ("requires a
+# development team"), avant d'atteindre cette phase. Solution : désactiver la signature au niveau
+# du PROJET Xcode généré (project.pbxproj, via le gem Ruby `xcodeproj`) plutôt qu'en ligne de
+# commande — `tauri ios build` n'a alors plus rien à outrepasser. Avec ça, `tauri ios build` va
+# jusqu'au bout de l'ARCHIVE (le pont RPC se connecte, Rust compile), mais échoue à la toute
+# dernière étape (`-exportArchive`, qui exige un vrai teamID) — attendu et sans conséquence :
+# xcodebuild écrit l'archive AVANT de tenter l'export, donc un .xcarchive valide reste sur disque
+# malgré l'échec global de la commande (`|| true`), récupéré et empaqueté à la main juste après (un
+# .ipa n'étant qu'un .app zippé dans un dossier "Payload/", pas besoin d'un export officiel qui
+# exigerait, lui, une vraie signature).
 name: Release app
 
 on:
@@ -275,46 +289,62 @@ jobs:
         working-directory: frontend(app)
         run: npm run build
 
-      # `--ci` : évite toute invite interactive (choix de l'équipe de signature notamment) — sans
-      # incidence ici de toute façon, la signature est entièrement contournée plus bas.
+      # `--ci` : évite toute invite interactive (choix de l'équipe de signature notamment).
       - name: Générer le projet Xcode (gen/apple, jamais commité — régénéré à chaque run)
         working-directory: frontend(app)
         run: npx tauri ios init --ci
 
-      # CONTOURNE volontairement `tauri ios build` (qui exige une équipe de signature configurée,
-      # voir le commentaire en tête de fichier sur le job `ios`) — appelle `xcodebuild` directement
-      # avec la signature explicitement désactivée. Le nom exact du scheme généré n'est pas figé en
-      # dur (dépend du nom du crate/produit) : recherché dynamiquement via `xcodebuild -list`
-      # plutôt que deviné, pour rester robuste si ce nom diffère de ce qui est attendu.
-      - name: Construire l'archive .xcarchive NON SIGNÉE
+      # CORRECTIF (voir le commentaire en tête de fichier sur le job `ios`) : désactive la
+      # signature au niveau du PROJET Xcode généré (project.pbxproj) plutôt qu'en ligne de
+      # commande — `tauri ios build`, appelé juste après, n'a alors plus rien à outrepasser. Le gem
+      # Ruby `xcodeproj` (Ruby déjà présent sur les runners macOS) est l'outil fiable pour éditer un
+      # .pbxproj correctement (format OpenStep, pas du XML standard — un sed/perl à l'aveugle serait
+      # fragile).
+      - name: Désactiver la signature au niveau du projet Xcode généré
         working-directory: frontend(app)/src-tauri/gen/apple
         run: |
           set -e
+          gem install xcodeproj --no-document
           project=$(find . -maxdepth 1 -name "*.xcodeproj" | head -1)
-          echo "Projet Xcode : $project"
-          all_schemes=$(xcodebuild -list -project "$project" | awk '/Schemes:/{flag=1; next} flag && NF')
-          scheme=$(echo "$all_schemes" | grep -i "_iOS" | head -1 | xargs)
-          if [ -z "$scheme" ]; then scheme=$(echo "$all_schemes" | head -1 | xargs); fi
-          echo "Scheme : $scheme"
-          # CORRECTIF (voir ios-test.yml pour le détail complet) : fichier addr factice attendu par
-          # `tauri ios xcode-script`, normalement écrit par `tauri ios build`/`dev` avant xcodebuild
-          # — sans impact en release (contenu déjà bundlé dans dist/, jamais un serveur de dev).
-          identifier=$(grep -o '"identifier"[[:space:]]*:[[:space:]]*"[^"]*"' ../../tauri.conf.json | sed -E 's/.*"([^"]+)"$/\1/')
-          tmp_dir="${TMPDIR:-/tmp}"
-          addr_file="${tmp_dir%/}/${identifier}-server-addr"
-          echo -n "127.0.0.1:1420" > "$addr_file"
-          echo "Fichier addr factice écrit : $addr_file"
-          xcodebuild archive \
-            -project "$project" \
-            -scheme "$scheme" \
-            -configuration release \
-            -archivePath "$RUNNER_TEMP/unsigned.xcarchive" \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO
+          ruby -rxcodeproj -e "
+            project = Xcodeproj::Project.open('$project')
+            project.targets.each do |target|
+              target.build_configurations.each do |config|
+                config.build_settings['CODE_SIGNING_ALLOWED'] = 'NO'
+                config.build_settings['CODE_SIGNING_REQUIRED'] = 'NO'
+                config.build_settings['CODE_SIGN_IDENTITY'] = ''
+                config.build_settings['CODE_SIGN_STYLE'] = 'Manual'
+                config.build_settings['DEVELOPMENT_TEAM'] = ''
+                config.build_settings['PROVISIONING_PROFILE_SPECIFIER'] = ''
+              end
+            end
+            project.save
+          "
+          echo "Signature désactivée dans $project"
+
+      # Échec attendu à la toute dernière étape (export du .ipa signé, qui exige un compte Apple
+      # même avec le projet configuré "sans signature") — mais l'archive .xcarchive elle-même a
+      # déjà été écrite sur le disque AVANT cette étape (deux étapes séparées et séquentielles dans
+      # xcodebuild). `|| true` : récupérée nous-mêmes juste après, peu importe le code de sortie.
+      - name: "Tenter tauri ios build (l'archive doit réussir même si l'export final échoue)"
+        working-directory: frontend(app)
+        run: npx tauri ios build --ci -t aarch64 --export-method debugging || true
+
+      # `tauri_cli` place l'archive dans un dossier de travail à lui, pas l'emplacement Xcode par
+      # défaut (~/Library/Developer/Xcode/{DerivedData,Archives}, tous les deux vides) — recherche
+      # large plutôt qu'un chemin figé en dur.
+      - name: Chercher le .xcarchive produit malgré l'échec de l'export
+        run: |
+          set -e
+          archive_path=$(find "$HOME" /private/var/folders /tmp "frontend(app)" -name "*.xcarchive" -type d 2>/dev/null | head -1)
+          if [ -z "$archive_path" ]; then
+            echo "Aucun .xcarchive trouvé. Diagnostic :"
+            find "frontend(app)/src-tauri/gen/apple" -maxdepth 4 2>/dev/null || true
+            find / -name "*.xcarchive" -type d 2>/dev/null | head -20 || true
+            exit 1
+          fi
+          echo "Archive trouvée : $archive_path"
+          echo "ARCHIVE_PATH=$archive_path" >> "$GITHUB_ENV"
 
       # Un .xcarchive n'est pas directement installable — un .ipa n'est qu'un fichier .app zippé
       # dans un dossier "Payload/" (format documenté, voir la doc Apple sur la distribution
@@ -322,7 +352,7 @@ jobs:
       - name: Empaqueter le .app en .ipa non signé
         run: |
           set -e
-          app_path=$(find "$RUNNER_TEMP/unsigned.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
+          app_path=$(find "$ARCHIVE_PATH/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
           echo "App : $app_path"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$app_path" "$RUNNER_TEMP/Payload/"

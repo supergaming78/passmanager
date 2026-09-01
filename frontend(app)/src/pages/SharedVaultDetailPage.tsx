@@ -183,7 +183,8 @@ export default function SharedVaultDetailPage() {
 
   return (
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
-      <div className="mx-auto max-w-2xl">
+      {/* Largeur progressive tablette/desktop — voir le commentaire équivalent dans Vault.tsx. */}
+      <div className="mx-auto max-w-2xl md:max-w-3xl lg:max-w-4xl">
         <header className="mb-6 flex items-center justify-between">
           <div className="min-w-0">
             <h1 className="truncate text-xl font-semibold text-neutral-900 dark:text-neutral-100">{vault?.name ?? "Coffre partagé"}</h1>

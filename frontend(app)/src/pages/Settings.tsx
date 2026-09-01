@@ -29,7 +29,8 @@ export default function Settings() {
 
   return (
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
-      <div className="mx-auto flex max-w-2xl flex-col gap-4">
+      {/* Largeur progressive tablette/desktop — voir le commentaire équivalent dans Vault.tsx. */}
+      <div className="mx-auto flex max-w-2xl flex-col gap-4 md:max-w-3xl lg:max-w-4xl">
         <header className="mb-2 flex items-center justify-between">
           <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Réglages</h1>
           <Link to="/vault" className="text-sm text-indigo-600 hover:underline dark:text-indigo-400">
