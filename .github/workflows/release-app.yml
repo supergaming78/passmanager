@@ -29,6 +29,18 @@
 # - ANDROID_KEYSTORE_PASSWORD : mot de passe du keystore (et de la clé, générés identiques ici)
 # - ANDROID_KEY_ALIAS         : "passmanager" (alias utilisé à la génération du keystore)
 # (GITHUB_TOKEN est fourni automatiquement par GitHub Actions, pas besoin de le créer)
+#
+# Ce que fait le job `ios` — EXPÉRIMENTAL, voir la conversation du 2026-09-01 : l'utilisateur n'a
+# PAS de compte Apple Developer payant (99$/an, autrement obligatoire pour toute signature Apple
+# "normale") — construit donc volontairement un .ipa NON SIGNÉ (CODE_SIGNING_ALLOWED=NO côté
+# xcodebuild, en contournant complètement `tauri ios build`, qui EXIGE lui une équipe de signature
+# configurée). Ce .ipa n'est PAS installable tel quel : chaque personne (utilisateur ou
+# famille/amis) doit le signer lui-même avec SON PROPRE Apple ID gratuit via AltStore/SideStore +
+# AltServer (existe en version Windows, pas besoin de Mac) — voir le README pour la marche à
+# suivre. Aucun secret Apple à créer : ce job ne signe rien, ne connaît aucun compte Apple. Pas
+# testé en conditions réelles avant le premier vrai run de ce job (aucun Mac disponible en local
+# pour ce projet) — comme chaque autre job de ce fichier à sa création, à déboguer pour de vrai au
+# premier run, voir les CORRECTIFs déjà accumulés ci-dessus pour desktop/android.
 name: Release app
 
 on:
@@ -231,4 +243,90 @@ jobs:
           # IMPORTANT : `draft: true` est nécessaire ici pour PRÉSERVER le brouillon créé par le
           # job desktop — si ce champ est omis, cette action publie automatiquement la release en
           # l'ajoutant, ce qui la rendrait visible aux utilisateurs AVANT toute relecture manuelle.
+          draft: true
+
+  ios:
+    needs: desktop
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # aarch64-apple-ios : cible RÉELLE (iPhone/iPad physiques) — pas besoin des cibles simulateur
+      # (aarch64-apple-ios-sim/x86_64-apple-ios) pour un .ipa destiné à être sideloadé sur un vrai
+      # appareil.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: "frontend(app)/package-lock.json"
+
+      - name: Installer les dépendances npm
+        working-directory: frontend(app)
+        run: npm ci
+
+      # Requis AVANT `tauri ios init` : ce dernier embarque le contenu déjà buildé de `dist/` dans
+      # le projet Xcode généré (même raison que `beforeBuildCommand` dans tauri.conf.json pour le
+      # desktop/Android, mais `tauri ios init` ne le déclenche pas tout seul).
+      - name: Construire le frontend web
+        working-directory: frontend(app)
+        run: npm run build
+
+      # `--ci` : évite toute invite interactive (choix de l'équipe de signature notamment) — sans
+      # incidence ici de toute façon, la signature est entièrement contournée plus bas.
+      - name: Générer le projet Xcode (gen/apple, jamais commité — régénéré à chaque run)
+        working-directory: frontend(app)
+        run: npx tauri ios init --ci
+
+      # CONTOURNE volontairement `tauri ios build` (qui exige une équipe de signature configurée,
+      # voir le commentaire en tête de fichier sur le job `ios`) — appelle `xcodebuild` directement
+      # avec la signature explicitement désactivée. Le nom exact du scheme généré n'est pas figé en
+      # dur (dépend du nom du crate/produit) : recherché dynamiquement via `xcodebuild -list`
+      # plutôt que deviné, pour rester robuste si ce nom diffère de ce qui est attendu.
+      - name: Construire l'archive .xcarchive NON SIGNÉE
+        working-directory: frontend(app)/src-tauri/gen/apple
+        run: |
+          set -e
+          project=$(find . -maxdepth 1 -name "*.xcodeproj" | head -1)
+          echo "Projet Xcode : $project"
+          scheme=$(xcodebuild -list -project "$project" | awk '/Schemes:/{flag=1; next} flag && NF')
+          scheme=$(echo "$scheme" | grep -i "_iOS" | head -1)
+          if [ -z "$scheme" ]; then scheme=$(echo "$scheme" | head -1); fi
+          echo "Scheme : $scheme"
+          xcodebuild archive \
+            -project "$project" \
+            -scheme "$scheme" \
+            -configuration release \
+            -archivePath "$RUNNER_TEMP/unsigned.xcarchive" \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+      # Un .xcarchive n'est pas directement installable — un .ipa n'est qu'un fichier .app zippé
+      # dans un dossier "Payload/" (format documenté, voir la doc Apple sur la distribution
+      # d'apps) : pas besoin d'export officiel (celui-ci exigerait, lui, une vraie signature).
+      - name: Empaqueter le .app en .ipa non signé
+        run: |
+          set -e
+          app_path=$(find "$RUNNER_TEMP/unsigned.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
+          echo "App : $app_path"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$app_path" "$RUNNER_TEMP/Payload/"
+          (cd "$RUNNER_TEMP" && zip -qr unsigned.ipa Payload)
+          mkdir -p frontend(app)/src-tauri/gen/apple/build
+          mv "$RUNNER_TEMP/unsigned.ipa" "frontend(app)/src-tauri/gen/apple/build/PassManager-unsigned.ipa"
+
+      - name: Ajouter le .ipa à la release déjà créée par le job desktop
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: "frontend(app)/src-tauri/gen/apple/build/PassManager-unsigned.ipa"
           draft: true

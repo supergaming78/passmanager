@@ -1,0 +1,79 @@
+# Workflow TEMPORAIRE — sert uniquement à itérer sur le job `ios` de release-app.yml sans devoir
+# pousser un nouveau tag `app-v*` (qui déclencherait aussi tout le reste : desktop + Android,
+# ~15-20 min à chaque essai, pour rien tant que ce job précis n'est pas fiable). Déclenchable
+# manuellement (`workflow_dispatch`, onglet Actions → ce workflow → "Run workflow") — PAS de
+# déclencheur automatique. À SUPPRIMER une fois le job `ios` de release-app.yml confirmé fiable
+# (voir la conversation du 2026-09-01) : il duplique volontairement sa logique le temps de la mise
+# au point, garder les deux à jour indéfiniment n'aurait aucun sens.
+name: Test build iOS (temporaire)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: "frontend(app)/package-lock.json"
+
+      - name: Installer les dépendances npm
+        working-directory: frontend(app)
+        run: npm ci
+
+      - name: Construire le frontend web
+        working-directory: frontend(app)
+        run: npm run build
+
+      - name: Générer le projet Xcode (gen/apple)
+        working-directory: frontend(app)
+        run: npx tauri ios init --ci
+
+      - name: Construire l'archive .xcarchive NON SIGNÉE
+        working-directory: frontend(app)/src-tauri/gen/apple
+        run: |
+          set -e
+          project=$(find . -maxdepth 1 -name "*.xcodeproj" | head -1)
+          echo "Projet Xcode : $project"
+          scheme=$(xcodebuild -list -project "$project" | awk '/Schemes:/{flag=1; next} flag && NF')
+          scheme=$(echo "$scheme" | grep -i "_iOS" | head -1)
+          if [ -z "$scheme" ]; then scheme=$(echo "$scheme" | head -1); fi
+          echo "Scheme : $scheme"
+          xcodebuild archive \
+            -project "$project" \
+            -scheme "$scheme" \
+            -configuration release \
+            -archivePath "$RUNNER_TEMP/unsigned.xcarchive" \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO
+
+      - name: Empaqueter le .app en .ipa non signé
+        run: |
+          set -e
+          app_path=$(find "$RUNNER_TEMP/unsigned.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
+          echo "App : $app_path"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          cp -R "$app_path" "$RUNNER_TEMP/Payload/"
+          (cd "$RUNNER_TEMP" && zip -qr unsigned.ipa Payload)
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          mv "$RUNNER_TEMP/unsigned.ipa" "$GITHUB_WORKSPACE/out/PassManager-unsigned.ipa"
+
+      # Simple artefact téléchargeable depuis la page du run — pas de release/tag impliqué ici,
+      # juste vérifier que le .ipa se produit correctement pendant la mise au point.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PassManager-unsigned-ipa
+          path: out/PassManager-unsigned.ipa
