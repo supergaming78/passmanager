@@ -150,24 +150,31 @@ session — voir lib/session.ts) ; le CSP `'wasm-unsafe-eval'` ci-dessus est sup
 **Contrairement à Chrome, Firefox exige que TOUTE extension soit signée par Mozilla pour
 s'installer** — y compris en usage privé, pas seulement pour publication sur addons.mozilla.org
 (AMO). Il n'y a pas d'équivalent de "charger l'extension non empaquetée" sur Firefox Android pour
-un usage permanent. Deux chemins possibles :
+un usage permanent.
 
-1. **Test/développement (temporaire)** : `web-ext run -t firefox-android --adb-device <id> --firefox-apk <package>`
-   (nécessite `web-ext` ≥ 7.12.0, Android Platform Tools/`adb` dans le PATH, débogage USB activé
-   sur le téléphone, câble USB). L'extension se charge dans le profil principal du téléphone mais
-   se décharge à la fin de la session `web-ext run` — pratique pour vérifier que tout fonctionne,
-   pas pour un usage quotidien.
-2. **Usage permanent** : créer un compte développeur gratuit sur
-   [addons.mozilla.org](https://addons.mozilla.org), puis signer l'extension en mode **non répertorié**
-   (`web-ext sign --channel=unlisted`, avec les identifiants API AMO) — ça ne la publie PAS
-   publiquement, ça produit juste un `.xpi` signé par Mozilla. Transférer ce `.xpi` sur le
-   téléphone, puis (Android 10+) : dans Firefox, taper plusieurs fois sur le logo Firefox dans
-   `about:firefox` pour activer le menu de débogage caché, puis Réglages → Extensions →
-   "Installer une extension depuis un fichier".
+**FAIT (2026-09-02) : la signature est automatisée** — voir `.github/workflows/release-extension.yml`.
+Chaque tag `ext-v*` construit le popup (wasm-pack + npm build), puis :
+1. Zippe l'extension telle quelle pour Chrome/Edge (`PassManager-extension-<version>.zip`).
+2. Signe le MÊME contenu via `web-ext sign --channel=unlisted` (identifiants API AMO en secrets
+   GitHub `AMO_JWT_ISSUER`/`AMO_JWT_SECRET`, générés une fois sur
+   [addons.mozilla.org/developers/addon/api/key/](https://addons.mozilla.org/en-US/developers/addon/api/key/))
+   → produit un `.xpi` signé par Mozilla, jamais publié publiquement (non répertorié = invisible en
+   recherche sur le store, mais installable directement).
 
-Aucune de ces deux étapes n'est automatisable depuis cet outil (nécessite un appareil Android
-physique connecté et/ou un compte Mozilla personnel) — le code est prêt, mais l'installation reste
-à faire manuellement en suivant l'un des deux chemins ci-dessus.
+Les deux fichiers sont publiés en brouillon sur la même release GitHub. Installation côté
+utilisateur final (PC ET Android, une fois signé) : voir `GUIDE_INSTALLATION.md`, section Firefox —
+glisser le `.xpi` dans Firefox (PC) ou "Ouvrir avec Firefox" depuis l'app Fichiers (Android),
+confirmer l'installation. **Permanent**, pas de re-signature périodique à refaire (contrairement à
+l'app iOS via AltStore, qui expire tous les 7 jours faute de compte Apple payant — voir la
+conversation du 2026-09-01).
+
+Si les secrets AMO ne sont pas configurés, l'étape de signature est proprement sautée (le zip
+Chrome/Edge est quand même publié) — voir le job `package` du workflow pour le détail.
+
+Reste utile pour du test rapide en développement (pas de signature nécessaire, mais temporaire,
+déchargé à la fin de la session) : `web-ext run -t firefox-android --adb-device <id>
+--firefox-apk <package>` (nécessite `web-ext` ≥ 7.12.0, `adb` dans le PATH, débogage USB activé,
+câble USB).
 
 ## Safari (macOS/iOS)
 

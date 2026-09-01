@@ -3,8 +3,10 @@
 Ce guide s'adresse à toi si quelqu'un t'a envoyé cette extension pour gérer tes mots de passe
 directement depuis ton navigateur. Pas besoin de connaissances techniques pour la suite.
 
-L'extension n'est PAS sur le Chrome Web Store ni sur addons.mozilla.org (les deux demandent un
-paiement ou une revue longue) — l'installation se fait donc manuellement, une seule fois. Ça ne
+L'extension n'est PAS sur le Chrome Web Store (payant) ni listée publiquement sur
+addons.mozilla.org — sur Chrome/Edge, l'installation se fait donc manuellement, une seule fois.
+Sur Firefox, le fichier `.xpi` est bien signé par Mozilla (comme n'importe quelle extension du
+store), juste pas mis en avant dans les résultats de recherche du store. Dans les deux cas, ça ne
 change rien à la sécurité : le code est exactement le même que celui qui tournerait via un store.
 
 ## Chrome, Edge, Brave, Opera, Vivaldi (PC/Mac/Linux)
@@ -23,26 +25,27 @@ change rien à la sécurité : le code est exactement le même que celui qui tou
 en écrasant l'ancien dossier, puis retourne sur `chrome://extensions` et clique sur l'icône
 "Actualiser" (↻) sous PassManager. Pas besoin de tout réinstaller.
 
-## Firefox (PC/Mac/Linux) — usage occasionnel
+## Firefox (PC/Mac/Linux) — installation permanente
 
-Firefox permet de charger l'extension sans la signer, mais seulement **temporairement** (jusqu'à
-la fermeture de Firefox) :
+Télécharge le fichier `.xpi` (PAS le zip, celui-ci est pour Chrome/Edge) depuis la même release,
+puis :
 
-1. Dézippe le fichier téléchargé.
-2. Va sur `about:debugging#/runtime/this-firefox`.
-3. Clique sur **Charger un module complémentaire temporaire**.
-4. Sélectionne le fichier `manifest.json` à l'intérieur du dossier dézippé.
+1. Ouvre Firefox et fais glisser le fichier `.xpi` directement dans la fenêtre du navigateur —
+   ou : menu ☰ → **Modules complémentaires et thèmes** → icône ⚙️ en haut → **Installer un module
+   depuis un fichier** → sélectionne le `.xpi`.
+2. Firefox demande confirmation d'installation → accepte.
 
-À refaire à chaque redémarrage de Firefox — pratique pour essayer, pas pour un usage quotidien.
-Pour une installation permanente sur Firefox, une version signée par Mozilla (`.xpi`) est
-nécessaire — pas encore disponible pour cette extension, demande à la personne qui te l'a envoyée
-si tu en as besoin.
+C'est signé par Mozilla (comme n'importe quelle extension du store, juste non répertoriée
+publiquement) : **installation permanente**, pas besoin de refaire quoi que ce soit au prochain
+démarrage de Firefox.
 
 ## Firefox pour Android
 
-Chrome pour Android ne supporte aucune extension (restriction Google) — seul Firefox le permet,
-et uniquement avec une version signée par Mozilla (`.xpi`), pas encore disponible pour cette
-extension au moment de ce guide. Demande à la personne qui te l'a envoyée où en est cette version.
+Chrome pour Android ne supporte aucune extension (restriction Google) — seul Firefox le permet.
+
+1. Télécharge le `.xpi` sur le téléphone (ou transfère-le depuis un ordinateur).
+2. Ouvre l'app **Fichiers**, trouve le `.xpi` téléchargé, tape dessus → **Ouvrir avec** → **Firefox**.
+3. Firefox l'installe directement — installation permanente, comme sur PC.
 
 ## iPhone/iPad (Safari)
 
