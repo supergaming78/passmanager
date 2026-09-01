@@ -21,6 +21,7 @@ import { bytesToBase64, base64ToBytes } from "./base64";
 import { ApiError } from "../api/types";
 
 const STORAGE_KEY = "passmanager.session";
+const PENDING_TFA_KEY = "passmanager.pendingTfa";
 
 /** Lue dynamiquement (pas figée au chargement du module) : un changement depuis l'écran Réglages
  * prend effet dès la prochaine ouverture de la popup, sans redémarrage nécessaire. */
@@ -146,6 +147,49 @@ export async function verifyDeviceAndLogin(
     throw new Error("La connexion a échoué malgré la validation de l'appareil — réessaie.");
   }
   await persistSession(email, result.access_token, result.refresh_token, vaultKey);
+}
+
+// -------------------------------------------------------------------------
+// 2FA EN ATTENTE — survit à la fermeture du popup ancré
+// -------------------------------------------------------------------------
+// CORRECTIF (retour utilisateur, 2026-09-02) : un popup d'extension standard se ferme
+// AUTOMATIQUEMENT dès qu'il perd le focus — ce qui arrive systématiquement en pleine saisie du
+// code 2FA, puisqu'il faut aller consulter l'email dans une autre fenêtre pour le lire. Sans ce
+// stockage, tout l'écran 2FA (email, authHashHex, vaultKey déjà dérivée) était perdu à chaque
+// clic ailleurs, obligeant à recommencer la connexion depuis le début — un vrai cercle vicieux.
+// Voir lib/popupWindow.ts::openStandaloneAndClose(), appelé par App.tsx dès que l'écran 2FA est
+// atteint dans le popup ancré : bascule vers une VRAIE fenêtre détachée (ne se ferme pas en
+// perdant le focus), qui relit cet état au montage pour reprendre exactement là où on en était.
+//
+// vaultKey encodée en base64 pour la même raison que persistSession() ci-dessus (JSON-safe).
+interface StoredPendingTfa {
+  email: string;
+  authHashHex: string;
+  vaultKeyB64: string;
+  rememberMe: boolean;
+}
+
+export interface PendingTfa {
+  email: string;
+  authHashHex: string;
+  vaultKey: Uint8Array;
+  rememberMe: boolean;
+}
+
+export async function savePendingTfa(email: string, authHashHex: string, vaultKey: Uint8Array, rememberMe: boolean): Promise<void> {
+  const stored: StoredPendingTfa = { email, authHashHex, vaultKeyB64: bytesToBase64(vaultKey), rememberMe };
+  await chrome.storage.session.set({ [PENDING_TFA_KEY]: stored });
+}
+
+export async function readPendingTfa(): Promise<PendingTfa | null> {
+  const result = await chrome.storage.session.get(PENDING_TFA_KEY);
+  const stored = result[PENDING_TFA_KEY] as StoredPendingTfa | undefined;
+  if (!stored) return null;
+  return { email: stored.email, authHashHex: stored.authHashHex, vaultKey: base64ToBytes(stored.vaultKeyB64), rememberMe: stored.rememberMe };
+}
+
+export async function clearPendingTfa(): Promise<void> {
+  await chrome.storage.session.remove(PENDING_TFA_KEY);
 }
 
 /**

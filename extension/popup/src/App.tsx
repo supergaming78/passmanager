@@ -8,6 +8,7 @@ import * as api from "./api/client";
 import * as session from "./lib/session";
 import { decryptEntry, encryptEntry, type PlainVaultEntry } from "./lib/vaultCrypto";
 import { getPreferredIdentifier } from "./lib/entryIdentifier";
+import { isStandaloneWindow, openStandaloneAndClose } from "./lib/popupWindow";
 import { runAutofill, getActiveTabUrl, domainsLikelyMatch } from "./lib/autofill";
 import { getErrorMessage } from "./lib/errors";
 import { copyPasswordWithAutoClear } from "./lib/clipboard";
@@ -34,8 +35,18 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>({ kind: "loading" });
 
   useEffect(() => {
-    void session.getActiveSession().then((active) => {
-      setScreen(active ? { kind: "vault", email: active.email, vaultKey: active.vaultKey } : { kind: "login" });
+    // Une 2FA en attente (voir lib/session.ts::savePendingTfa) a priorité sur la session active
+    // normale : c'est précisément l'état qu'on vient de sauvegarder juste avant de fermer le
+    // popup ancré et d'ouvrir cette fenêtre (détachée ou reouverte) — reprendre exactement là où
+    // on en était plutôt que de repartir de l'écran de connexion.
+    void session.readPendingTfa().then((pending) => {
+      if (pending) {
+        setScreen({ kind: "tfa", ...pending });
+        return;
+      }
+      void session.getActiveSession().then((active) => {
+        setScreen(active ? { kind: "vault", email: active.email, vaultKey: active.vaultKey } : { kind: "login" });
+      });
     });
   }, []);
 
@@ -51,9 +62,18 @@ export default function App() {
   if (screen.kind === "login") {
     return (
       <LoginScreen
-        onTfaRequired={(email, authHashHex, vaultKey, rememberMe) =>
-          setScreen({ kind: "tfa", email, authHashHex, vaultKey, rememberMe })
-        }
+        onTfaRequired={(email, authHashHex, vaultKey, rememberMe) => {
+          setScreen({ kind: "tfa", email, authHashHex, vaultKey, rememberMe });
+          // CORRECTIF (voir lib/popupWindow.ts) : un popup ancré se ferme dès qu'on clique
+          // ailleurs — systématique en pleine saisie 2FA, le temps d'aller lire le code dans un
+          // email. Bascule vers une vraie fenêtre détachée, qui ne se ferme pas en perdant le
+          // focus. Ne rien faire si on est DÉJÀ dans une fenêtre détachée (pas de bascule en
+          // cascade). Fire-and-forget : l'écran 2FA local s'affiche immédiatement pendant que la
+          // nouvelle fenêtre s'ouvre en arrière-plan, avant que celle-ci ne se ferme.
+          if (!isStandaloneWindow()) {
+            void session.savePendingTfa(email, authHashHex, vaultKey, rememberMe).then(openStandaloneAndClose);
+          }
+        }}
         onLoggedIn={goToVault}
       />
     );
@@ -66,8 +86,14 @@ export default function App() {
         authHashHex={screen.authHashHex}
         vaultKey={screen.vaultKey}
         rememberMe={screen.rememberMe}
-        onVerified={goToVault}
-        onCancel={() => setScreen({ kind: "login" })}
+        onVerified={() => {
+          void session.clearPendingTfa();
+          void goToVault();
+        }}
+        onCancel={() => {
+          void session.clearPendingTfa();
+          setScreen({ kind: "login" });
+        }}
       />
     );
   }
