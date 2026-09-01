@@ -25,8 +25,24 @@ RUN rm -rf src
 # Le cache des dépendances ci-dessus reste valide (Cargo.toml/lock inchangés) : seul ce code
 # est (re)compilé ici. `migrations/` doit être présent AVANT ce build : sqlx::migrate!() est une
 # macro qui embarque le contenu des migrations DANS LE BINAIRE à la compilation (pas au runtime).
+#
+# CORRECTIF CRITIQUE (déploiement réel, 2026-09-02) : sans le `touch` ci-dessous, ce second
+# `cargo build --release` peut RÉUTILISER SILENCIEUSEMENT le binaire FACTICE ("fn main() {}")
+# compilé juste au-dessus, au lieu de recompiler avec le vrai code — repéré en prod (backend qui
+# démarre puis se referme instantanément, code de sortie 0, ZÉRO ligne de log, sur un
+# `docker compose build` pourtant "réussi" sans la moindre erreur). Cause : Cargo décide de
+# recompiler ou non en comparant les dates de modification des fichiers sources à son cache de
+# build (`target/release/.fingerprint`) — pas leur contenu. `COPY` (BuildKit) peut donner aux
+# fichiers copiés une date de modification IDENTIQUE ou ANTÉRIEURE à celle que Cargo avait déjà
+# enregistrée pour le `src/main.rs` factice précédent ; Cargo conclut alors à tort "rien n'a
+# changé" et resert le binaire déjà en cache — sans la moindre erreur ni avertissement. Confirmé
+# reproductible même avec `docker compose build --no-cache` (le cache DOCKER n'est pas en cause,
+# c'est le cache interne de CARGO, dans le système de fichiers de l'étape `builder`, qui trompe
+# cette compilation-ci). `find ... -exec touch` force une date de modification strictement plus
+# récente que tout ce que Cargo a pu enregistrer avant, garantissant une VRAIE recompilation.
 COPY src ./src
 COPY migrations ./migrations
+RUN find src migrations -exec touch {} +
 RUN cargo build --release
 
 # Étape 2 : Exécution (Runtime)
