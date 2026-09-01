@@ -79,17 +79,23 @@ jobs:
         working-directory: frontend(app)
         run: npx tauri ios build --ci -t aarch64 --export-method debugging || true
 
+      # CORRECTIF (voir la conversation du 2026-09-01) : "error: exportArchive teamID should be
+      # non-empty" / "EXPORT FAILED" confirme que l'ARCHIVE elle-même a bien réussi juste avant
+      # (xcodebuild ne tente -exportArchive QU'APRÈS avoir archivé avec succès) — mais elle
+      # n'était ni dans DerivedData ni dans ~/Library/.../Xcode/Archives (les deux emplacements
+      # cherchés au tour précédent, tous les deux vides). Recherche BEAUCOUP plus large cette
+      # fois : tauri_cli doit la placer dans un dossier de travail à lui, pas l'emplacement Xcode
+      # par défaut.
       - name: Chercher un .xcarchive produit malgré l'échec de l'export
         run: |
           set -e
-          archive_path=$(find "$HOME/Library/Developer/Xcode/DerivedData" -maxdepth 2 -name "*.xcarchive" 2>/dev/null | head -1)
+          archive_path=$(find "$HOME" /private/var/folders /tmp "frontend(app)" -name "*.xcarchive" -type d 2>/dev/null | head -1)
           if [ -z "$archive_path" ]; then
-            archive_path=$(find "$HOME/Library/Developer/Xcode/Archives" -name "*.xcarchive" 2>/dev/null | head -1)
-          fi
-          if [ -z "$archive_path" ]; then
-            echo "Aucun .xcarchive trouvé — tauri ios build a probablement échoué AVANT l'archive elle-même."
-            echo "Contenu de DerivedData pour diagnostic :"
-            find "$HOME/Library/Developer/Xcode/DerivedData" -maxdepth 3 2>/dev/null || true
+            echo "Toujours aucun .xcarchive trouvé dans une recherche large. Diagnostic :"
+            echo "--- contenu de frontend(app)/src-tauri/gen/apple/build (si présent) ---"
+            find "frontend(app)/src-tauri/gen/apple" -maxdepth 4 2>/dev/null || true
+            echo "--- recherche de tout dossier '*.xcarchive' où qu'il soit (hors limite max) ---"
+            find / -name "*.xcarchive" -type d 2>/dev/null | head -20 || true
             exit 1
           fi
           echo "Archive trouvée : $archive_path"
