@@ -101,7 +101,8 @@ cp .env.example .env
 | `SMTP_USER` | oui | — | Identifiant du compte SMTP |
 | `SMTP_PASS` | oui | — | Mot de passe / jeton d'application SMTP |
 | `APP_ENV` | non | `development` | `production` impose une vérification stricte de `JWT_SECRET` |
-| `PORT` | non | `3000` | Port d'écoute HTTP |
+| `PORT` | non | `3000` | Port d'écoute HTTP **à l'intérieur du conteneur** — à ne pas confondre avec `HOST_PORT` ci-dessous |
+| `HOST_PORT` *(Docker uniquement — pas une variable lue par l'appli elle-même)* | non | `13000` | Port exposé côté HÔTE (`docker-compose.yml`) — à changer si ce port est aussi déjà pris chez toi (ex: `HOST_PORT=13001`) ; le port interne (`PORT`) reste 3000 quoi qu'il arrive |
 | `SMTP_HOST` | non | `smtp.gmail.com` | Hôte SMTP |
 | `ACCESS_TOKEN_SECONDS` | non | `600` | Durée de vie de l'access token (secondes) |
 | `REFRESH_TOKEN_HOURS` | non | `24` | Durée du refresh token avec "Se souvenir de moi" |
@@ -160,10 +161,11 @@ sur `./data`, exécute une fois sur l'hôte :
 mkdir -p ./data && sudo chown -R 1000:1000 ./data
 ```
 
-Vérifier que le service répond :
+Vérifier que le service répond (port hôte 13000 par défaut — voir `HOST_PORT` ci-dessous si un
+autre service occupe déjà ce port sur ta machine) :
 
 ```sh
-curl http://localhost:3000/health
+curl http://localhost:13000/health
 ```
 
 ### Déployer via Portainer (Stack)
@@ -180,7 +182,9 @@ pas besoin de copier/coller le fichier à la main :
    est volontairement exclu du dépôt, voir le `.gitignore` racine) : renseigne ici, un par un,
    les mêmes noms que le tableau de la section "Configuration" ci-dessus (`JWT_SECRET`,
    `PASSWORD_PEPPER`, `SMTP_USER`, `SMTP_PASS` au minimum — les autres ont un défaut raisonnable
-   si laissés vides).
+   si laissés vides). Si le déploiement échoue avec `port is already allocated` (fréquent quand
+   plusieurs stacks tournent déjà sur le même Docker) : ajoute `HOST_PORT` avec un port libre
+   (ex: `HOST_PORT=13001`) — le port par défaut de ce projet (13000) peut lui aussi être déjà pris.
 6. **Deploy the stack**.
 
 Portainer construit l'image depuis le `Dockerfile` du dépôt cloné (comme `docker compose build`

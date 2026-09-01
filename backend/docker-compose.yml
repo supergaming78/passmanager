@@ -2,7 +2,15 @@ services:
   api:
     build: .
     ports:
-      - "3000:3000"
+      # CORRECTIF : port HÔTE (celui de gauche) rendu configurable — 3000 est un port très
+      # courant, une collision avec un autre service déjà en place sur le même Docker
+      # (fréquent quand plusieurs stacks/conteneurs tournent côte à côte, ex: via Portainer)
+      # empêchait le déploiement ("port is already allocated"). Le port CONTENEUR (celui de
+      # droite, 3000) reste inchangé — c'est un détail interne, sans lien avec la variable PORT
+      # de .env (qui, elle, contrôle sur quel port l'appli ÉCOUTE à l'intérieur du conteneur,
+      # jamais changée par ce réglage). Défaut à 13000 si HOST_PORT n'est pas défini — change
+      # cette valeur (ou définis HOST_PORT) si 13000 est LUI AUSSI déjà pris chez toi.
+      - "${HOST_PORT:-13000}:3000"
     # CORRECTIF : `env_file: - .env` (l'ancienne approche) EXIGE qu'un fichier .env existe
     # PHYSIQUEMENT à côté de ce docker-compose.yml — vrai en local (`docker compose up -d` depuis
     # `backend/`, .env jamais commité, voir le .gitignore racine), mais PLUS via Portainer en mode
