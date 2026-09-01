@@ -292,9 +292,9 @@ jobs:
           set -e
           project=$(find . -maxdepth 1 -name "*.xcodeproj" | head -1)
           echo "Projet Xcode : $project"
-          scheme=$(xcodebuild -list -project "$project" | awk '/Schemes:/{flag=1; next} flag && NF')
-          scheme=$(echo "$scheme" | grep -i "_iOS" | head -1)
-          if [ -z "$scheme" ]; then scheme=$(echo "$scheme" | head -1); fi
+          all_schemes=$(xcodebuild -list -project "$project" | awk '/Schemes:/{flag=1; next} flag && NF')
+          scheme=$(echo "$all_schemes" | grep -i "_iOS" | head -1 | xargs)
+          if [ -z "$scheme" ]; then scheme=$(echo "$all_schemes" | head -1 | xargs); fi
           echo "Scheme : $scheme"
           xcodebuild archive \
             -project "$project" \
