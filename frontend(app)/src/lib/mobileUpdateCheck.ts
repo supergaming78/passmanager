@@ -6,6 +6,16 @@
 // récente existe et de renvoyer un lien vers la page de release où la télécharger, voir
 // components/MobileUpdateBanner.tsx pour l'affichage.
 import { getVersion } from "@tauri-apps/api/app";
+// CORRECTIF (bug repéré par l'utilisateur : bandeau jamais affiché sur Android) : le `fetch()`
+// natif du navigateur/WebView est soumis au CORS, et GitHub ne pose AUCUN en-tête
+// Access-Control-Allow-Origin sur ses URL de release (vérifié directement, y compris sur la
+// redirection intermédiaire) — la requête ci-dessous échouait donc TOUJOURS, silencieusement (voir
+// le `catch` plus bas), UNIQUEMENT sur Android (le desktop ne passe jamais par ce fichier, voir
+// lib/appUpdater.ts, un client HTTP natif Rust immunisé au CORS). Ce `fetch` du plugin a EXACTEMENT
+// la même signature que celui du navigateur — un seul mot changé ici (l'import) — mais s'exécute
+// réellement côté Rust natif, donc lui aussi immunisé. Voir Cargo.toml/lib.rs et
+// capabilities/http.json côté src-tauri pour le reste de ce correctif.
+import { fetch } from "@tauri-apps/plugin-http";
 
 // ⚠️ À CORRIGER dès que le vrai dépôt GitHub est créé/nommé (voir tauri.conf.json::plugins.updater
 // .endpoints, qui pointe vers le même nom deviné "supergaming78/passmanager" — un seul et même

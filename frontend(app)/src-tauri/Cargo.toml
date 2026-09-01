@@ -36,6 +36,22 @@ tauri-plugin-dialog = "2"
 # Lecture/écriture de fichiers depuis le frontend (import/export du coffre) — accès limité par
 # les permissions déclarées dans capabilities/default.json, pas un accès disque libre.
 tauri-plugin-fs = "2"
+# CORRECTIF (bug repéré par l'utilisateur : bandeau "nouvelle version" jamais affiché sur Android,
+# voir lib/mobileUpdateCheck.ts) — un `fetch()` classique du navigateur/WebView est soumis au CORS,
+# et GitHub ne pose AUCUN en-tête Access-Control-Allow-Origin sur ses URL de release
+# (`github.com/.../releases/latest/download/...`, vérifié directement) : la requête échouait donc
+# TOUJOURS, silencieusement (`catch` -> available: false), UNIQUEMENT sur Android — le desktop ne
+# passe jamais par ce chemin (mise à jour via tauri-plugin-updater, un client HTTP natif Rust,
+# jamais soumis au CORS du navigateur). Ce plugin fait la même requête mais depuis le CÔTÉ RUST
+# (natif, hors WebView) — son `fetch()` JS a la même signature que celui du navigateur (voir
+# lib/mobileUpdateCheck.ts, un seul mot changé : l'import), mais s'exécute réellement côté natif,
+# donc immunisé au CORS. Cross-plateforme (contrairement à tauri-plugin-updater ci-dessous, qui
+# lui reste desktop uniquement) — dans `[dependencies]`, pas sous un `cfg` particulier.
+# Version FIXÉE (`=2.6.0`, pas juste "2") : le CLI Tauri refuse de builder si la version mineure de
+# ce crate Rust ne correspond pas exactement à celle du paquet npm `@tauri-apps/plugin-http`
+# (voir package.json) — un simple "2" laissait Cargo résoudre 2.5.x pendant que npm installait déjà
+# 2.6.x, erreur repérée au premier vrai build Android local.
+tauri-plugin-http = "=2.6.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

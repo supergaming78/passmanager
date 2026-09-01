@@ -465,7 +465,10 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_fs::init());
+        .plugin(tauri_plugin_fs::init())
+        // Voir Cargo.toml et lib/mobileUpdateCheck.ts (app) — client HTTP natif, immunisé au CORS
+        // du navigateur/WebView, contrairement au `fetch()` natif du navigateur.
+        .plugin(tauri_plugin_http::init());
 
     // Mise à jour automatique : DESKTOP UNIQUEMENT (voir Cargo.toml — le plugin lui-même n'est
     // même pas compilé sur Android/iOS, une app mobile se met à jour via son store). `#[cfg(desktop)]`

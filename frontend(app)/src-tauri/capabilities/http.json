@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "http",
+  "description": "Client HTTP natif (voir Cargo.toml/lib.rs) — UNIQUEMENT pour vérifier une nouvelle version sur GitHub (voir lib/mobileUpdateCheck.ts), toutes plateformes (contrairement à updater.json, desktop uniquement). Portée volontairement restreinte à GitHub (release-assets.githubusercontent.com inclus : c'est là que redirige réellement la requête, voir le commentaire de la constante GITHUB_REPO) — jamais un accès réseau libre.",
+  "windows": ["main"],
+  "permissions": [
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://github.com/*" },
+        { "url": "https://*.githubusercontent.com/*" }
+      ]
+    }
+  ]
+}
