@@ -369,15 +369,24 @@ fn build_router(state: Arc<AppState>) -> Router {
     // -------------------------------------------------------------------------
     // CONFIGURATION DES CORS (SÉCURITÉ NAVIGATEUR)
     // -------------------------------------------------------------------------
+    // CORRECTIF (retour utilisateur, 2026-09-01) : une simple liste d'origines EXACTES
+    // (AllowOrigin::list) suffit pour Chrome/Edge — l'ID d'une extension Chrome est DÉTERMINISTE
+    // (dérivé de la clé publique fixée dans manifest.json::key, voir extension/README.md, section
+    // "ID d'extension stable"), donc identique pour tout le monde qui charge ce même code. Firefox,
+    // lui, attribue un UUID ALÉATOIRE à `moz-extension://` À CHAQUE INSTALLATION (même code, même
+    // gecko.id dans browser_specific_settings — cet UUID n'est PAS dérivé du gecko.id, juste stocké
+    // par profil navigateur) : impossible de le connaître à l'avance ou de le figer dans
+    // ALLOWED_ORIGINS, une liste exacte bloquait donc TOUJOURS Firefox, quel que soit l'appareil.
+    // `AllowOrigin::predicate` : autorise en plus TOUT `moz-extension://*` — sans risque, une page
+    // web classique ne peut jamais usurper ce schéma d'origine (réservé aux vraies extensions du
+    // navigateur), c'est donc équivalent en sécurité à connaître l'ID exact à l'avance.
+    let allowed_origins_exact: std::collections::HashSet<String> =
+        state.config.allowed_origins.iter().cloned().collect();
     let cors = CorsLayer::new()
-        // Autorise l'app web ET l'extension navigateur, configurées via ALLOWED_ORIGINS.
-        // Chaque origine invalide (mal formée) dans la liste est ignorée silencieusement au parsing
-        // plutôt que de faire planter le serveur au démarrage.
-        .allow_origin(AllowOrigin::list(
-            state.config.allowed_origins.iter()
-                .filter_map(|o| o.parse::<axum::http::HeaderValue>().ok())
-                .collect::<Vec<_>>()
-        ))
+        .allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
+            let origin = origin.to_str().unwrap_or("");
+            allowed_origins_exact.contains(origin) || origin.starts_with("moz-extension://")
+        }))
         // Autorise les méthodes HTTP standards nécessaires au CRUD
         .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::PUT, axum::http::Method::DELETE, axum::http::Method::PATCH])
         // Autorise le transit des en-têtes essentiels. PAS de `Cookie` : l'authentification se
