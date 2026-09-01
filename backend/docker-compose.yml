@@ -33,7 +33,12 @@ services:
       - ACCESS_TOKEN_SECONDS=${ACCESS_TOKEN_SECONDS:-600}
       - REFRESH_TOKEN_HOURS=${REFRESH_TOKEN_HOURS:-24}
       - REFRESH_TOKEN_SHORT_SECONDS=${REFRESH_TOKEN_SHORT_SECONDS:-5}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173}
+      # http://tauri.localhost + tauri://localhost : OBLIGATOIRES pour que l'app desktop/Android
+      # PACKAGÉE (pas juste en mode dev) puisse parler à ce backend — sans les deux, le CORS
+      # bloque silencieusement toutes ses requêtes (Windows/Android utilisent le premier, macOS/
+      # Linux le second, voir .env.example pour le détail complet). Ajouter chrome-extension://<id>/
+      # moz-extension://<uuid> à cette liste si l'extension navigateur est aussi utilisée.
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173,http://tauri.localhost,tauri://localhost}
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
       - TRUST_PROXY_HEADERS=${TRUST_PROXY_HEADERS:-false}
       # "info" par défaut : le niveau "debug" a un coût réel (formatage de chaînes, bookkeeping

@@ -106,12 +106,24 @@ cp .env.example .env
 | `ACCESS_TOKEN_SECONDS` | non | `600` | Durée de vie de l'access token (secondes) |
 | `REFRESH_TOKEN_HOURS` | non | `24` | Durée du refresh token avec "Se souvenir de moi" |
 | `REFRESH_TOKEN_SHORT_SECONDS` | non | `5` | Durée du refresh token sans "Se souvenir de moi" |
-| `ALLOWED_ORIGINS` | non | `http://localhost:5173` | Origines CORS autorisées, séparées par des virgules |
+| `ALLOWED_ORIGINS` | non | `http://localhost:5173` | Origines CORS autorisées, séparées par des virgules — voir l'avertissement ci-dessous, le défaut seul NE SUFFIT PAS pour l'app packagée |
 | `ADMIN_EMAIL` | non | — | Email promu administrateur automatiquement (à l'inscription, ou immédiatement si le compte existe déjà) |
 | `TRUST_PROXY_HEADERS` | non | `false` | Voir avertissement ci-dessous — ne concerne que le rate limiting |
 
 `PASSWORD_PEPPER` et `JWT_SECRET` font l'objet d'une vérification stricte au démarrage : le
 programme refuse de démarrer si l'un des deux fait moins de 32 caractères.
+
+**`ALLOWED_ORIGINS` — piège à connaître pour l'app desktop/Android** : l'app PACKAGÉE (le vrai
+`.exe`/`.msi`/`.apk` installé, pas `npm run tauri dev`) ne se présente PAS avec une origine
+`http://localhost:...` mais avec l'origine interne de Tauri — `http://tauri.localhost` sur Windows
+et Android, `tauri://localhost` sur macOS/Linux (deux valeurs différentes selon la plateforme, une
+contrainte de WebView2/Android WebView côté Tauri, pas un choix de ce projet). **Sans les DEUX
+dans `ALLOWED_ORIGINS`, le CORS bloque silencieusement toutes les requêtes de l'app installée** —
+elle semblerait "ne rien faire" au clic sur Connexion/Inscription, sans message d'erreur clair
+(le navigateur/webview refuse la réponse avant même que le JS de l'app ne la voie). Déjà inclus
+dans le défaut de `docker-compose.yml` (voir juste au-dessus) — à vérifier/ajouter manuellement
+si tu configures `ALLOWED_ORIGINS` autrement (Portainer, `.env` local...), voir `.env.example`
+pour la valeur complète recommandée.
 
 **`TRUST_PROXY_HEADERS`** contrôle la façon dont le rate limiting identifie un client : par défaut
 (`false`), il utilise l'IP du pair TCP direct — le seul choix sûr si ce backend est exposé
