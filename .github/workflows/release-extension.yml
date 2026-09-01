@@ -3,12 +3,17 @@
 # indépendante puisque l'extension a son propre numéro de version (extension/manifest.json), pas lié
 # à celui de l'app desktop/Android.
 #
-# PAS de Chrome Web Store ni d'addons.mozilla.org (AMO) ici — voir extension/GUIDE_INSTALLATION.md
-# pour le raisonnement (coût/revue) déjà tranché pour ce projet : juste un zip contenant
-# l'extension prête à charger manuellement (Chrome/Edge : "mode développeur" + "charger l'extension
-# non empaquetée" ; Firefox : chargement temporaire) + le guide d'installation, à destination de
-# quiconque n'a pas ce dépôt cloné en local (le "charger l'extension non empaquetée" habituel exige
-# sinon d'avoir le code source sur son disque).
+# PAS de Chrome Web Store ici (payant, refusé) — le zip reste la seule voie pour Chrome/Edge
+# ("mode développeur" + "charger l'extension non empaquetée"), à destination de quiconque n'a pas ce
+# dépôt cloné en local.
+#
+# Firefox, en revanche, EXIGE une signature Mozilla pour toute installation permanente (pas
+# d'équivalent du "mode développeur" de Chrome pour un usage durable) — mais ça reste GRATUIT et
+# automatisable : `web-ext sign --channel=unlisted` avec des clés API AMO (voir la conversation du
+# 2026-09-01) ne PUBLIE rien publiquement sur addons.mozilla.org, ça produit juste un .xpi signé par
+# Mozilla, installable directement (PC ET Android) sans mode développeur ni manipulation compliquée.
+# Secrets nécessaires (Settings > Secrets and variables > Actions) : `AMO_JWT_ISSUER`/`AMO_JWT_SECRET`
+# (générés sur addons.mozilla.org/developers/addon/api/key/, comptes développeur gratuits).
 #
 # Contenu du zip : uniquement ce que manifest.json référence réellement (manifest.json, icons/,
 # popup/dist/ — reconstruit ici en deux temps : wasm-pack PUIS npm build, ni l'un ni l'autre n'est
@@ -84,6 +89,36 @@ jobs:
           # la RACINE de l'archive, un seul niveau de dossier quel que soit l'outil d'extraction.
           (cd "$staging" && zip -qr "../PassManager-extension-$version.zip" .)
           echo "PACKAGE_PATH=PassManager-extension-$version.zip" >> "$GITHUB_ENV"
+          echo "STAGING_DIR=$staging" >> "$GITHUB_ENV"
+
+      # Signe le MÊME contenu (staging, pas extension/ brut — pas de popup/src ni node_modules
+      # dans le .xpi final) via l'API AMO. `--channel=unlisted` : signé par Mozilla, installable
+      # directement, mais jamais listé publiquement sur addons.mozilla.org. Étape entièrement
+      # SAUTÉE (via check-amo ci-dessous) sans bloquer le reste du job si les secrets AMO ne sont
+      # pas encore configurés — le zip Chrome/Edge reste publié dans tous les cas.
+      # `secrets.*` n'est pas utilisable directement dans un `if:` d'étape (rejeté par le
+      # validateur de workflow) — passe par une variable de sortie intermédiaire à la place.
+      - name: Vérifier si les secrets AMO sont configurés
+        id: check-amo
+        env:
+          HAS_AMO_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+        run: echo "configured=$([ -n "$HAS_AMO_ISSUER" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Signer pour Firefox (unlisted, .xpi permanent)
+        if: steps.check-amo.outputs.configured == 'true'
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          set -e
+          npx --yes web-ext sign \
+            --source-dir "$STAGING_DIR" \
+            --artifacts-dir web-ext-artifacts \
+            --channel unlisted \
+            --ignore-files "GUIDE_INSTALLATION.md"
+          xpi_path=$(find web-ext-artifacts -maxdepth 1 -name "*.xpi" | head -1)
+          echo "XPI trouvé : $xpi_path"
+          echo "XPI_PATH=$xpi_path" >> "$GITHUB_ENV"
 
       - name: Publier la release GitHub (brouillon)
         uses: softprops/action-gh-release@v2
@@ -92,7 +127,11 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: "Extension PassManager ${{ github.ref_name }}"
-          files: ${{ env.PACKAGE_PATH }}
+          # XPI_PATH reste vide (donc ignoré par cette action) si les secrets AMO n'étaient pas
+          # configurés — voir l'étape de signature ci-dessus.
+          files: |
+            ${{ env.PACKAGE_PATH }}
+            ${{ env.XPI_PATH }}
           # draft: relecture manuelle avant publication effective — même choix de prudence que
           # release-app.yml (voir son commentaire équivalent).
           draft: true
