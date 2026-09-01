@@ -38,45 +38,40 @@ jobs:
         working-directory: frontend(app)
         run: npx tauri ios init --ci
 
-      - name: Construire l'archive .xcarchive NON SIGNÉE
-        working-directory: frontend(app)/src-tauri/gen/apple
+      # CORRECTIF (voir la conversation du 2026-09-01) : appeler `xcodebuild archive` DIRECTEMENT
+      # (comme dans les runs précédents de ce fichier) échoue systématiquement — la phase de build
+      # Xcode "Build Rust Code" a besoin d'un pont RPC (WebSocket) maintenu en vie PENDANT tout le
+      # build, géré uniquement par le PROCESSUS `tauri ios build` lui-même (pas juste un fichier
+      # d'adresse statique, comme supposé au tour précédent). Donc : appeler `tauri ios build`
+      # réellement, plutôt que de le contourner — il échouera très probablement à la toute
+      # dernière étape (export signé, `xcodebuild -exportArchive`, qui exige un compte Apple), mais
+      # devrait avoir déjà écrit un .xcarchive valide sur le disque AVANT d'en arriver là (l'archive
+      # et l'export sont deux étapes séparées et séquentielles). `|| true` : on récupère cet
+      # artefact nous-mêmes juste après, peu importe le code de sortie de cette commande.
+      - name: "Tenter tauri ios build (échec attendu à l'export signé, on récupère l'archive avant)"
+        working-directory: frontend(app)
+        run: npx tauri ios build --ci -t aarch64 --export-method debugging || true
+
+      - name: Chercher un .xcarchive produit malgré l'échec de l'export
         run: |
           set -e
-          project=$(find . -maxdepth 1 -name "*.xcodeproj" | head -1)
-          echo "Projet Xcode : $project"
-          all_schemes=$(xcodebuild -list -project "$project" | awk '/Schemes:/{flag=1; next} flag && NF')
-          scheme=$(echo "$all_schemes" | grep -i "_iOS" | head -1 | xargs)
-          if [ -z "$scheme" ]; then scheme=$(echo "$all_schemes" | head -1 | xargs); fi
-          echo "Scheme : $scheme"
-          # CORRECTIF (trouvé au run précédent — panique "failed to read missing addr file ...") :
-          # la phase de build Xcode "Build Rust Code" appelle `tauri ios xcode-script`, qui
-          # s'attend TOUJOURS à trouver un petit fichier temporaire écrit normalement par
-          # `tauri ios build`/`dev` avant d'invoquer xcodebuild (l'adresse du serveur de dev, pour
-          # le rechargement à chaud) — inexistant ici puisqu'on appelle xcodebuild directement pour
-          # contourner l'exigence de signature de `tauri ios build`. Sans impact en configuration
-          # release (le contenu déjà bundlé dans dist/ est utilisé, jamais un serveur de dev) :
-          # valeur factice, juste pour satisfaire cette lecture.
-          identifier=$(grep -o '"identifier"[[:space:]]*:[[:space:]]*"[^"]*"' ../../tauri.conf.json | sed -E 's/.*"([^"]+)"$/\1/')
-          tmp_dir="${TMPDIR:-/tmp}"
-          addr_file="${tmp_dir%/}/${identifier}-server-addr"
-          echo -n "127.0.0.1:1420" > "$addr_file"
-          echo "Fichier addr factice écrit : $addr_file"
-          xcodebuild archive \
-            -project "$project" \
-            -scheme "$scheme" \
-            -configuration release \
-            -archivePath "$RUNNER_TEMP/unsigned.xcarchive" \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            ONLY_ACTIVE_ARCH=NO
+          archive_path=$(find "$HOME/Library/Developer/Xcode/DerivedData" -maxdepth 2 -name "*.xcarchive" 2>/dev/null | head -1)
+          if [ -z "$archive_path" ]; then
+            archive_path=$(find "$HOME/Library/Developer/Xcode/Archives" -name "*.xcarchive" 2>/dev/null | head -1)
+          fi
+          if [ -z "$archive_path" ]; then
+            echo "Aucun .xcarchive trouvé — tauri ios build a probablement échoué AVANT l'archive elle-même."
+            echo "Contenu de DerivedData pour diagnostic :"
+            find "$HOME/Library/Developer/Xcode/DerivedData" -maxdepth 3 2>/dev/null || true
+            exit 1
+          fi
+          echo "Archive trouvée : $archive_path"
+          echo "ARCHIVE_PATH=$archive_path" >> "$GITHUB_ENV"
 
       - name: Empaqueter le .app en .ipa non signé
         run: |
           set -e
-          app_path=$(find "$RUNNER_TEMP/unsigned.xcarchive/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
+          app_path=$(find "$ARCHIVE_PATH/Products/Applications" -maxdepth 1 -name "*.app" | head -1)
           echo "App : $app_path"
           mkdir -p "$RUNNER_TEMP/Payload"
           cp -R "$app_path" "$RUNNER_TEMP/Payload/"
