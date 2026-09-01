@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { forwardRef, useImperativeHandle, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import * as tauri from "../api/tauri";
@@ -134,21 +134,32 @@ function entropyBadge(password: string) {
   );
 }
 
+/** Déclenche les actions Importer/Exporter depuis l'EXTÉRIEUR du composant (voir pages/Vault.tsx —
+ * le menu ⋮ mobile a besoin d'ouvrir les mêmes flux que les boutons desktop, sans dupliquer leur
+ * logique) — exposé via `ref` (useImperativeHandle) plutôt qu'un simple callback prop : ce
+ * composant garde l'entière responsabilité de son propre état (modals, formats, mots de passe
+ * d'export...), l'appelant n'a besoin que de pouvoir "appuyer sur le bouton" à sa place. */
+export interface ImportExportBarHandle {
+  triggerImport: () => void;
+  triggerExport: () => void;
+}
+
 /** Boutons Importer/Exporter le coffre, avec leur logique complète. Les deux flux suivent la
  * même forme : récupérer les entrées (déchiffrement pour l'export, lecture de fichier pour
  * l'import) -> laisser choisir lesquelles garder -> agir seulement sur la sélection. */
-export default function ImportExportBar({
-  existingEntries,
-  preselectedIds,
-  onImported,
-}: {
+const ImportExportBar = forwardRef<ImportExportBarHandle, {
   existingEntries: PlainVaultEntry[];
   /** Ids déjà cochés dans le mode "Sélectionner" de Vault.tsx — si non vide, l'étape d'export ne
    * précoche QUE ces entrées-là au lieu de tout précocher (le reste du coffre reste visible et
    * sélectionnable, juste décoché par défaut). Vide ou omis -> comportement inchangé (tout coché). */
   preselectedIds?: Set<string>;
   onImported?: () => void;
-}) {
+  /** Classes du conteneur des DEUX boutons "Importer"/"Exporter" affichés directement (pas dans le
+   * menu ⋮) — `"hidden sm:flex gap-2"` par défaut : masqués sur mobile (voir pages/Vault.tsx, qui
+   * fournit les mêmes actions via le menu ⋮ à la place, en s'appuyant sur `ref` ci-dessus), visibles
+   * normalement à partir de la largeur `sm`. */
+  triggersClassName?: string;
+}>(function ImportExportBar({ existingEntries, preselectedIds, onImported, triggersClassName = "hidden sm:flex gap-2" }, ref) {
   const { email, authorizedRequest } = useAuth();
 
   const [exportModal, setExportModal] = useState<ExportModalState>(null);
@@ -283,9 +294,16 @@ export default function ImportExportBar({
     }
   }
 
+  // Voir ImportExportBarHandle ci-dessus — expose les MÊMES actions que les boutons visibles
+  // juste en dessous, pour le menu ⋮ mobile de pages/Vault.tsx.
+  useImperativeHandle(ref, () => ({
+    triggerImport: () => void handlePickImportFile(),
+    triggerExport: () => setExportModal({ step: "password" }),
+  }));
+
   return (
     <div>
-      <div className="flex gap-2">
+      <div className={triggersClassName}>
         <button
           type="button"
           onClick={() => void handlePickImportFile()}
@@ -398,7 +416,9 @@ export default function ImportExportBar({
       )}
     </div>
   );
-}
+});
+
+export default ImportExportBar;
 
 function ImportDecryptStep({
   password,

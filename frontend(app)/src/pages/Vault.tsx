@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { decryptEntry, encryptEntry, type PlainVaultEntry } from "../lib/vaultCrypto";
@@ -11,7 +11,7 @@ import { openEntryUrl } from "../lib/openExternalUrl";
 import { WEAK_THRESHOLD_BITS, estimatePasswordEntropyBits, rateEntropy } from "../lib/passwordGenerator";
 import { OLD_PASSWORD_DAYS, daysSince, formatRelativeAge } from "../lib/age";
 import VaultEntryForm, { type VaultEntryFormValues } from "../components/VaultEntryForm";
-import ImportExportBar from "../components/ImportExportBar";
+import ImportExportBar, { type ImportExportBarHandle } from "../components/ImportExportBar";
 import TrashModal from "../components/TrashModal";
 import VaultHealthModal from "../components/VaultHealthModal";
 import VaultHistoryModal from "../components/VaultHistoryModal";
@@ -54,6 +54,7 @@ type ModalState = { mode: "add"; prefill?: VaultEntryFormValues } | { mode: "edi
 
 export default function Vault() {
   const { email, isModerator, logout, authorizedRequest, subscribeToVaultSync } = useAuth();
+  const navigate = useNavigate();
 
   const [entries, setEntries] = useState<PlainVaultEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -97,6 +98,15 @@ export default function Vault() {
   const [bulkFolderInput, setBulkFolderInput] = useState("");
   const [bulkFolderIsNew, setBulkFolderIsNew] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // Menu ⋮ MOBILE UNIQUEMENT (voir le bouton dans le header, `sm:hidden`) — regroupe tout ce qui,
+  // en boutons individuels, encombrait un écran étroit sans la moindre adaptation (bug remonté par
+  // l'utilisateur, voir la conversation du 2026-09-01) : navigation, Corbeille, Santé du coffre,
+  // Import/Export, Signaler un bug. Réutilise EntryActionsMenu (déjà utilisé pour le menu "⋯" de
+  // chaque entrée) plutôt qu'un nouveau composant — même mécanique (clic dehors/Échap ferme),
+  // juste une liste d'actions différente. Sur `sm:` et plus, ce bouton disparaît (`sm:hidden`) et
+  // toutes ces actions restent visibles directement comme avant, AUCUN changement desktop.
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const importExportRef = useRef<ImportExportBarHandle>(null);
 
   const loadEntries = useCallback(async () => {
     setIsLoading(true);
@@ -666,6 +676,30 @@ export default function Vault() {
               <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Coffre</h1>
               <p className="truncate text-sm text-neutral-500">{email}</p>
             </div>
+            {/* Menu ⋮ — MOBILE UNIQUEMENT (`sm:hidden`), voir sa déclaration plus haut. Regroupe la
+             * navigation ci-dessous + les actions accessoires de la rangée d'outils (voir plus bas
+             * dans ce fichier) qui, sinon, s'empilaient en une quinzaine de boutons individuels sur
+             * un écran étroit. */}
+            <div className="shrink-0 sm:hidden">
+              <EntryActionsMenu
+                isOpen={showMobileMenu}
+                onToggle={() => setShowMobileMenu((v) => !v)}
+                onClose={() => setShowMobileMenu(false)}
+                items={[
+                  ...(isModerator ? [{ label: "Administration", onClick: () => navigate("/admin") }] : []),
+                  { label: "Partagé avec moi", onClick: () => navigate("/shared-with-me") },
+                  { label: "Coffres partagés", onClick: () => navigate("/shared-vaults") },
+                  { label: "Réglages", onClick: () => navigate("/settings") },
+                  { label: "Aide raccourcis", onClick: () => setShowShortcutsHelp(true) },
+                  { label: isSelecting ? "Annuler la sélection" : "Sélectionner", onClick: () => (isSelecting ? exitSelection() : setIsSelecting(true)) },
+                  { label: "Corbeille", onClick: () => setShowTrash(true) },
+                  { label: "Santé du coffre", onClick: () => setShowHealth(true) },
+                  { label: "Importer", onClick: () => importExportRef.current?.triggerImport() },
+                  { label: "Exporter", onClick: () => importExportRef.current?.triggerExport() },
+                  { label: "Signaler un bug", onClick: () => setShowBugReport(true) },
+                ]}
+              />
+            </div>
             <button
               type="button"
               onClick={() => void logout()}
@@ -677,8 +711,10 @@ export default function Vault() {
           {/* Navigation séparée du bandeau titre/déconnexion ci-dessus — sur sa propre ligne,
            * `flex-wrap` pour se répartir proprement sur plusieurs lignes si la fenêtre est étroite
            * plutôt que d'écraser tous les boutons ensemble (voir les rangées filtres/actions plus
-           * bas, qui suivent déjà ce même principe). */}
-          <nav className="flex flex-wrap gap-2">
+           * bas, qui suivent déjà ce même principe). `hidden sm:flex` : sur mobile, ces mêmes liens
+           * sont déjà dans le menu ⋮ ci-dessus (voir son commentaire) — inutile de les répéter deux
+           * fois sur un écran étroit. */}
+          <nav className="hidden flex-wrap gap-2 sm:flex">
             {isModerator && (
               <Link
                 to="/admin"
@@ -824,13 +860,16 @@ export default function Vault() {
               </button>
             </div>
 
+          {/* "?"/Sélectionner/Corbeille/Santé du coffre : masqués sur mobile (`hidden sm:...` sur
+           * CHAQUE bouton, pas sur le conteneur — voir le menu ⋮ du header, qui donne accès aux
+           * mêmes actions là-bas) ; "+ Ajouter" reste toujours visible, l'action la plus fréquente. */}
           <div className="flex flex-wrap items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setShowShortcutsHelp(true)}
                 title="Raccourcis clavier (?)"
                 aria-label="Afficher les raccourcis clavier"
-                className="shrink-0 rounded-lg border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
+                className="hidden shrink-0 rounded-lg border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900 sm:inline-flex"
               >
                 ?
               </button>
@@ -838,7 +877,7 @@ export default function Vault() {
                 type="button"
                 onClick={() => (isSelecting ? exitSelection() : setIsSelecting(true))}
                 disabled={entries.length === 0}
-                className={`shrink-0 rounded-lg border px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
+                className={`hidden shrink-0 rounded-lg border px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40 sm:inline-flex ${
                   isSelecting
                     ? "border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300"
                     : "border-neutral-300 text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
@@ -849,7 +888,7 @@ export default function Vault() {
               <button
                 type="button"
                 onClick={() => setShowTrash(true)}
-                className="shrink-0 rounded-lg border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
+                className="hidden shrink-0 rounded-lg border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900 sm:inline-flex"
               >
                 Corbeille
               </button>
@@ -857,7 +896,7 @@ export default function Vault() {
                 type="button"
                 onClick={() => setShowHealth(true)}
                 disabled={entries.length === 0}
-                className="shrink-0 rounded-lg border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
+                className="hidden shrink-0 rounded-lg border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900 sm:inline-flex"
               >
                 Santé du coffre
               </button>
@@ -973,7 +1012,12 @@ export default function Vault() {
         )}
 
         <div className="mb-4">
-          <ImportExportBar existingEntries={entries} preselectedIds={selectedIds} onImported={() => void loadEntries()} />
+          <ImportExportBar
+            ref={importExportRef}
+            existingEntries={entries}
+            preselectedIds={selectedIds}
+            onImported={() => void loadEntries()}
+          />
         </div>
 
         {error && <p className="mb-4 text-sm text-red-600 dark:text-red-400">{error}</p>}
