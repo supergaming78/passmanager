@@ -11,10 +11,11 @@
 # sinon d'avoir le code source sur son disque).
 #
 # Contenu du zip : uniquement ce que manifest.json référence réellement (manifest.json, icons/,
-# popup/dist/ — reconstruit ici, jamais committé) + le guide. PAS popup/src, popup/node_modules,
-# wasm-bindings/src, extension-key.pem (jamais committé de toute façon, voir .gitignore — inutile
-# ici : c'est la clé PUBLIQUE dérivée qui est déjà figée dans manifest.json::key, la clé privée ne
-# sert qu'à la régénérer si besoin, pas à distribuer l'extension telle quelle).
+# popup/dist/ — reconstruit ici en deux temps : wasm-pack PUIS npm build, ni l'un ni l'autre n'est
+# committé, voir .gitignore) + le guide. PAS popup/src, popup/node_modules, wasm-bindings/src,
+# extension-key.pem (jamais committé de toute façon, voir .gitignore — inutile ici : c'est la clé
+# PUBLIQUE dérivée qui est déjà figée dans manifest.json::key, la clé privée ne sert qu'à la
+# régénérer si besoin, pas à distribuer l'extension telle quelle).
 name: Release extension
 
 on:
@@ -37,12 +38,27 @@ jobs:
           cache: npm
           cache-dependency-path: "extension/popup/package-lock.json"
 
+      # CORRECTIF (premier run réel) : `wasm-bindings/pkg-web` est en fait GITIGNORÉ (voir
+      # .gitignore racine, ligne "extension/wasm-bindings/pkg-web/") — présent en local uniquement
+      # parce que déjà construit une fois à la main (voir extension/README.md#construire), jamais
+      # committé. Sans cette étape, `npm run build` du popup échoue immédiatement (`tsc`) avec
+      # "Cannot find module '../../../wasm-bindings/pkg-web/wasm_bindings.js'". `jetli/wasm-pack-action`
+      # télécharge un binaire wasm-pack prêt à l'emploi (rapide) plutôt que `cargo install wasm-pack`
+      # (compilation complète, bien plus lent).
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: jetli/wasm-pack-action@v0.4.0
+
+      - name: Construire le module WASM (wasm-bindings/pkg-web)
+        working-directory: extension/wasm-bindings
+        run: wasm-pack build --target web --out-dir pkg-web
+
       - name: Installer les dépendances npm du popup
         working-directory: extension/popup
         run: npm ci
 
-      # wasm-bindings/pkg-web est déjà committé (pas de rebuild Rust/wasm-pack nécessaire ici) —
-      # juste le build Vite du popup, qui produit popup/dist/ (bundle le WASM au passage).
       - name: Construire le popup (produit popup/dist/)
         working-directory: extension/popup
         run: npm run build
