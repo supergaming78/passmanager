@@ -23,6 +23,7 @@ voir [`../GUIDE_UTILISATEUR.md`](../GUIDE_UTILISATEUR.md).
 - [Lancer en local](#lancer-en-local)
 - [Lancer avec Docker](#lancer-avec-docker)
 - [Sauvegarde de la base de données](#sauvegarde-de-la-base-de-données)
+- [Espace disque](#espace-disque)
 - [Exposer ce backend en HTTPS](#exposer-ce-backend-en-https)
 - [Tests](#tests)
 - [Documentation de l'API](#documentation-de-lapi)
@@ -155,9 +156,16 @@ curl http://localhost:3000/health
 `docker-compose.yml` inclut un service `backup` (voir `scripts/backup.sh`) qui tourne en continu
 à côté de `api` : toutes les 24h par défaut, il prend un instantané cohérent de la base SQLite
 vivante (`sqlite3 <db> ".backup ..."` — sûr même en mode WAL, contrairement à un simple `cp`) et
-l'écrit dans `./backups/`, en ne gardant que les 14 plus récents (configurable, voir les variables
-`BACKUP_INTERVAL_SECONDS`/`BACKUP_KEEP_COUNT` commentées dans `docker-compose.yml`). Démarre
-automatiquement avec `docker compose up -d`, rien à activer.
+l'écrit dans `./backups/`, en ne gardant que les 3 plus récents (configurable, voir les variables
+`BACKUP_INTERVAL_SECONDS`/`BACKUP_KEEP_COUNT` dans `docker-compose.yml` — 3 par défaut désormais,
+DÉLIBÉRÉMENT bas pour un serveur à l'espace disque limité, voir juste en dessous ; le défaut du
+script lui-même, si cette variable était absente, resterait 14). Démarre automatiquement avec
+`docker compose up -d`, rien à activer.
+
+**Si l'espace disque est limité** (ex: 5-6 Go au total pour tout le service) : garder seulement 3
+sauvegardes LOCALES suffit largement pour un filet de sécurité tout récent, à condition d'avoir une
+VRAIE rétention plus longue ailleurs — voir "Ce que ce mécanisme ne fait PAS" ci-dessous, cette
+partie-là reste indispensable, pas juste "conseillée", dans ce cas de figure.
 
 **Ce que ça couvre** : comptes, coffres chiffrés, logs d'audit, relations d'accès d'urgence,
 partages, appareils de confiance — tout ce qui vit UNIQUEMENT sur ce serveur. Sans cette
@@ -175,6 +183,29 @@ de cette machine).
 **Restaurer** une sauvegarde : arrêter `api` (`docker compose stop api`), remplacer
 `./data/vault.db` (et ses fichiers `-wal`/`-shm` s'ils existent) par le fichier voulu dans
 `./backups/`, puis relancer (`docker compose start api`).
+
+## Espace disque
+
+Pensé pour tourner sur un serveur à l'espace très limité (quelques Go au total). Ce qui consomme
+réellement de l'espace, et comment c'est tenu sous contrôle :
+
+- **Image Docker de `api`** : ~150-200 Mo (`debian:bookworm-slim` + un seul binaire Rust, voir le
+  `Dockerfile` — SQLite lié statiquement, aucune dépendance système superflue).
+- **`./data/vault.db`** : quelques Ko à quelques Mo pour du texte (comptes, coffres chiffrés), voir
+  le plafond des pièces jointes (5 Mo/fichier, 50/utilisateur) pour le pire des cas par compte.
+- **`./backups/`** : 3 sauvegardes complètes gardées par défaut (voir la section précédente) — pas
+  14, délibérément réduit pour ce genre de déploiement. Si le coffre grossit un jour (beaucoup de
+  pièces jointes), c'est CE nombre qu'il faut revoir en premier (chaque sauvegarde = une copie
+  complète de `vault.db` à cet instant).
+- **`./logs/`** : un fichier JSON par jour (`server.json.AAAA-MM-JJ`), **CORRECTIF** — jusqu'ici, ce
+  dossier grossissait indéfiniment (aucune limite de rétention n'était réellement appliquée, malgré
+  ce que le code semblait suggérir). Plafonné maintenant à 14 fichiers (~2 semaines) : le plus
+  ancien est supprimé automatiquement dès qu'un 15e apparaît (voir `main.rs`, `RUST_LOG=info` par
+  défaut dans `docker-compose.yml` — le niveau "debug" produirait des fichiers bien plus gros).
+- **Docker lui-même** : les images/couches de build s'accumulent au fil des mises à jour
+  (`docker compose build`/`pull`) si rien ne les nettoie — `docker system df` pour voir ce qui est
+  utilisé, `docker system prune` (ou `-a` pour aussi les images non taguées) pour récupérer
+  l'espace des anciennes images/couches devenues inutiles.
 
 ## Exposer ce backend en HTTPS
 

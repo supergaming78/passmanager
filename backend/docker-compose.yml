@@ -37,10 +37,18 @@ services:
     environment:
       - DB_PATH=/data/vault.db
       - BACKUP_DIR=/backups
-      # Décommenter/ajuster pour changer la fréquence (secondes) ou le nombre de sauvegardes
-      # conservées — défauts dans scripts/backup.sh (24h, 14 sauvegardes) si absents ici.
-      # - BACKUP_INTERVAL_SECONDS=86400
-      # - BACKUP_KEEP_COUNT=14
+      # BACKUP_KEEP_COUNT=3 (pas le défaut de 14, voir scripts/backup.sh) : réglé bas
+      # DÉLIBÉRÉMENT pour un serveur à l'espace disque très limité (5-6 Go au total) — ces
+      # sauvegardes LOCALES ne servent qu'à un filet de sécurité tout récent (dernières heures/
+      # derniers jours), la vraie rétention long terme se fait ailleurs (ex: synchroniser
+      # périodiquement ce dossier ./backups vers un NAS séparé — voir ../README.md et
+      # backend/README.md#sauvegarde-de-la-base-de-données, cette synchronisation reste À FAIRE
+      # SOI-MÊME, ce dépôt ne peut pas le faire à ta place). Avec une base de quelques Mo, 3
+      # sauvegardes de plus par rapport à 14 ne changeraient presque rien — mais si le coffre
+      # grossit un jour (pièces jointes), la différence devient significative (voir le calcul dans
+      # backend/README.md).
+      - BACKUP_KEEP_COUNT=3
+      # - BACKUP_INTERVAL_SECONDS=86400 (décommenter pour changer la fréquence, en secondes)
     volumes:
       # :ro — ce conteneur ne doit JAMAIS pouvoir écrire dans la base vivante, seulement la lire
       # pour en tirer un instantané cohérent (voir scripts/backup.sh).

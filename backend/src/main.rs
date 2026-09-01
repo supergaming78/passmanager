@@ -44,8 +44,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialise et valide la configuration de l'application
     let config = Config::from_env();
 
-    // Configuration du système de logs "tournant" : crée un fichier `server.json` par jour dans `./logs`
-    let file_appender = tracing_appender::rolling::daily("./logs", "server.json");
+    // Configuration du système de logs "tournant" : crée un fichier `server.json` par jour dans
+    // `./logs`. CORRECTIF DISQUE (repéré en relecture, pas par un incident réel — mais l'espace
+    // disque disponible est très limité sur le serveur cible) : `rolling::daily(dir, prefix)`, la
+    // fonction utilitaire SIMPLE utilisée auparavant, crée bien un nouveau fichier chaque jour mais
+    // n'en supprime JAMAIS d'anciens — ./logs aurait grossi INDÉFINIMENT, un fichier de plus par
+    // jour, pour toujours. `RollingFileAppender::builder().max_log_files(14)` : mêmes fichiers
+    // produits (même préfixe "server.json", même rotation quotidienne), mais purge automatiquement
+    // le plus ancien dès qu'un 15e existerait — 14 jours de logs (~2 semaines) largement suffisant
+    // pour diagnostiquer un problème récent, sans laisser ce dossier grossir sans fin.
+    let file_appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("server.json")
+        .max_log_files(14)
+        .build("./logs")
+        .expect("échec de l'initialisation du système de logs tournant (./logs)");
     // Rend l'écriture dans le fichier asynchrone (non-bloquante pour le thread principal)
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
