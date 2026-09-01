@@ -4,6 +4,7 @@ import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
 import type { AdminUserView, AuditLog, BugReportView } from "../api/types";
+import ServerUrlForm from "../components/ServerUrlForm";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -420,6 +421,14 @@ export default function Admin() {
         {isAdmin && (
           <Section title="Signalements de bug (desktop/Android) — visible par toi seul">
             <BugReportsSection />
+          </Section>
+        )}
+
+        {/* Admin SEUL (pas modérateur) — voir lib/settings.ts et components/ServerUrlForm.tsx.
+            Override purement local à CET appareil, jamais avant connexion. */}
+        {isAdmin && (
+          <Section title="Serveur (cet appareil uniquement) — visible par toi seul">
+            <ServerUrlForm />
           </Section>
         )}
       </div>

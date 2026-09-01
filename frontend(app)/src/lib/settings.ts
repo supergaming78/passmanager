@@ -3,22 +3,44 @@
 
 import { isDev } from "./env";
 
+const BACKEND_URL_OVERRIDE_KEY = "passmanager.backendUrl";
+
 /**
- * URL de base du backend — CODÉE EN DUR (voir la conversation du 2026-09-01) : l'app pointait
- * auparavant vers une URL configurable par l'utilisateur (écran "Configurer le serveur", retiré),
- * le temps de vérifier que le déploiement auto-hébergé définitif (NPM + DuckDNS + certificat
- * Let's Encrypt via DNS Challenge, redirection de port 3557→443 chez le fournisseur d'accès)
- * fonctionnait vraiment, en local ET à distance. C'est confirmé — cette adresse est désormais fixe
- * pour TOUT le monde (famille/proches visés par ce projet, pas d'auto-hébergement tiers à prévoir).
+ * URL de base du backend — DÉFAUT fixé en dur (voir la conversation du 2026-09-01) : l'app
+ * pointait auparavant vers une URL configurable par n'importe qui via l'écran pré-connexion
+ * "Configurer le serveur" (retiré), le temps de vérifier que le déploiement auto-hébergé définitif
+ * (NPM + DuckDNS + certificat Let's Encrypt via DNS Challenge, redirection de port 3557→443 chez
+ * le fournisseur d'accès) fonctionnait vraiment, en local ET à distance. C'est confirmé.
  *
- * En dev (`npm run tauri dev`) : reste sur le backend local (`cargo run` dans backend/), jamais
- * sur le serveur de prod — évite de tester par erreur contre les vraies données de production.
+ * CORRECTIF (toujours le 2026-09-01, demande explicite formulée plus tôt dans le projet) : cette
+ * adresse par défaut reste modifiable, mais UNIQUEMENT par l'Admin (voir AuthUser::is_admin, pas
+ * un simple modérateur), et UNIQUEMENT depuis les Réglages une fois connecté — jamais avant
+ * connexion (voir pages/Admin.tsx::ServerUrlForm, gardé derrière `isAdmin`). Un override local
+ * (ce stockage), PAS partagé avec les autres comptes/appareils — sert par exemple à basculer CET
+ * appareil vers un second backend (test, secours...) sans changer ce que tout le monde utilise par
+ * défaut.
+ *
+ * En dev (`npm run tauri dev`) : reste TOUJOURS sur le backend local (`cargo run` dans backend/),
+ * même override ignoré — évite de tester par erreur contre les vraies données de production.
  */
 const PRODUCTION_BACKEND_URL = "https://backend-passmanager.duckdns.org:3557";
 const DEV_BACKEND_URL = "http://localhost:3000";
 
 export function getBackendUrl(): string {
-  return isDev ? DEV_BACKEND_URL : PRODUCTION_BACKEND_URL;
+  if (isDev) return DEV_BACKEND_URL;
+  return localStorage.getItem(BACKEND_URL_OVERRIDE_KEY) ?? PRODUCTION_BACKEND_URL;
+}
+
+/** Réservé à l'Admin (voir pages/Admin.tsx::ServerUrlForm) — voir le commentaire de
+ * getBackendUrl() ci-dessus pour la portée (local à cet appareil, jamais avant connexion). */
+export function setBackendUrl(url: string): void {
+  // Retire un slash final éventuel pour éviter les doubles "//" lors de la concaténation des routes.
+  localStorage.setItem(BACKEND_URL_OVERRIDE_KEY, url.replace(/\/+$/, ""));
+}
+
+/** Revient à l'adresse définitive par défaut, en effaçant l'override local — voir ServerUrlForm. */
+export function resetBackendUrlToDefault(): void {
+  localStorage.removeItem(BACKEND_URL_OVERRIDE_KEY);
 }
 
 const GENERATOR_OPTIONS_KEY = "passmanager.generatorOptions";
