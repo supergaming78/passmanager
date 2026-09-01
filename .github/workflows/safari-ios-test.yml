@@ -1,0 +1,42 @@
+# Workflow TEMPORAIRE — itère sur la conversion de extension/ en extension Safari iOS, sans
+# toucher release-app.yml/l'app principale. Même raison d'être que ios-test.yml avant lui (supprimé
+# depuis, sa recette validée vit maintenant dans release-app.yml) : éviter de mélanger la mise au
+# point d'un nouveau pipeline avec un tag `app-v*`/`ext-v*` réel. Déclenchable manuellement
+# uniquement (`workflow_dispatch`). À SUPPRIMER une fois une recette fiable trouvée et portée
+# ailleurs (voir la conversation du 2026-09-01).
+#
+# Portée volontairement réduite pour ce premier tour : juste faire tourner
+# `xcrun safari-web-extension-converter --help` pour connaître les VRAIS flags disponibles (pas
+# trouvés de façon fiable via la doc web) avant de tenter la conversion complète — même discipline
+# que pour l'app iOS (voir release-app.yml, en tête de fichier) : ne pas deviner ce qui peut être
+# vérifié directement sur un vrai runner macOS.
+name: Test Safari iOS (temporaire)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  safari-ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: "extension/popup/package-lock.json"
+
+      - name: Installer les dépendances npm du popup
+        working-directory: extension/popup
+        run: npm ci
+
+      # wasm-bindings/pkg-web est déjà committé (pas de rebuild Rust/wasm-pack nécessaire ici, voir
+      # extension/wasm-bindings/pkg-web) — juste le build Vite du popup, qui produit popup/dist/
+      # (référencé par manifest.json::action.default_popup).
+      - name: Construire le popup (produit popup/dist/)
+        working-directory: extension/popup
+        run: npm run build
+
+      - name: Aide de xcrun safari-web-extension-converter (diagnostic)
+        run: xcrun safari-web-extension-converter --help
