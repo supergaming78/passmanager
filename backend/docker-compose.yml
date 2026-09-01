@@ -3,13 +3,39 @@ services:
     build: .
     ports:
       - "3000:3000"
-    # Injecte les variables du .env au démarrage du conteneur (jamais gravées dans l'image,
-    # voir le Dockerfile) : DATABASE_URL, JWT_SECRET, PASSWORD_PEPPER, SMTP_*, ALLOWED_ORIGINS...
-    env_file:
-      - .env
+    # CORRECTIF : `env_file: - .env` (l'ancienne approche) EXIGE qu'un fichier .env existe
+    # PHYSIQUEMENT à côté de ce docker-compose.yml — vrai en local (`docker compose up -d` depuis
+    # `backend/`, .env jamais commité, voir le .gitignore racine), mais PLUS via Portainer en mode
+    # Stack "Repository" : Portainer clone directement ce dépôt GitHub, où .env n'existe PAS par
+    # définition (c'est justement pourquoi il est gitignored) — le déploiement échouerait purement
+    # et simplement, fichier introuvable. La substitution `${VAR}` ci-dessous résout ça sans rien
+    # perdre pour l'usage local : Docker Compose charge de toute façon automatiquement un .env
+    # voisin pour CETTE substitution (mécanisme intégré, différent de la directive `env_file:`
+    # utilisée avant), donc le flux local (`.env` + `docker compose up -d`) continue de marcher
+    # à l'identique. Côté Portainer : renseigner ces mêmes variables dans l'onglet "Environment
+    # variables" du Stack, sans avoir besoin d'aucun fichier — voir
+    # backend/README.md#déployer-via-portainer-stack pour la marche à suivre complète, et le
+    # tableau de backend/README.md#configuration pour le détail de chaque variable.
     environment:
-      # Surcharge l'URL pour pointer vers le volume persistant monté ci-dessous
+      # Surcharge l'URL pour pointer vers le volume persistant monté ci-dessous — jamais une
+      # valeur à changer, pas de substitution ${...} pour celle-ci.
       - DATABASE_URL=sqlite:/app/data/vault.db
+      - JWT_SECRET=${JWT_SECRET}
+      - PASSWORD_PEPPER=${PASSWORD_PEPPER}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      # "production" par défaut ICI (contrairement à .env.example, pensé pour `cargo run` en dev
+      # locale sans Docker) — ce fichier sert un vrai déploiement : active entre autres l'exigence
+      # stricte d'un JWT_SECRET d'au moins 32 caractères (voir config.rs), un garde-fou qu'on veut
+      # actif PAR DÉFAUT ici, pas seulement si quelqu'un pense à le régler explicitement.
+      - APP_ENV=${APP_ENV:-production}
+      - ACCESS_TOKEN_SECONDS=${ACCESS_TOKEN_SECONDS:-600}
+      - REFRESH_TOKEN_HOURS=${REFRESH_TOKEN_HOURS:-24}
+      - REFRESH_TOKEN_SHORT_SECONDS=${REFRESH_TOKEN_SHORT_SECONDS:-5}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - TRUST_PROXY_HEADERS=${TRUST_PROXY_HEADERS:-false}
       # "info" par défaut : le niveau "debug" a un coût réel (formatage de chaînes, bookkeeping
       # de spans) sur CHAQUE requête d'un service qui tourne en continu — à réserver à une session
       # de débogage ponctuelle (repasser cette ligne en debug temporairement), pas à la prod.

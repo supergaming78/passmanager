@@ -137,9 +137,12 @@ docker compose build
 docker compose up -d
 ```
 
-`docker-compose.yml` lit les secrets depuis `.env` (jamais gravés dans l'image) et persiste la
-base SQLite dans `./data` via un volume. Le conteneur tourne en utilisateur non-root (UID 1000) :
-si le démarrage échoue avec une erreur de permission sur `./data`, exécute une fois sur l'hôte :
+`docker-compose.yml` lit les secrets via des variables d'environnement (`${VAR}`, jamais gravées
+dans l'image) — un fichier `.env` voisin (copié depuis `.env.example`, voir "Configuration"
+ci-dessus) les fournit automatiquement pour cet usage en ligne de commande, aucune étape
+supplémentaire nécessaire. La base SQLite persiste dans `./data` via un volume. Le conteneur
+tourne en utilisateur non-root (UID 1000) : si le démarrage échoue avec une erreur de permission
+sur `./data`, exécute une fois sur l'hôte :
 
 ```sh
 mkdir -p ./data && sudo chown -R 1000:1000 ./data
@@ -150,6 +153,31 @@ Vérifier que le service répond :
 ```sh
 curl http://localhost:3000/health
 ```
+
+### Déployer via Portainer (Stack)
+
+`docker-compose.yml` fonctionne aussi tel quel comme Stack Portainer — méthode **Repository**,
+pas besoin de copier/coller le fichier à la main :
+
+1. **Stacks > Add stack**, nom au choix.
+2. **Build method : Repository**.
+3. **Repository URL** : `https://github.com/supergaming78/passmanager.git` (dépôt public, aucun
+   identifiant à fournir).
+4. **Compose path** : `backend/docker-compose.yml` (le fichier n'est PAS à la racine du dépôt).
+5. **Environment variables** — Portainer clone ce dépôt directement, où `.env` n'existe PAS (il
+   est volontairement exclu du dépôt, voir le `.gitignore` racine) : renseigne ici, un par un,
+   les mêmes noms que le tableau de la section "Configuration" ci-dessus (`JWT_SECRET`,
+   `PASSWORD_PEPPER`, `SMTP_USER`, `SMTP_PASS` au minimum — les autres ont un défaut raisonnable
+   si laissés vides).
+6. **Deploy the stack**.
+
+Portainer construit l'image depuis le `Dockerfile` du dépôt cloné (comme `docker compose build`
+en local) — le premier déploiement prend donc quelques minutes, les suivants (après un `git pull`
+du Stack, bouton "Pull and redeploy" dans Portainer) ne reconstruisent que ce qui a changé.
+
+**Mettre à jour** une fois du nouveau code poussé sur `main` : dans Portainer, ouvrir le Stack puis
+**Pull and redeploy** — récupère le dernier commit du dépôt et reconstruit l'image, sans perdre les
+volumes (`./data`/`./backups`, donc rien du coffre ni des sauvegardes).
 
 ## Sauvegarde de la base de données
 
