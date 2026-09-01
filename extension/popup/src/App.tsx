@@ -10,7 +10,6 @@ import { decryptEntry, encryptEntry, type PlainVaultEntry } from "./lib/vaultCry
 import { getPreferredIdentifier } from "./lib/entryIdentifier";
 import { runAutofill, getActiveTabUrl, domainsLikelyMatch } from "./lib/autofill";
 import { getErrorMessage } from "./lib/errors";
-import { getBackendUrl, setBackendUrl } from "./lib/settings";
 import { copyPasswordWithAutoClear } from "./lib/clipboard";
 import * as entrySharing from "./lib/entrySharing";
 import VaultEntryForm, { type VaultEntryFormValues } from "./components/VaultEntryForm";
@@ -96,8 +95,6 @@ function LoginScreen({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(true);
-  const [backendUrl, setBackendUrlState] = useState(getBackendUrl());
-  const [showServerField, setShowServerField] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -106,7 +103,6 @@ function LoginScreen({
     setError(null);
     setIsSubmitting(true);
     try {
-      setBackendUrl(backendUrl);
       const result = await session.login(email, password, rememberMe);
       if (result.status === "2FA_REQUIRED") {
         onTfaRequired(email, result.authHashHex, result.vaultKey, rememberMe);
@@ -163,23 +159,6 @@ function LoginScreen({
           />
           Se souvenir de cet appareil
         </label>
-
-        <button
-          type="button"
-          onClick={() => setShowServerField((v) => !v)}
-          className="self-start text-xs text-neutral-400 hover:underline dark:text-neutral-500"
-        >
-          {showServerField ? "Masquer" : "Configurer le serveur"}
-        </button>
-        {showServerField && (
-          <input
-            type="text"
-            value={backendUrl}
-            onChange={(e) => setBackendUrlState(e.target.value)}
-            placeholder="https://tonapp.duckdns.org"
-            className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
-          />
-        )}
 
         {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
 

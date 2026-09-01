@@ -5,13 +5,24 @@
 const BACKEND_URL_KEY = "passmanager.backendUrl";
 
 /**
- * URL de base du backend (ex: "https://tonapp.duckdns.org" ou "http://localhost:3000" en dev).
+ * URL de base du backend — DÉFAUT fixé en dur (voir frontend(app)/src/lib/settings.ts, même
+ * raisonnement, corrigé là-bas le 2026-09-01 mais jamais reporté ici jusqu'à ce test : ce popup
+ * pointait vers une URL configurable par n'importe qui via l'écran de connexion, AVANT toute
+ * authentification — repéré par un smoke test Playwright réel du popup, voir la conversation du
+ * 2026-09-01). Reste modifiable, mais UNIQUEMENT par un modérateur, UNIQUEMENT depuis Réglages
+ * une fois connecté (voir SettingsView.tsx, section "Serveur", déjà gardée par isModerator — CETTE
+ * partie-là était déjà correcte, seul l'écran de connexion pré-authentification ne l'était pas).
+ *
  * `localStorage` est propre au DOCUMENT de la popup (pas partagé avec l'app desktop, même si le
  * navigateur et l'app tournent sur la même machine) — chaque client reste indépendant, comme
  * prévu par l'architecture Zero-Knowledge (aucune donnée sensible dans ce réglage de toute façon).
  */
+const PRODUCTION_BACKEND_URL = "https://backend-passmanager.duckdns.org:3557";
+const DEV_BACKEND_URL = "http://localhost:3000";
+
 export function getBackendUrl(): string {
-  return localStorage.getItem(BACKEND_URL_KEY) ?? "http://localhost:3000";
+  if (import.meta.env.DEV) return DEV_BACKEND_URL;
+  return localStorage.getItem(BACKEND_URL_KEY) ?? PRODUCTION_BACKEND_URL;
 }
 
 export function setBackendUrl(url: string): void {
