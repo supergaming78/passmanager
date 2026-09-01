@@ -1,0 +1,10 @@
+# Force LF (jamais CRLF) pour tout fichier destiné à être exécuté par un shell POSIX à
+# l'intérieur d'une image Docker/sur un serveur Linux — un script shell avec des fins de ligne
+# CRLF échoue à l'exécution ("No such file or directory", le shebang devient invalide) sur Linux,
+# une erreur cryptique classique quand un tel fichier est édité/committé depuis Windows sans cette
+# garantie. `core.autocrlf` normalise déjà correctement LA PLUPART du temps (LF stocké dans le
+# dépôt, CRLF seulement dans la copie de travail locale Windows), mais cette règle explicite rend
+# ça garanti et indépendant du réglage `core.autocrlf` de quiconque committe, présent ou futur —
+# voir backend/docker-entrypoint.sh et backend/scripts/backup.sh, les deux scripts concernés au
+# moment où ce fichier a été ajouté.
+*.sh text eol=lf

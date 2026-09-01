@@ -74,9 +74,17 @@ COPY --from=builder /app/target/release/healthcheck /app/healthcheck
 # PAS de `COPY migrations` ici non plus : comme expliqué plus haut, sqlx::migrate!() les a déjà
 # embarquées DANS LE BINAIRE à la compilation — les recopier au runtime ne servirait à rien.
 
-# Prépare le dossier de données et donne la propriété à l'utilisateur non-root AVANT de basculer dessus
+# Prépare le dossier de données et donne la propriété à l'utilisateur non-root — SUFFISANT pour
+# le contenu propre à l'IMAGE, mais PAS pour /app/data une fois qu'un VOLUME y est monté au
+# runtime (voir docker-entrypoint.sh, qui refait ce chown À CHAQUE démarrage pour cette raison).
 RUN mkdir -p /app/data && chown -R appuser:appuser /app
-USER appuser
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+# PAS de `USER appuser` ici (contrairement à avant) : le conteneur DÉMARRE en root exprès, le
+# temps que docker-entrypoint.sh corrige l'appartenance du volume monté, puis bascule lui-même
+# sur appuser avant d'exécuter le vrai binaire serveur — voir ce script pour le détail complet du
+# raisonnement. Le binaire serveur lui-même ne tourne donc jamais en root, la protection reste
+# intacte, seule cette préparation ultra-courte au démarrage s'exécute en root.
 
 # Variables d'environnement par défaut
 ENV PORT=3000
@@ -86,9 +94,12 @@ EXPOSE 3000
 
 # Vérifie que le serveur répond ET que sa BDD est joignable (voir handlers::health_check).
 # Permet à Docker/un orchestrateur de détecter un conteneur bloqué et d'agir en conséquence
-# (redémarrage, retrait du load balancer...).
+# (redémarrage, retrait du load balancer...). Tourne implicitement en root (pas affecté par le
+# changement ci-dessus, HEALTHCHECK ne passe pas par ENTRYPOINT) — sans conséquence, ce binaire ne
+# fait qu'une requête HTTP en lecture, voir src/bin/healthcheck.rs.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD ["/app/healthcheck"]
 
-# Lancement de l'application
-CMD ["./backend"]
+# Lancement de l'application — via le script d'entrée (voir docker-entrypoint.sh), plus
+# directement "./backend" comme avant.
+ENTRYPOINT ["/docker-entrypoint.sh"]
