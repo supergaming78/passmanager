@@ -77,9 +77,46 @@ dans Réglages → Accès d'urgence.
 - **Navigateur (Chrome, Edge, Firefox...)** : l'extension navigateur, pour le remplissage
   automatique directement sur les sites visités.
 - **Téléphone Android** : l'application, format identique au desktop.
+- **iPhone/iPad** : l'application aussi, mais son installation est un peu différente — voir la
+  section dédiée juste en dessous.
 
 Ton coffre se synchronise automatiquement entre tous tes appareils connectés au même compte —
 inutile de tout ressaisir sur chacun.
+
+## Installer sur iPhone/iPad
+
+L'application existe sur iPhone/iPad, mais n'est **pas sur l'App Store** (ça coûte 99$/an à Apple,
+rien que pour avoir le droit d'y publier quoi que ce soit — pas justifié pour une app partagée
+entre proches). Installer l'app se fait donc un peu différemment, via un outil gratuit appelé
+**AltStore**, largement utilisé pour ce genre de cas.
+
+**Ce qu'il te faut** : un ordinateur Windows (ou Mac) sur le même réseau WiFi que ton iPhone/iPad,
+et un identifiant Apple (le même que celui que tu utilises déjà pour l'App Store — gratuit, pas
+besoin d'un compte développeur payant).
+
+1. **Sur l'ordinateur** : télécharge et installe AltServer depuis [altstore.io](https://altstore.io)
+   (choisis la version Windows). Une fois installé, il tourne en arrière-plan (petite icône dans la
+   zone de notification, en bas à droite de l'écran) — laisse-le allumé pour la suite.
+2. **Branche ton iPhone/iPad en USB** à l'ordinateur (la première fois, c'est plus fiable qu'en
+   WiFi seul).
+3. Clique-droit sur l'icône AltServer → **Install AltStore** → choisis ton appareil dans la liste.
+   Il te demande ton identifiant Apple + mot de passe : c'est normal, c'est ce qui sert à signer
+   l'app localement (rien n'est envoyé à qui que ce soit d'autre qu'Apple, de la même façon que
+   quand tu te connectes à l'App Store).
+4. Sur ton iPhone/iPad, une app **AltStore** apparaît. Avant de l'ouvrir, va dans **Réglages →
+   Général → VPN et gestion de l'appareil**, et fais confiance au profil qui porte ton identifiant
+   Apple.
+5. Télécharge le fichier `PassManager-unsigned.ipa` depuis la page des releases du projet
+   (transfère-le sur ton iPhone/iPad — par AirDrop, iCloud Drive, ou en le téléchargeant
+   directement dans Safari sur l'appareil).
+6. Ouvre **AltStore** sur ton iPhone/iPad → onglet **My Apps** → bouton **+** en haut à gauche →
+   sélectionne le fichier `.ipa`. L'installation démarre (peut prendre une minute).
+
+**À savoir** : avec un identifiant Apple gratuit (pas de compte développeur payant), l'app doit être
+re-signée tous les 7 jours, sinon elle s'arrête de fonctionner. AltServer s'en charge tout seul et
+automatiquement — il suffit que l'ordinateur avec AltServer soit allumé et sur le même WiFi que ton
+iPhone/iPad de temps en temps (ouvrir AltStore sur l'appareil de temps en temps aide aussi). Pas
+besoin d'un Mac, ni de rebrancher en USB après la toute première installation.
 
 ## En cas de problème
 
