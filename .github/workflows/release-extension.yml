@@ -1,0 +1,75 @@
+# Construit et publie l'extension navigateur en paquet téléchargeable (zip) sur GitHub Releases, à
+# chaque tag `ext-v*` — préfixe dédié séparé de `app-v*` (voir release-app.yml), une release GitHub
+# indépendante puisque l'extension a son propre numéro de version (extension/manifest.json), pas lié
+# à celui de l'app desktop/Android.
+#
+# PAS de Chrome Web Store ni d'addons.mozilla.org (AMO) ici — voir extension/GUIDE_INSTALLATION.md
+# pour le raisonnement (coût/revue) déjà tranché pour ce projet : juste un zip contenant
+# l'extension prête à charger manuellement (Chrome/Edge : "mode développeur" + "charger l'extension
+# non empaquetée" ; Firefox : chargement temporaire) + le guide d'installation, à destination de
+# quiconque n'a pas ce dépôt cloné en local (le "charger l'extension non empaquetée" habituel exige
+# sinon d'avoir le code source sur son disque).
+#
+# Contenu du zip : uniquement ce que manifest.json référence réellement (manifest.json, icons/,
+# popup/dist/ — reconstruit ici, jamais committé) + le guide. PAS popup/src, popup/node_modules,
+# wasm-bindings/src, extension-key.pem (jamais committé de toute façon, voir .gitignore — inutile
+# ici : c'est la clé PUBLIQUE dérivée qui est déjà figée dans manifest.json::key, la clé privée ne
+# sert qu'à la régénérer si besoin, pas à distribuer l'extension telle quelle).
+name: Release extension
+
+on:
+  push:
+    tags:
+      - "ext-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: "extension/popup/package-lock.json"
+
+      - name: Installer les dépendances npm du popup
+        working-directory: extension/popup
+        run: npm ci
+
+      # wasm-bindings/pkg-web est déjà committé (pas de rebuild Rust/wasm-pack nécessaire ici) —
+      # juste le build Vite du popup, qui produit popup/dist/ (bundle le WASM au passage).
+      - name: Construire le popup (produit popup/dist/)
+        working-directory: extension/popup
+        run: npm run build
+
+      - name: Assembler le paquet
+        run: |
+          set -e
+          version=$(node -p "require('./extension/manifest.json').version")
+          echo "Version de l'extension : $version"
+          staging="PassManager-extension-$version"
+          mkdir -p "$staging"
+          cp extension/manifest.json "$staging/"
+          cp -r extension/icons "$staging/"
+          mkdir -p "$staging/popup"
+          cp -r extension/popup/dist "$staging/popup/dist"
+          cp extension/GUIDE_INSTALLATION.md "$staging/"
+          zip -qr "PassManager-extension-$version.zip" "$staging"
+          echo "PACKAGE_PATH=PassManager-extension-$version.zip" >> "$GITHUB_ENV"
+
+      - name: Publier la release GitHub (brouillon)
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Extension PassManager ${{ github.ref_name }}"
+          files: ${{ env.PACKAGE_PATH }}
+          # draft: relecture manuelle avant publication effective — même choix de prudence que
+          # release-app.yml (voir son commentaire équivalent).
+          draft: true
