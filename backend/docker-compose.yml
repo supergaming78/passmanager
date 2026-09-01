@@ -70,9 +70,18 @@ services:
   # (pas de binaire `sqlite3` CLI, voir Dockerfile), et un souci sur la sauvegarde (ex: disque
   # plein sur ./backups) ne peut jamais faire planter/redémarrer le serveur lui-même.
   # `alpine` + `sqlite` : image très légère, seul le binaire `sqlite3` CLI nécessaire au script.
+  #
+  # CORRECTIF (repéré face à un vrai déploiement Portainer bloqué en "Restarting" sans log
+  # apparent, comme "api" l'a été avant lui) : l'ancienne approche installait `sqlite` au
+  # DÉMARRAGE de CHAQUE conteneur (`apk add --no-cache sqlite`, sortie masquée par `>/dev/null`)
+  # — un souci réseau ponctuel suffisait à faire échouer ce démarrage, en boucle avec
+  # `restart: always`, avec quasiment aucune sortie visible pour comprendre pourquoi. `sqlite` est
+  # maintenant installé UNE SEULE FOIS au BUILD de l'image (voir Dockerfile.backup) : plus aucune
+  # dépendance réseau au démarrage du conteneur, plus rapide, et le script démarre immédiatement.
   backup:
-    image: alpine:3.20
-    command: ["sh", "-c", "apk add --no-cache sqlite >/dev/null && sh /scripts/backup.sh"]
+    build:
+      context: .
+      dockerfile: Dockerfile.backup
     environment:
       - DB_PATH=/data/vault.db
       - BACKUP_DIR=/backups
@@ -91,9 +100,13 @@ services:
     volumes:
       # :ro — ce conteneur ne doit JAMAIS pouvoir écrire dans la base vivante, seulement la lire
       # pour en tirer un instantané cohérent (voir scripts/backup.sh).
+      # Plus de montage de scripts/backup.sh ici : il est désormais copié DANS l'image au build
+      # (voir Dockerfile.backup) — un rebuild (`docker compose build backup` / redéploiement du
+      # Stack Portainer) est donc nécessaire après une modification du script, alors qu'un simple
+      # redémarrage suffisait avant. Contrepartie acceptée pour supprimer la dépendance réseau au
+      # démarrage (voir plus haut) — ce script change rarement.
       - ./data:/data:ro
       - ./backups:/backups
-      - ./scripts/backup.sh:/scripts/backup.sh:ro
     restart: always
     depends_on:
       - api

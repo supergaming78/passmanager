@@ -1,0 +1,17 @@
+# Image dédiée au service "backup" de docker-compose.yml — CORRECTIF (repéré face à un vrai
+# déploiement Portainer bloqué en "Restarting" sans log apparent) : l'ancienne approche installait
+# `sqlite` au DÉMARRAGE de chaque conteneur (`apk add --no-cache sqlite`, avec sa sortie masquée
+# par `>/dev/null`) — un souci réseau ponctuel (résolution DNS vers les dépôts Alpine, coupure
+# passagère...) suffisait à faire échouer ce démarrage, en boucle avec `restart: always`, avec
+# quasiment aucune sortie visible pour comprendre pourquoi (l'essentiel de ce que produit `apk`
+# était justement masqué). En installant `sqlite` UNE SEULE FOIS ici, au moment du BUILD de
+# l'image (fait par Portainer/`docker compose build`, déjà fiable pour l'image `api` du même
+# projet), le conteneur n'a plus besoin du moindre accès réseau pour démarrer — juste pour être
+# construit, une fois.
+FROM alpine:3.20
+RUN apk add --no-cache sqlite
+
+COPY scripts/backup.sh /scripts/backup.sh
+RUN chmod +x /scripts/backup.sh
+
+ENTRYPOINT ["/scripts/backup.sh"]
