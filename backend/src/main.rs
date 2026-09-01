@@ -1,6 +1,8 @@
-use axum::{routing::{post, get, put, patch, delete}, Router, http::header::*, http::{HeaderName, HeaderValue, StatusCode}, extract::DefaultBodyLimit, error_handling::HandleErrorLayer, BoxError, Json};
+// `middleware as axum_middleware` : le module local `middleware.rs` (voir `mod middleware;` plus
+// bas, AuthUser & co) occupe déjà ce nom — évite un conflit E0255 entre les deux.
+use axum::{routing::{post, get, put, patch, delete}, Router, http::header::*, http::{HeaderName, HeaderValue, StatusCode}, extract::{DefaultBodyLimit, Request, State, ConnectInfo}, middleware as axum_middleware, response::Response, error_handling::HandleErrorLayer, BoxError, Json};
 use sqlx::sqlite::{SqlitePoolOptions, SqliteConnectOptions};
-use std::{sync::Arc, sync::Mutex, collections::HashMap, net::SocketAddr, str::FromStr, time::Duration};
+use std::{sync::Arc, sync::Mutex, collections::HashMap, net::{SocketAddr, IpAddr}, str::FromStr, time::Duration};
 use tower::ServiceBuilder;
 use tower_http::{cors::{CorsLayer, AllowOrigin}, trace::TraceLayer, set_header::SetResponseHeaderLayer, compression::CompressionLayer};
 use jsonwebtoken::{EncodingKey, DecodingKey};
@@ -235,6 +237,55 @@ impl KeyExtractor for ConfigurableIpKeyExtractor {
             PeerIpKeyExtractor.extract(req)
         }
     }
+}
+
+/// Middleware qui RÉÉCRIT l'extension `ConnectInfo<SocketAddr>` de la requête avec l'IP réelle du
+/// client, lue dans `X-Forwarded-For`/`X-Real-Ip` — uniquement si `Config::trust_proxy_headers`
+/// est activé (même garde-fou que [`ConfigurableIpKeyExtractor`] ci-dessus, pour la même raison :
+/// sans reverse proxy de confiance qui écrase ces en-têtes, n'importe quel client pourrait s'y
+/// attribuer l'IP de son choix).
+///
+/// CORRECTIF (repéré par l'utilisateur lui-même face à un vrai déploiement derrière Nginx Proxy
+/// Manager — voir la conversation du 2026-09-01) : `ConfigurableIpKeyExtractor` ne corrige QUE la
+/// clé utilisée par le rate limiter (tower_governor) — chaque HANDLER, lui, continue de recevoir
+/// `ConnectInfo<SocketAddr>` directement via l'extracteur Axum standard pour tout ce qui est
+/// ENREGISTRÉ EN BASE ou AFFICHÉ à l'utilisateur : IP dans le journal d'audit, IP associée à un
+/// appareil de confiance (voir handlers/auth/session.rs::record_device_ip_and_maybe_alert),
+/// alertes "nouvel appareil/nouvelle IP". Derrière un reverse proxy, `ConnectInfo` ne voit QUE
+/// l'IP du proxy — IDENTIQUE pour CHAQUE requête de CHAQUE client réel, quel qu'il soit. Résultat
+/// concret avant ce correctif : historique de sécurité et appareils de confiance rendus inutiles
+/// (impossible de distinguer un vrai nouvel appareil d'un autre, toutes les IP enregistrées étant
+/// la même).
+///
+/// Plutôt que de modifier individuellement CHAQUE handler (des dizaines, listés ci-dessus) pour
+/// leur faire lire l'en-tête eux-mêmes, ce middleware réécrit directement l'extension que TOUS
+/// consultent déjà de la même façon — correctif centralisé en un seul endroit, aucun changement
+/// nécessaire dans les handlers ni dans leurs tests (qui insèrent `ConnectInfo` manuellement, voir
+/// `test_addr()` plus bas). Le port de l'adresse réécrite est arbitraire (0) : aucun handler de ce
+/// projet ne lit jamais le port de `ConnectInfo`, seulement `.ip()`.
+async fn rewrite_client_ip_from_proxy_headers(State(state): State<Arc<AppState>>, mut req: Request, next: axum_middleware::Next) -> Response {
+    if state.config.trust_proxy_headers {
+        let forwarded_ip = req.headers()
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            // X-Forwarded-For peut contenir une chaîne "client, proxy1, proxy2, ..." si plusieurs
+            // proxys se sont succédé — le PREMIER élément est le client d'origine, seul cas
+            // pertinent ici (un unique reverse proxy de confiance, NPM, juste devant ce backend).
+            .and_then(|v| v.split(',').next())
+            .map(|v| v.trim())
+            .and_then(|v| v.parse::<IpAddr>().ok())
+            .or_else(|| {
+                req.headers()
+                    .get("x-real-ip")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse::<IpAddr>().ok())
+            });
+
+        if let Some(ip) = forwarded_ip {
+            req.extensions_mut().insert(ConnectInfo(SocketAddr::new(ip, 0)));
+        }
+    }
+    next.run(req).await
 }
 
 /// Construit le Router complet de l'application : routes, rate limiting par palier, CORS,
@@ -532,6 +583,12 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/admin/bug-reports/{id}", delete(handlers::delete_bug_report)) // Admin SEUL : marquer traité (suppression)
 
         // Application des middlewares globaux de Tower
+        // CORRECTIF SÉCURITÉ (voir rewrite_client_ip_from_proxy_headers ci-dessus) : ajoutée EN
+        // PREMIER (donc la couche la plus INTERNE, la plus proche des routes/handlers) pour que
+        // TraceLayer juste après logue déjà la bonne IP, et que tout ce qui suit voie la même
+        // correction — peu importe l'ordre exact vis-à-vis des autres couches ci-dessous, elle
+        // s'exécute de toute façon avant que le moindre handler n'extraie `ConnectInfo`.
+        .layer(axum_middleware::from_fn_with_state(state.clone(), rewrite_client_ip_from_proxy_headers))
         .layer(TraceLayer::new_for_http()) // Génère des logs automatiques pour chaque requête HTTP reçue
         // Limite globale de taille de requête : 256 Ko, généreux pour une entrée de coffre chiffrée
         // (voir MAX_ENCRYPTED_FIELD_LEN dans models.rs, 8 Ko par champ x quelques champs), mais
@@ -738,6 +795,137 @@ mod tests {
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
         })
+    }
+
+    /// Même chose que build_test_state(), mais `trust_proxy_headers: true` — pour les deux tests
+    /// de rewrite_client_ip_from_proxy_headers() ci-dessous qui doivent vérifier le comportement
+    /// UNE FOIS ce réglage activé (déploiement derrière un reverse proxy de confiance).
+    async fn build_test_state_with_proxy_trust() -> Arc<AppState> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connexion à la BDD de test");
+
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("échec des migrations sur la BDD de test");
+
+        let config = Config {
+            database_url: "sqlite::memory:".to_string(),
+            jwt_secret: "test_jwt_secret_au_moins_32_caracteres_ici".to_string(),
+            port: 0,
+            app_env: "test".to_string(),
+            access_token_seconds: 600,
+            refresh_token_hours: 24,
+            refresh_token_short_seconds: 5,
+            password_pepper: "test_password_pepper_au_moins_32_caracteres".to_string(),
+            smtp_host: "localhost".to_string(),
+            smtp_user: "test@example.com".to_string(),
+            smtp_pass: "unused".to_string(),
+            allowed_origins: vec!["http://localhost:5173".to_string()],
+            admin_email: None,
+            trust_proxy_headers: true,
+        };
+
+        Arc::new(AppState {
+            encoding_key: EncodingKey::from_secret(config.jwt_secret.as_bytes()),
+            decoding_key: DecodingKey::from_secret(config.jwt_secret.as_bytes()),
+            app_env: config.app_env.clone(),
+            db: pool,
+            config,
+            sync_tx: tokio::sync::broadcast::channel(16).0,
+            shutdown_tx: tokio::sync::broadcast::channel(1).0,
+            ws_connections: Default::default(),
+        })
+    }
+
+    /// Petit handler de test qui renvoie l'IP vue via `ConnectInfo<SocketAddr>` — sert à observer
+    /// de l'EXTÉRIEUR l'effet de rewrite_client_ip_from_proxy_headers() sur ce que les VRAIS
+    /// handlers de l'application reçoivent, sans dépendre d'aucun d'entre eux en particulier.
+    async fn echo_connect_info_ip(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> String {
+        addr.ip().to_string()
+    }
+
+    /// Comportement par défaut (`trust_proxy_headers: false`) : un `X-Forwarded-For` falsifié ne
+    /// doit avoir AUCUN effet sur ce que les handlers voient via `ConnectInfo` — seule l'IP du
+    /// pair TCP direct compte, exactement comme pour ConfigurableIpKeyExtractor plus haut (même
+    /// garde-fou, même raison : sans reverse proxy de confiance confirmé, ce serait un moyen
+    /// trivial de falsifier son IP dans le journal d'audit / les appareils de confiance).
+    #[tokio::test]
+    async fn test_rewrite_client_ip_ignores_forwarded_header_by_default() {
+        let state = build_test_state().await;
+        let app = Router::new()
+            .route("/echo-ip", get(echo_connect_info_ip))
+            .layer(axum_middleware::from_fn_with_state(state.clone(), rewrite_client_ip_from_proxy_headers))
+            .with_state(state);
+
+        let mut request = Request::builder()
+            .uri("/echo-ip")
+            .header("x-forwarded-for", "203.0.113.9")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(test_addr());
+
+        let response = app.oneshot(request).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            &body[..],
+            b"127.0.0.1",
+            "trust_proxy_headers=false doit ignorer X-Forwarded-For : les handlers doivent voir l'IP du pair TCP direct, inchangée"
+        );
+    }
+
+    /// RÉGRESSION (voir la conversation du 2026-09-01 — bug repéré par l'utilisateur lui-même face
+    /// à un vrai déploiement derrière Nginx Proxy Manager) : une fois `trust_proxy_headers` activé,
+    /// les handlers doivent voir la VRAIE IP du client (via X-Forwarded-For), pas celle du reverse
+    /// proxy — sinon l'historique de sécurité et les appareils de confiance enregistrent la même
+    /// IP pour tout le monde, les rendant inutiles.
+    #[tokio::test]
+    async fn test_rewrite_client_ip_trusts_forwarded_header_when_enabled() {
+        let state = build_test_state_with_proxy_trust().await;
+        let app = Router::new()
+            .route("/echo-ip", get(echo_connect_info_ip))
+            .layer(axum_middleware::from_fn_with_state(state.clone(), rewrite_client_ip_from_proxy_headers))
+            .with_state(state);
+
+        let mut request = Request::builder()
+            .uri("/echo-ip")
+            .header("x-forwarded-for", "203.0.113.9")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(test_addr());
+
+        let response = app.oneshot(request).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(
+            &body[..],
+            b"203.0.113.9",
+            "trust_proxy_headers=true doit faire voir aux handlers l'IP de X-Forwarded-For, pas celle du proxy"
+        );
+    }
+
+    /// Avec plusieurs IP dans X-Forwarded-For ("client, proxy1, proxy2"), seule la PREMIÈRE (le
+    /// client d'origine) doit être retenue — pas la dernière, qui serait celle du dernier proxy.
+    #[tokio::test]
+    async fn test_rewrite_client_ip_takes_first_ip_of_forwarded_chain() {
+        let state = build_test_state_with_proxy_trust().await;
+        let app = Router::new()
+            .route("/echo-ip", get(echo_connect_info_ip))
+            .layer(axum_middleware::from_fn_with_state(state.clone(), rewrite_client_ip_from_proxy_headers))
+            .with_state(state);
+
+        let mut request = Request::builder()
+            .uri("/echo-ip")
+            .header("x-forwarded-for", "203.0.113.9, 192.168.1.21")
+            .body(Body::empty())
+            .unwrap();
+        request.extensions_mut().insert(test_addr());
+
+        let response = app.oneshot(request).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&body[..], b"203.0.113.9", "doit retenir le PREMIER maillon de la chaîne (le client d'origine), pas le dernier (le proxy)");
     }
 
     /// VÉRIFICATION : la limite de taille de requête GLOBALE (256 Ko, voir build_router()) doit
