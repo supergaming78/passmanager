@@ -9,6 +9,7 @@ import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { openEntryUrl } from "../lib/openExternalUrl";
 import { getErrorMessage } from "../lib/errors";
 import { getPreferredIdentifier } from "../lib/entryIdentifier";
+import { getListLayout, listContainerClass } from "../lib/listLayout";
 
 const EMPTY_FORM = { siteName: "", username: "", loginEmail: "", password: "", preferredLoginType: "username" as "username" | "email", notes: "", url: "" };
 
@@ -35,6 +36,8 @@ export default function SharedVaultDetailPage() {
   const [showInviteForm, setShowInviteForm] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [isInviting, setIsInviting] = useState(false);
+  // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
+  const [listLayout] = useState(() => getListLayout());
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -178,6 +181,42 @@ export default function SharedVaultDetailPage() {
     } catch (err) {
       setError(getErrorMessage(err));
     }
+  }
+
+  // Contenu partagé entre le mode "cards" (grille, une bordure par entrée) et "list"/"compact"
+  // (liste à séparateurs) — seul le padding vertical change, voir les deux appels ci-dessous.
+  function renderEntryRow(entry: PlainSharedVaultEntry, verticalPadding: string) {
+    return (
+      <div className={`flex items-center justify-between gap-3 px-4 ${verticalPadding}`}>
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
+          <p className="truncate text-xs text-neutral-500">
+            {getPreferredIdentifier(entry) || "—"}
+            {" · ajouté par "}{entry.createdBy}
+          </p>
+          {revealedId === entry.id && <p className="mt-1 select-all font-mono text-xs text-neutral-700 dark:text-neutral-300">{entry.password}</p>}
+        </div>
+        <div className="flex shrink-0 flex-wrap gap-1.5">
+          {entry.url && (
+            <button type="button" onClick={() => void openEntryUrl(entry.url)} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+              Ouvrir
+            </button>
+          )}
+          <button type="button" onClick={() => setRevealedId((cur) => (cur === entry.id ? null : entry.id))} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+            {revealedId === entry.id ? "Cacher" : "Voir"}
+          </button>
+          <button type="button" onClick={() => void handleCopy(entry)} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+            {copiedId === entry.id ? "Copié !" : "Copier"}
+          </button>
+          <button type="button" onClick={() => openEditForm(entry)} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+            Modifier
+          </button>
+          <button type="button" onClick={() => void handleDeleteEntry(entry.id)} className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950">
+            Supprimer
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (!id) return null;
@@ -339,38 +378,20 @@ export default function SharedVaultDetailPage() {
           <p className="text-sm text-neutral-500">Chargement…</p>
         ) : entries.length === 0 ? (
           <p className="text-sm text-neutral-500">Aucune entrée pour l'instant.</p>
+        ) : listLayout === "cards" ? (
+          // "cards" : une bordure PAR entrée (pas de séparateurs partagés `divide-y`, qui n'ont pas
+          // de sens sur une grille) — voir renderEntryRow ci-dessus, contenu identique au mode liste.
+          <ul className={listContainerClass("cards", "grid-cols-1 sm:grid-cols-2")}>
+            {entries.map((entry) => (
+              <li key={entry.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+                {renderEntryRow(entry, "py-3")}
+              </li>
+            ))}
+          </ul>
         ) : (
           <ul className="flex flex-col divide-y divide-neutral-200 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
             {entries.map((entry) => (
-              <li key={entry.id} className="flex items-center justify-between gap-3 px-4 py-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
-                  <p className="truncate text-xs text-neutral-500">
-                    {getPreferredIdentifier(entry) || "—"}
-                    {" · ajouté par "}{entry.createdBy}
-                  </p>
-                  {revealedId === entry.id && <p className="mt-1 select-all font-mono text-xs text-neutral-700 dark:text-neutral-300">{entry.password}</p>}
-                </div>
-                <div className="flex shrink-0 flex-wrap gap-1.5">
-                  {entry.url && (
-                    <button type="button" onClick={() => void openEntryUrl(entry.url)} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
-                      Ouvrir
-                    </button>
-                  )}
-                  <button type="button" onClick={() => setRevealedId((cur) => (cur === entry.id ? null : entry.id))} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
-                    {revealedId === entry.id ? "Cacher" : "Voir"}
-                  </button>
-                  <button type="button" onClick={() => void handleCopy(entry)} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
-                    {copiedId === entry.id ? "Copié !" : "Copier"}
-                  </button>
-                  <button type="button" onClick={() => openEditForm(entry)} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
-                    Modifier
-                  </button>
-                  <button type="button" onClick={() => void handleDeleteEntry(entry.id)} className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950">
-                    Supprimer
-                  </button>
-                </div>
-              </li>
+              <li key={entry.id}>{renderEntryRow(entry, listLayout === "compact" ? "py-1.5" : "py-3")}</li>
             ))}
           </ul>
         )}

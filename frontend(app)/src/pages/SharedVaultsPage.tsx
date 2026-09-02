@@ -4,6 +4,7 @@ import { useAuth } from "../state/AuthContext";
 import * as sharedVault from "../lib/sharedVault";
 import type { UnlockedSharedVault } from "../lib/sharedVault";
 import { getErrorMessage } from "../lib/errors";
+import { getListLayout, listContainerClass } from "../lib/listLayout";
 
 /** Liste des coffres partagés dont l'utilisateur est membre, + création d'un nouveau. Voir
  * lib/sharedVault.ts pour l'orchestration complète (déverrouillage de chaque coffre listé). */
@@ -16,6 +17,8 @@ export default function SharedVaultsPage() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [newName, setNewName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
+  // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
+  const [listLayout] = useState(() => getListLayout());
 
   const load = useCallback(async () => {
     setError(null);
@@ -54,6 +57,23 @@ export default function SharedVaultsPage() {
     } finally {
       setIsCreating(false);
     }
+  }
+
+  // Contenu partagé entre le mode "cards" (grille, une bordure par coffre) et "list"/"compact"
+  // (liste à séparateurs) — seul le padding vertical change, voir les deux appels ci-dessous.
+  function renderVaultLink(v: UnlockedSharedVault, verticalPadding: string) {
+    return (
+      <Link
+        to={`/shared-vaults/${v.id}`}
+        className={`flex items-center justify-between gap-3 px-4 hover:bg-neutral-50 dark:hover:bg-neutral-800 ${verticalPadding}`}
+      >
+        <div className="min-w-0">
+          <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">{v.name}</p>
+          <p className="text-xs text-neutral-500">{v.isOwner ? "Propriétaire" : `Créé par ${v.createdBy}`}</p>
+        </div>
+        <span className="shrink-0 text-neutral-400">→</span>
+      </Link>
+    );
   }
 
   return (
@@ -114,21 +134,20 @@ export default function SharedVaultsPage() {
           <p className="text-sm text-neutral-500">Chargement…</p>
         ) : vaults.length === 0 ? (
           <p className="text-sm text-neutral-500">Aucun coffre partagé pour l'instant.</p>
+        ) : listLayout === "cards" ? (
+          // "cards" : une bordure PAR coffre (pas de séparateurs partagés `divide-y`, qui n'ont pas
+          // de sens sur une grille) — voir renderVaultLink ci-dessous, contenu identique au mode liste.
+          <ul className={listContainerClass("cards", "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3")}>
+            {vaults.map((v) => (
+              <li key={v.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+                {renderVaultLink(v, "py-3")}
+              </li>
+            ))}
+          </ul>
         ) : (
           <ul className="flex flex-col divide-y divide-neutral-200 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
             {vaults.map((v) => (
-              <li key={v.id}>
-                <Link
-                  to={`/shared-vaults/${v.id}`}
-                  className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-800"
-                >
-                  <div className="min-w-0">
-                    <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">{v.name}</p>
-                    <p className="text-xs text-neutral-500">{v.isOwner ? "Propriétaire" : `Créé par ${v.createdBy}`}</p>
-                  </div>
-                  <span className="shrink-0 text-neutral-400">→</span>
-                </Link>
-              </li>
+              <li key={v.id}>{renderVaultLink(v, listLayout === "compact" ? "py-1.5" : "py-3")}</li>
             ))}
           </ul>
         )}

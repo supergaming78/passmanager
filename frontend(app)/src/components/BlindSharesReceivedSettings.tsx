@@ -3,6 +3,7 @@ import { useAuth } from "../state/AuthContext";
 import { listReceivedBlindShares, revokeBlindShare, unlockForOneTimeUse } from "../lib/blindShare";
 import type { ReceivedBlindShare } from "../lib/blindShare";
 import { getErrorMessage } from "../lib/errors";
+import { getListLayout, listContainerClass } from "../lib/listLayout";
 
 /** Copie déjà disponible pour un partage à usage limité DÉJÀ déverrouillé (un "Utiliser" a déjà
  * consommé l'usage) — voir lib/blindShare.ts::unlockForOneTimeUse pour pourquoi ce sont des
@@ -26,6 +27,8 @@ export default function BlindSharesReceivedSettings() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [unlocked, setUnlocked] = useState<Record<string, UnlockedHandle>>({});
   const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
+  // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
+  const [listLayout] = useState(() => getListLayout());
 
   async function loadAll() {
     setIsLoading(true);
@@ -98,9 +101,14 @@ export default function BlindSharesReceivedSettings() {
       {shares.length === 0 ? (
         <p className="text-sm text-neutral-500">Aucun partage à usage limité en attente.</p>
       ) : (
-        <ul className="flex flex-col gap-2">
+        <ul className={listContainerClass(listLayout, "grid-cols-1 sm:grid-cols-2")}>
           {shares.map((share) => (
-            <li key={share.id} className="flex flex-col gap-2 rounded-lg border border-neutral-200 p-3 dark:border-neutral-800">
+            <li
+              key={share.id}
+              className={`flex flex-col gap-2 rounded-lg border border-neutral-200 dark:border-neutral-800 ${
+                listLayout === "compact" ? "px-3 py-2" : "p-3"
+              }`}
+            >
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{share.siteName}</p>

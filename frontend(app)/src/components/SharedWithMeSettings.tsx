@@ -4,6 +4,7 @@ import { useAuth } from "../state/AuthContext";
 import { ensureEmergencyKeys } from "../lib/emergencyAccess";
 import { listSharedWithMe, revokeShare } from "../lib/entrySharing";
 import { getErrorMessage } from "../lib/errors";
+import { getListLayout, listContainerClass } from "../lib/listLayout";
 import type { SharedWithMeEntry } from "../api/types";
 
 /** Ce qui a été partagé avec l'utilisateur courant (voir lib/entrySharing.ts, GET
@@ -18,6 +19,8 @@ export default function SharedWithMeSettings() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
+  const [listLayout] = useState(() => getListLayout());
 
   async function loadAll() {
     setIsLoading(true);
@@ -60,11 +63,13 @@ export default function SharedWithMeSettings() {
       {shares.length === 0 ? (
         <p className="text-sm text-neutral-500">Aucune entrée n'a été partagée avec vous.</p>
       ) : (
-        <ul className="flex flex-col gap-2">
+        <ul className={listContainerClass(listLayout, "grid-cols-2 sm:grid-cols-3")}>
           {shares.map((share) => (
             <li
               key={share.id}
-              className="flex items-center justify-between gap-2 rounded-lg border border-neutral-200 p-3 dark:border-neutral-800"
+              className={`flex items-center justify-between gap-2 rounded-lg border border-neutral-200 dark:border-neutral-800 ${
+                listLayout === "compact" ? "px-3 py-1.5" : "p-3"
+              }`}
             >
               <p className="min-w-0 truncate text-sm text-neutral-800 dark:text-neutral-200">Partagé par {share.owner_email}</p>
               <div className="flex shrink-0 gap-1.5">
