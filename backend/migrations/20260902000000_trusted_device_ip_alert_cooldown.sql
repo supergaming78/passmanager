@@ -1,0 +1,13 @@
+-- Retour utilisateur (2026-09-02) : un téléphone en 4G change d'IP très souvent (itinérance entre
+-- antennes, attribution dynamique par l'opérateur) — la fenêtre glissante de 5 IP existante
+-- (trusted_device_ips, voir sa migration) ne suffit pas à absorber ce cas : chaque IP inédite
+-- au-delà des 5 dernières déclenche une alerte email, ce qui peut devenir plusieurs emails par
+-- jour pour un usage mobile normal, sans rapport avec une réelle activité suspecte.
+--
+-- Ce nouveau champ NE CHANGE RIEN au suivi/à la détection elle-même (toujours enregistrée dans
+-- trusted_device_ips, toujours journalisée dans audit_logs via LOGIN_NEW_IP_DETECTED) — il ne
+-- limite QUE l'envoi de l'EMAIL à au plus un par appareil par fenêtre de temps (voir
+-- record_device_ip_and_maybe_alert() dans handlers/auth/session.rs), pour éviter le bruit sans
+-- perdre la trace d'audit complète (toujours consultable si besoin, juste pas envoyée par email
+-- à chaque fois).
+ALTER TABLE trusted_devices ADD COLUMN last_ip_alert_at DATETIME NULL;

@@ -625,8 +625,10 @@ Toutes les routes ci-dessous nécessitent une authentification.
 
 **Réponse** : `200 OK`, tableau de `TrustedDevice` :
 ```json
-[{ "device_id": "...", "device_name": "iPhone de Jean", "created_at": "...", "last_used_at": "..." }]
+[{ "device_id": "...", "device_name": "iPhone de Jean", "created_at": "...", "last_used_at": "...", "last_ip": "203.0.113.4" }]
 ```
+`last_ip` : dernière adresse IP connue pour cet appareil, `null` si aucune n'a encore été enregistrée
+(appareil approuvé avant l'ajout de ce suivi).
 
 ### `DELETE /devices/{device_id}`
 

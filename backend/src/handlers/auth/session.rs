@@ -23,6 +23,13 @@ use validator::Validate;
 use super::super::common::get_user_agent;
 use super::{MAX_CODE_ATTEMPTS, PURPOSE_LOGIN_2FA, MAX_FAILED_LOGIN_ATTEMPTS, FAILED_LOGIN_WINDOW_MINUTES};
 
+/// Délai minimum entre deux emails "nouvelle IP" pour le MÊME appareil (voir
+/// record_device_ip_and_maybe_alert ci-dessous) — n'affecte QUE l'email, jamais la détection/le
+/// journal d'audit, qui restent inconditionnels. 24h : assez court pour rester utile (une VRAIE
+/// intrusion reste signalée dans la journée), assez long pour absorber l'itinérance mobile
+/// normale (changements d'IP fréquents en 4G).
+const IP_ALERT_COOLDOWN_HOURS: i64 = 24;
+
 /// ALERTE DE CONNEXION INHABITUELLE — voir la migration 20260831000000_trusted_device_ips.sql :
 /// un appareil DÉJÀ approuvé qui se connecte depuis une IP JAMAIS vue pour LUI (pas juste "une IP
 /// différente de la dernière fois", pour tolérer un utilisateur mobile/FAI dynamique — voir la
@@ -92,17 +99,49 @@ async fn record_device_ip_and_maybe_alert(state: &AppState, email: &str, device_
             .await;
 
             if previously_known_count > 0 {
+                // Toujours journalisé — audit COMPLET, jamais throttlé (voir count_new_ip_alerts()
+                // dans les tests, qui vérifie précisément CE compteur, indépendant du throttling
+                // de l'email ci-dessous).
                 state.log_audit(email, "LOGIN_NEW_IP_DETECTED", ip.to_string(), agent).await;
-                // CORRECTIF (même raisonnement que l'email 2FA, voir login() plus bas) : en
-                // arrière-plan, pour ne jamais faire attendre la réponse HTTP sur la latence SMTP.
-                let to_email = email.to_string();
-                let alert_message = format!(
-                    "Connexion à votre compte depuis une nouvelle adresse IP ({ip}) sur l'appareil déjà approuvé « {device_label} ». Si vous n'êtes pas à l'origine de cette connexion, changez immédiatement votre mot de passe et consultez vos appareils de confiance."
-                );
-                let config = state.config.clone();
-                tokio::spawn(async move {
-                    let _ = mailer::send_security_alert(&to_email, &alert_message, &config).await;
-                });
+
+                // CORRECTIF (retour utilisateur, 2026-09-02) : sur un appareil mobile en itinérance
+                // (4G), une IP INÉDITE peut apparaître plusieurs fois par jour (changement
+                // d'antenne, attribution dynamique par l'opérateur) — une alerte email à CHAQUE
+                // fois n'a rien de plus suspect à signaler qu'un usage parfaitement normal, juste
+                // du bruit qui use l'attention de l'utilisateur (au point de faire ignorer une
+                // VRAIE alerte le jour où elle compte). Voir la migration
+                // 20260902000000_trusted_device_ip_alert_cooldown.sql. Ne throttle QUE l'ENVOI DE
+                // L'EMAIL — la détection et l'audit ci-dessus restent, eux, inconditionnels.
+                let last_alert: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
+                    "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_email = ?",
+                )
+                .bind(device_id)
+                .bind(email)
+                .fetch_one(&state.db)
+                .await
+                .unwrap_or(None);
+
+                let within_cooldown = last_alert
+                    .is_some_and(|last| Utc::now().naive_utc() - last < chrono::Duration::hours(IP_ALERT_COOLDOWN_HOURS));
+
+                if !within_cooldown {
+                    let _ = sqlx::query("UPDATE trusted_devices SET last_ip_alert_at = CURRENT_TIMESTAMP WHERE device_id = ? AND user_email = ?")
+                        .bind(device_id)
+                        .bind(email)
+                        .execute(&state.db)
+                        .await;
+
+                    // CORRECTIF (même raisonnement que l'email 2FA, voir login() plus bas) : en
+                    // arrière-plan, pour ne jamais faire attendre la réponse HTTP sur la latence SMTP.
+                    let to_email = email.to_string();
+                    let alert_message = format!(
+                        "Connexion à votre compte depuis une nouvelle adresse IP ({ip}) sur l'appareil déjà approuvé « {device_label} ». Si vous n'êtes pas à l'origine de cette connexion, changez immédiatement votre mot de passe et consultez vos appareils de confiance."
+                    );
+                    let config = state.config.clone();
+                    tokio::spawn(async move {
+                        let _ = mailer::send_security_alert(&to_email, &alert_message, &config).await;
+                    });
+                }
             }
         }
         Err(_) => {} // best-effort : une erreur de lecture ne doit jamais faire échouer le login
@@ -1320,6 +1359,76 @@ mod tests {
         let ip_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_email = ?")
             .bind("device-newip").bind(email).fetch_one(&state.db).await.unwrap();
         assert_eq!(ip_count, 2, "la nouvelle IP doit s'ajouter aux IP déjà connues pour cet appareil");
+    }
+
+    /// Retour utilisateur (2026-09-02, itinérance mobile 4G) : une IP inédite qui réapparaît
+    /// PLUSIEURS fois rapprochées sur le même appareil (voir test précédent) ne doit déclencher
+    /// qu'UN SEUL email — le throttling ne concerne QUE l'email : l'audit (LOGIN_NEW_IP_DETECTED)
+    /// et le suivi des IP restent inconditionnels, vérifiés séparément ici via last_ip_alert_at
+    /// (pas de mock du mailer dans ces tests — cette colonne est le seul signal observable de
+    /// "un email aurait été envoyé", voir record_device_ip_and_maybe_alert).
+    #[tokio::test]
+    async fn test_repeated_new_ip_within_cooldown_only_alerts_once() {
+        let state = build_test_state().await;
+        let email = "ipcooldown@example.com";
+        register_test_user(&state, email, "mot_de_passe_test_123").await;
+        trust_device(&state, email, "device-cooldown").await; // baseline IP = 127.0.0.1:1
+
+        let login_from = |addr: &str, state: Arc<AppState>| {
+            let addr: SocketAddr = addr.parse().unwrap();
+            let payload = AuthPayload {
+                email: email.to_string(),
+                master_password_hash: "mot_de_passe_test_123".to_string(),
+                device_id: "device-cooldown".to_string(),
+                remember_me: Some(true),
+                max_trusted_devices: None,
+            };
+            async move {
+                login(State(state), ConnectInfo(addr), HeaderMap::new(), Json(payload))
+                    .await
+                    .expect("le login doit réussir malgré l'IP inhabituelle")
+            }
+        };
+
+        // Première IP inédite -> audit + last_ip_alert_at renseigné (un email "aurait" été envoyé).
+        login_from("203.0.113.1:1", state.clone()).await;
+        assert_eq!(count_new_ip_alerts(&state, email).await, 1, "audit toujours journalisé, même throttlé");
+        let alert_at_1: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
+            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_email = ?",
+        )
+        .bind("device-cooldown").bind(email).fetch_one(&state.db).await.unwrap();
+        assert!(alert_at_1.is_some(), "la première alerte doit renseigner last_ip_alert_at");
+
+        // Deuxième IP inédite, quelques instants plus tard (dans la fenêtre de cooldown) -> audit
+        // en plus, mais last_ip_alert_at INCHANGÉ (email throttlé).
+        login_from("203.0.113.2:1", state.clone()).await;
+        assert_eq!(count_new_ip_alerts(&state, email).await, 2, "l'audit continue d'enregistrer CHAQUE nouvelle IP");
+        let alert_at_2: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
+            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_email = ?",
+        )
+        .bind("device-cooldown").bind(email).fetch_one(&state.db).await.unwrap();
+        assert_eq!(alert_at_2, alert_at_1, "dans la fenêtre de cooldown, l'email ne doit PAS être re-déclenché");
+
+        // Recule artificiellement last_ip_alert_at de plus de 24h (simule le cooldown expiré, sans
+        // attendre pour de vrai) -> une troisième IP inédite doit re-déclencher l'email. Comparé au
+        // repère RECULÉ (`backdated`, ~25h dans le passé) plutôt qu'à `alert_at_1` (qui daterait
+        // d'à peine quelques millisecondes plus tôt dans ce test) : `CURRENT_TIMESTAMP` de SQLite
+        // n'a qu'une précision à la SECONDE (voir la fenêtre glissante des 5 IP plus bas, même
+        // limite) — un test rapide pourrait sinon comparer deux horodatages arrondis à la même
+        // seconde et échouer par flakiness, sans rapport avec un vrai bug.
+        sqlx::query("UPDATE trusted_devices SET last_ip_alert_at = datetime('now', '-25 hours') WHERE device_id = ? AND user_email = ?")
+            .bind("device-cooldown").bind(email).execute(&state.db).await.unwrap();
+        let backdated: chrono::NaiveDateTime = sqlx::query_scalar(
+            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_email = ?",
+        )
+        .bind("device-cooldown").bind(email).fetch_one(&state.db).await.unwrap();
+        login_from("203.0.113.3:1", state.clone()).await;
+        assert_eq!(count_new_ip_alerts(&state, email).await, 3);
+        let alert_at_3: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
+            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_email = ?",
+        )
+        .bind("device-cooldown").bind(email).fetch_one(&state.db).await.unwrap();
+        assert!(alert_at_3.unwrap() > backdated, "une fois le cooldown écoulé, l'email doit pouvoir se re-déclencher");
     }
 
     /// La fenêtre glissante ne garde que les 5 IP les plus récentes par appareil — au-delà, les

@@ -245,6 +245,9 @@ export interface TrustedDevice {
   device_name: string | null;
   created_at: string;
   last_used_at: string;
+  /** Dernière IP connue pour cet appareil — `null` si aucune n'a encore été enregistrée
+   * (appareil approuvé avant l'ajout de ce suivi, voir backend/migrations/20260831000000). */
+  last_ip: string | null;
 }
 
 export interface UpdateDeviceLimitPayload {

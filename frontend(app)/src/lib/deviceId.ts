@@ -1,3 +1,5 @@
+import { getDetailedPlatformInfo } from "./platform";
+
 // Identifiant STABLE de cet appareil (pas sensible, pas besoin d'être en Rust) — envoyé à chaque
 // login/2FA (voir AuthPayload.device_id côté backend). Généré une seule fois puis persisté dans
 // le stockage local du webview (survit aux redémarrages de l'app) : c'est ce qui permet au
@@ -17,14 +19,22 @@ export function getDeviceId(): string {
 /**
  * Nom lisible de l'appareil, envoyé une fois à la validation du 2FA (voir
  * VerifyTfaPayload.device_name côté backend) pour que l'utilisateur le reconnaisse dans
- * GET /devices. Pas de détection fine de plateforme ici : juste de quoi distinguer "cet
- * ordinateur" d'un autre dans une liste.
+ * GET /devices. CORRECTIF (retour utilisateur, 2026-09-02) : générait auparavant un nom générique
+ * ("Ordinateur (02/09/2026)"), peu utile pour distinguer plusieurs appareils dans la liste —
+ * réutilise getDetailedPlatformInfo() (déjà utilisée pour le signalement de bug) pour un nom qui
+ * reflète la VRAIE plateforme ("Windows 10/11", "iOS 17.5", "Android 14"...), toujours suivi de la
+ * date pour distinguer deux appareils de même plateforme approuvés séparément. Pas de nouveau
+ * plugin natif ni de vrai nom d'hôte (hostname) : sur iOS notamment, Apple restreint depuis iOS 16
+ * l'accès au nom personnalisé de l'appareil ("iPhone de Julien") pour limiter le pistage — même
+ * avec un plugin dédié, la plupart des apps sandboxées reçoivent un nom générique "iPhone" de
+ * toute façon, un gain marginal pour la complexité/le risque d'ajouter une dépendance native
+ * supplémentaire (voir platform.ts pour le même choix sur isAndroid()).
  */
 export function getDeviceName(): string {
   const existing = localStorage.getItem("passmanager.deviceName");
   if (existing) return existing;
 
-  const generated = `Ordinateur (${new Date().toLocaleDateString()})`;
+  const generated = `${getDetailedPlatformInfo()} (${new Date().toLocaleDateString()})`;
   localStorage.setItem("passmanager.deviceName", generated);
   return generated;
 }

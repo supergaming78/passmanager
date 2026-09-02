@@ -108,6 +108,7 @@ export default function DeviceList() {
                 </p>
                 <p className="text-xs text-neutral-500">
                   Dernière utilisation : {new Date(device.last_used_at).toLocaleString()}
+                  {device.last_ip && <> · IP : {device.last_ip}</>}
                 </p>
               </div>
               <button

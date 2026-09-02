@@ -267,7 +267,10 @@ export default function SettingsView({
                   Révoquer
                 </button>
               </div>
-              <p className="mt-1 text-xs text-neutral-500">Dernière utilisation : {new Date(d.last_used_at).toLocaleString()}</p>
+              <p className="mt-1 text-xs text-neutral-500">
+                Dernière utilisation : {new Date(d.last_used_at).toLocaleString()}
+                {d.last_ip && <> · IP : {d.last_ip}</>}
+              </p>
             </li>
           ))}
         </ul>

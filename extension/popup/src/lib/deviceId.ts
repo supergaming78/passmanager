@@ -1,3 +1,5 @@
+import { getDetailedPlatformInfo } from "./platform";
+
 // Identifiant STABLE de cet appareil (pas sensible, pas besoin d'être en Rust) — envoyé à chaque
 // login/2FA (voir AuthPayload.device_id côté backend). Généré une seule fois puis persisté dans
 // le stockage local du webview (survit aux redémarrages de l'app) : c'est ce qui permet au
@@ -17,14 +19,16 @@ export function getDeviceId(): string {
 /**
  * Nom lisible de l'appareil, envoyé une fois à la validation du 2FA (voir
  * VerifyTfaPayload.device_name côté backend) pour que l'utilisateur le reconnaisse dans
- * GET /devices. Pas de détection fine de plateforme ici : juste de quoi distinguer "cet
- * ordinateur" d'un autre dans une liste.
+ * GET /devices. CORRECTIF (retour utilisateur, 2026-09-02) : générait auparavant un nom générique
+ * ("Ordinateur (02/09/2026)"), peu utile pour distinguer plusieurs appareils dans la liste —
+ * réutilise getDetailedPlatformInfo() (navigateur + plateforme, ex: "Firefox sur Android"),
+ * toujours suivi de la date pour distinguer deux installations identiques approuvées séparément.
  */
 export function getDeviceName(): string {
   const existing = localStorage.getItem("passmanager.deviceName");
   if (existing) return existing;
 
-  const generated = `Ordinateur (${new Date().toLocaleDateString()})`;
+  const generated = `${getDetailedPlatformInfo()} (${new Date().toLocaleDateString()})`;
   localStorage.setItem("passmanager.deviceName", generated);
   return generated;
 }

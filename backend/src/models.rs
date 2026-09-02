@@ -55,6 +55,11 @@ pub struct TrustedDevice {
     pub device_name: Option<String>,
     pub created_at: chrono::NaiveDateTime,
     pub last_used_at: chrono::NaiveDateTime, // Dernière connexion réussie depuis cet appareil
+    /// Dernière adresse IP vue pour cet appareil (voir trusted_device_ips) — `None` pour un
+    /// appareil approuvé avant l'existence de cette table (migration 20260831000000), jamais
+    /// rétroactivement rempli. Retour utilisateur (2026-09-02) : demandé pour l'écran "Appareils
+    /// de confiance", pour repérer un appareil suspect sans attendre une alerte email.
+    pub last_ip: Option<String>,
 }
 
 /// Représente un utilisateur dans la base de données.

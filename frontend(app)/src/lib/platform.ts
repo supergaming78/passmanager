@@ -14,6 +14,9 @@ export function isAndroid(): boolean {
  * isAndroid() ci-dessus). */
 export function getPlatformLabel(): string {
   const ua = navigator.userAgent;
+  // iPhone/iPad AVANT macOS : l'UA d'iOS contient toujours "like Mac OS X" (ex: "iPhone; CPU
+  // iPhone OS 17_5 like Mac OS X") — vérifier macOS en premier aurait classé un iPhone comme Mac.
+  if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
   if (/Android/i.test(ua)) return "Android";
   if (/Windows/i.test(ua)) return "Windows";
   if (/Macintosh|Mac OS X/i.test(ua)) return "macOS";
@@ -28,6 +31,12 @@ export function getPlatformLabel(): string {
  * n'est trouvé, jamais une chaîne vide. */
 export function getDetailedPlatformInfo(): string {
   const ua = navigator.userAgent;
+
+  // iPhone/iPad AVANT macOS — voir getPlatformLabel() ci-dessus, même raison (UA iOS contenant
+  // "like Mac OS X").
+  const iosVersion = /OS (\d+[._]\d+(?:[._]\d+)?) like Mac OS X/i.exec(ua);
+  if (iosVersion) return `iOS ${iosVersion[1].replace(/_/g, ".")}`;
+  if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
 
   const androidVersion = /Android (\d+(?:\.\d+)?)/i.exec(ua);
   if (androidVersion) return `Android ${androidVersion[1]}`;

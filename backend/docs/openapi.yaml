@@ -1494,6 +1494,7 @@ components:
         device_name: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
         last_used_at: { type: string, format: date-time }
+        last_ip: { type: string, nullable: true, description: "Dernière IP connue pour cet appareil — null si aucune IP n'a encore été enregistrée." }
 
     UserKeysInput:
       type: object

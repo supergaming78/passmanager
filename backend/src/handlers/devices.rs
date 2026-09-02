@@ -18,8 +18,19 @@ pub async fn list_devices(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
+    // last_ip : sous-requête corrélée plutôt qu'un JOIN — trusted_device_ips garde jusqu'à 5 IP
+    // par appareil (voir sa migration), on ne veut que la plus récente. Même motif de tri
+    // (last_seen_at DESC, id DESC) que la purge de la fenêtre glissante dans
+    // record_device_ip_and_maybe_alert() : last_seen_at n'a qu'une précision à la seconde en
+    // SQLite, `id` sert de départage pour deux IP insérées la même seconde.
     let devices = sqlx::query_as::<_, TrustedDevice>(
-        "SELECT device_id, device_name, created_at, last_used_at FROM trusted_devices WHERE user_email = ? ORDER BY last_used_at DESC"
+        "SELECT d.device_id, d.device_name, d.created_at, d.last_used_at,
+            (SELECT ip.ip_address FROM trusted_device_ips ip
+             WHERE ip.device_id = d.device_id AND ip.user_email = d.user_email
+             ORDER BY ip.last_seen_at DESC, ip.id DESC LIMIT 1) AS last_ip
+         FROM trusted_devices d
+         WHERE d.user_email = ?
+         ORDER BY d.last_used_at DESC"
     )
     .bind(&user.email)
     .fetch_all(&state.db)
@@ -250,6 +261,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(owner_count, 2, "devowner doit avoir exactement 2 appareils de confiance");
+    }
+
+    /// Retour utilisateur (2026-09-02) : list_devices() doit exposer la dernière IP connue de
+    /// chaque appareil (`last_ip`), pour repérer un appareil suspect directement dans l'écran
+    /// "Appareils de confiance" sans attendre une éventuelle alerte email. `None` pour un appareil
+    /// sans aucune IP enregistrée (ex: approuvé avant l'existence de trusted_device_ips).
+    #[tokio::test]
+    async fn test_list_devices_exposes_most_recent_ip() {
+        let state = build_test_state().await;
+        register_test_user(&state, "iplist@example.com").await;
+        trust_device(&state, "iplist@example.com", "device-with-ip", "Téléphone").await;
+        trust_device(&state, "iplist@example.com", "device-without-ip", "Vieux appareil").await;
+
+        // Deux IP pour device-with-ip, insérées à quelques secondes d'écart (via `id` croissant,
+        // départage fiable même à précision-seconde égale, voir le commentaire du handler) — seule
+        // la PLUS RÉCENTE (10.0.0.2) doit ressortir.
+        sqlx::query("INSERT INTO trusted_device_ips (device_id, user_email, ip_address) VALUES (?, ?, ?)")
+            .bind("device-with-ip").bind("iplist@example.com").bind("10.0.0.1")
+            .execute(&state.db).await.unwrap();
+        sqlx::query("INSERT INTO trusted_device_ips (device_id, user_email, ip_address) VALUES (?, ?, ?)")
+            .bind("device-with-ip").bind("iplist@example.com").bind("10.0.0.2")
+            .execute(&state.db).await.unwrap();
+
+        let response = list_devices(
+            State(state.clone()),
+            AuthUser { email: "iplist@example.com".to_string(), is_moderator: false },
+        ).await.expect("le listage doit réussir").into_response();
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let devices: serde_json::Value = serde_json::from_slice(&bytes).expect("le corps doit être du JSON valide");
+        let devices = devices.as_array().expect("doit être une liste");
+
+        let with_ip = devices.iter().find(|d| d["device_id"] == "device-with-ip").expect("device-with-ip doit être présent");
+        assert_eq!(with_ip["last_ip"], "10.0.0.2", "doit renvoyer la dernière IP insérée, pas la première");
+
+        let without_ip = devices.iter().find(|d| d["device_id"] == "device-without-ip").expect("device-without-ip doit être présent");
+        assert!(without_ip["last_ip"].is_null(), "un appareil sans IP enregistrée doit renvoyer null, pas une erreur");
     }
 
     /// revoke_device() doit supprimer l'appareil de confiance ET couper sa session active.
