@@ -88,11 +88,13 @@ function AppNav({ layout, isModerator, email, onLogout, onReportBug, onSuggestFe
         {items.map((item) =>
           item.kind === "link" ? (
             <NavLink key={item.to} to={item.to} className={sidebarLinkClass}>
-              <span aria-hidden="true">{item.icon}</span> {item.label}
+              <span aria-hidden="true" className="shrink-0">{item.icon}</span>
+              <span className="min-w-0 flex-1 text-left">{item.label}</span>
             </NavLink>
           ) : (
             <button key={item.label} type="button" onClick={item.onClick} className={sidebarLinkClass({ isActive: false })}>
-              <span aria-hidden="true">{item.icon}</span> {item.label}
+              <span aria-hidden="true" className="shrink-0">{item.icon}</span>
+              <span className="min-w-0 flex-1 text-left">{item.label}</span>
             </button>
           ),
         )}
@@ -102,7 +104,8 @@ function AppNav({ layout, isModerator, email, onLogout, onReportBug, onSuggestFe
             onClick={onLogout}
             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-900"
           >
-            <span aria-hidden="true">🚪</span> Déconnexion
+            <span aria-hidden="true" className="shrink-0">🚪</span>
+            <span className="min-w-0 flex-1 text-left">Déconnexion</span>
           </button>
         </div>
       </nav>
