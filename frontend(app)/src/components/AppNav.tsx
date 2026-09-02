@@ -110,14 +110,17 @@ function AppNav({ layout, isModerator, email, onLogout, onReportBug, onSuggestFe
   }
 
   if (layout === "compact") {
+    // CORRECTIF (retour utilisateur, 2026-09-02) : icônes trop petites (h-10 w-10/40px, text-lg) —
+    // agrandies à h-14 w-14/56px, text-3xl (~40% plus grandes), la barre elle-même élargie de w-14
+    // à w-16/64px pour garder une marge confortable autour de chaque icône à cette nouvelle taille.
     const compactLinkClass = ({ isActive }: { isActive: boolean }) =>
-      `flex h-10 w-10 items-center justify-center rounded-lg text-lg transition ${
+      `flex h-14 w-14 items-center justify-center rounded-lg text-3xl transition ${
         isActive
           ? "bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
           : "text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-900"
       }`;
     return (
-      <nav className="flex h-full w-14 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-neutral-200 bg-white py-3 dark:border-neutral-800 dark:bg-neutral-950">
+      <nav className="flex h-full w-16 shrink-0 flex-col items-center gap-1.5 overflow-y-auto border-r border-neutral-200 bg-white py-3 dark:border-neutral-800 dark:bg-neutral-950">
         {items.map((item) =>
           item.kind === "link" ? (
             <NavLink key={item.to} to={item.to} title={item.label} className={compactLinkClass}>
@@ -133,7 +136,7 @@ function AppNav({ layout, isModerator, email, onLogout, onReportBug, onSuggestFe
           type="button"
           onClick={onLogout}
           title="Déconnexion"
-          className="mt-auto flex h-10 w-10 items-center justify-center rounded-lg text-lg text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-900"
+          className="mt-auto flex h-14 w-14 items-center justify-center rounded-lg text-3xl text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-900"
         >
           <span aria-hidden="true">🚪</span>
         </button>
