@@ -67,21 +67,32 @@ pub async fn update_password(
     // l'historique de mots de passe, sans exception — un oubli rendrait cette donnée
     // définitivement indéchiffrable (elle resterait chiffrée avec l'ANCIENNE clé, perdue à
     // jamais). On compare aux comptes réels en BDD, AVANT de toucher quoi que ce soit.
-    let active_count = VaultRepository::count_active(&state.db, &user.email).await?;
+    //
+    // CORRECTIF PERF (retour utilisateur, 2026-09-02) : ces trois COUNT() portent sur trois
+    // TABLES DIFFÉRENTES et sont totalement INDÉPENDANTS les uns des autres (aucun n'a besoin du
+    // résultat d'un autre) — auparavant enchaînés séquentiellement (un .await après l'autre) alors
+    // qu'ils peuvent tourner EN PARALLÈLE sur des connexions différentes du pool (SQLite en mode
+    // WAL gère bien plusieurs lectures concurrentes, voir main.rs). Les résultats sont ensuite
+    // vérifiés dans le MÊME ORDRE qu'avant (entrées, puis historique, puis pièces jointes) : un
+    // changement de mot de passe avec plusieurs incohérences à la fois affiche encore le même
+    // message qu'avant, seule la phase de LECTURE est parallélisée.
+    let (active_count, history_count, attachments_count) = tokio::try_join!(
+        VaultRepository::count_active(&state.db, &user.email),
+        VaultRepository::count_history_for_user(&state.db, &user.email),
+        VaultRepository::count_attachments_for_user(&state.db, &user.email),
+    )?;
     if payload.reencrypted_entries.len() as i64 != active_count {
         return Err(AppError::ValidationError(format!(
             "Re-chiffrement incomplet : {} entrée(s) active(s) en BDD, {} reçue(s). Le changement de mot de passe a été annulé pour éviter de perdre des données.",
             active_count, payload.reencrypted_entries.len()
         )));
     }
-    let history_count = VaultRepository::count_history_for_user(&state.db, &user.email).await?;
     if payload.reencrypted_history.len() as i64 != history_count {
         return Err(AppError::ValidationError(format!(
             "Re-chiffrement de l'historique incomplet : {} ligne(s) en BDD, {} reçue(s). Le changement de mot de passe a été annulé pour éviter de perdre des données.",
             history_count, payload.reencrypted_history.len()
         )));
     }
-    let attachments_count = VaultRepository::count_attachments_for_user(&state.db, &user.email).await?;
     if payload.reencrypted_attachments.len() as i64 != attachments_count {
         return Err(AppError::ValidationError(format!(
             "Re-chiffrement des pièces jointes incomplet : {} pièce(s) jointe(s) en BDD, {} reçue(s). Le changement de mot de passe a été annulé pour éviter de perdre des données.",

@@ -296,13 +296,18 @@ pub async fn add_vault_attachment(
 ) -> Result<impl IntoResponse, AppError> {
     input.validate()?;
 
-    let per_entry_count = VaultRepository::count_attachments_for_entry(&state.db, &user.email, &vault_id).await?;
+    // CORRECTIF PERF (retour utilisateur, 2026-09-02) : les deux COUNT() sont indépendants (l'un
+    // filtré par entrée+email, l'autre par email seul) — lancés en parallèle plutôt qu'enchaînés,
+    // même raisonnement que update_password() dans handlers/auth/account.rs.
+    let (per_entry_count, total_count) = tokio::try_join!(
+        VaultRepository::count_attachments_for_entry(&state.db, &user.email, &vault_id),
+        VaultRepository::count_attachments_for_user(&state.db, &user.email),
+    )?;
     if per_entry_count >= MAX_ATTACHMENTS_PER_ENTRY {
         return Err(AppError::ValidationError(format!(
             "Limite de {MAX_ATTACHMENTS_PER_ENTRY} pièce(s) jointe(s) par entrée atteinte."
         )));
     }
-    let total_count = VaultRepository::count_attachments_for_user(&state.db, &user.email).await?;
     if total_count >= MAX_ATTACHMENTS_PER_USER {
         return Err(AppError::ValidationError(format!(
             "Limite de {MAX_ATTACHMENTS_PER_USER} pièces jointes atteinte pour ce coffre."
