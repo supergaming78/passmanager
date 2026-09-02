@@ -1333,6 +1333,61 @@ suppression elle-même.
 **Erreurs** : `403` si l'appelant n'est pas l'Admin (même un modérateur reçoit `403`). `404`
 signalement inconnu.
 
+## Endpoints — Suggestion de fonctionnalité
+
+Envoyé depuis l'app desktop uniquement (voir `components/FeatureSuggestionModal.tsx`), **jamais
+chiffré** — même raisonnement que les signalements de bug ci-dessus, mais toutes les routes
+exigent un compte connecté (contrairement à `POST /bug-reports`) : une suggestion n'a pas
+l'urgence d'un bug qui empêche de se connecter.
+
+### `POST /feature-suggestions`
+
+*Authentification requise — n'importe quel compte connecté peut suggérer une fonctionnalité.*
+`author_email` vient toujours du compte authentifié (`AuthUser`), jamais d'un champ du payload.
+Pas de palier dédié (sur le palier Global comme le reste de l'API authentifiée) — plafonnée à 20
+suggestions en attente PAR AUTEUR (pas global, contrairement aux signalements de bug : cette route
+exige un compte, chaque abus reste imputable).
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `description` | string (1-4000) | oui |
+
+**Réponse** : `201 Created` :
+```json
+{ "id": "..." }
+```
+**Erreurs** : `400` validation, ou plafond par auteur atteint. `401` non connecté.
+
+### `GET /admin/feature-suggestions`
+
+*Authentification requise, réservé au SEUL Admin (`ADMIN_EMAIL`) — PAS aux modérateurs*, même
+restriction que `GET /admin/bug-reports`. Liste toutes les suggestions, de la plus récente à la
+plus ancienne.
+
+**Réponse** : `200 OK` :
+```json
+[{
+  "id": "...",
+  "author_email": "...",
+  "description": "...",
+  "created_at": "..."
+}]
+```
+**Erreurs** : `403` si l'appelant n'est pas l'Admin (même un modérateur reçoit `403`).
+
+### `DELETE /admin/feature-suggestions/{id}`
+
+*Authentification requise, réservé au SEUL Admin — même restriction que ci-dessus.* Supprime une
+suggestion — pas de statut "examinée" séparé, la suppression EST la façon de la marquer traitée.
+
+**Effets de bord** : un email de courtoisie est envoyé à l'auteur ("ta suggestion a été
+examinée") — best-effort, un échec d'envoi ne fait jamais échouer la suppression elle-même.
+Contrairement aux signalements de bug, cet email part TOUJOURS (`author_email` n'est jamais vide).
+
+**Réponse** : `204 No Content`.
+**Erreurs** : `403` si l'appelant n'est pas l'Admin (même un modérateur reçoit `403`). `404`
+suggestion inconnue.
+
 ## Endpoints — Divers
 
 ### `GET /health`

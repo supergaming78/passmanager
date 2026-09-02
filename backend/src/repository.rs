@@ -1,5 +1,5 @@
 use sqlx::SqlitePool;
-use crate::{models::{VaultEntry, VaultEntryInput, TrashedVaultEntry, PasswordHistoryEntry, ReencryptedHistoryEntry, VaultAttachment, VaultAttachmentInput, VaultAttachmentMeta, UserKeysInput, UserPublicKey, EmergencyContact, VaultShare, SharedWithMeEntry, SharedEntryView, SharedVaultView, SharedVaultMemberView, SharedVaultEntry, SharedVaultEntryInput, VaultBlindShare, BlindShareReceivedView, BlindShareCredentialsView, CreateBugReportPayload, BugReportView}, error::AppError};
+use crate::{models::{VaultEntry, VaultEntryInput, TrashedVaultEntry, PasswordHistoryEntry, ReencryptedHistoryEntry, VaultAttachment, VaultAttachmentInput, VaultAttachmentMeta, UserKeysInput, UserPublicKey, EmergencyContact, VaultShare, SharedWithMeEntry, SharedEntryView, SharedVaultView, SharedVaultMemberView, SharedVaultEntry, SharedVaultEntryInput, VaultBlindShare, BlindShareReceivedView, BlindShareCredentialsView, CreateBugReportPayload, BugReportView, CreateFeatureSuggestionPayload, FeatureSuggestionView}, error::AppError};
 
 /// Historique des mots de passe : garde au plus ce nombre de versions PAR ENTRÉE — au-delà, les
 /// plus anciennes sont purgées automatiquement (voir VaultRepository::archive_password_history).
@@ -1666,5 +1666,83 @@ impl BugReportRepository {
 #[derive(sqlx::FromRow)]
 pub struct DeletedBugReport {
     pub reporter_email: Option<String>,
+    pub description: String,
+}
+
+// =========================================================================
+// SUGGESTION DE FONCTIONNALITÉ — voir migration 20260902000002_feature_suggestions.sql et
+// models.rs pour le détail du modèle. Contrairement à BugReportRepository::create ci-dessus,
+// `create()` ici est appelée depuis une route AUTHENTIFIÉE (voir handlers/feature_suggestion.rs) :
+// même style SELECT-COUNT-puis-INSERT (pas l'INSERT...SELECT...WHERE COUNT atomique de
+// BugReportRepository) que MAX_SHARED_VAULTS_PER_CREATOR/MAX_BLIND_SHARES_PER_OWNER plus haut dans
+// ce fichier — la fenêtre de course TOCTOU qu'un vrai compte authentifié pourrait exploiter en
+// s'envoyant des requêtes concurrentes n'a ici aucun intérêt réel (au pire, quelques suggestions de
+// plus que le plafond pour SON PROPRE compte, jamais un impact sur les autres utilisateurs).
+// =========================================================================
+
+/// Par auteur (pas global, contrairement à MAX_BUG_REPORTS_TOTAL — cette route exige un compte,
+/// donc chaque abus reste imputable à un seul compte plutôt qu'à épuiser une ressource partagée).
+/// `pub(crate)` (pas juste privé) : réutilisée telle quelle par le test de régression sur ce
+/// plafond dans handlers/feature_suggestion.rs, même raisonnement que MAX_BUG_REPORTS_TOTAL.
+pub(crate) const MAX_FEATURE_SUGGESTIONS_PER_USER: i64 = 20;
+
+pub struct FeatureSuggestionRepository;
+
+impl FeatureSuggestionRepository {
+    pub async fn create(db: &SqlitePool, author_email: &str, payload: &CreateFeatureSuggestionPayload) -> Result<String, AppError> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM feature_suggestions WHERE author_email = ?")
+            .bind(author_email)
+            .fetch_one(db)
+            .await?;
+        if count >= MAX_FEATURE_SUGGESTIONS_PER_USER {
+            return Err(AppError::ValidationError(format!(
+                "Limite de {MAX_FEATURE_SUGGESTIONS_PER_USER} suggestions en attente atteinte pour ce compte — attends qu'elles soient examinées avant d'en envoyer d'autres."
+            )));
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO feature_suggestions (id, author_email, description) VALUES (?, ?, ?)")
+            .bind(&id)
+            .bind(author_email)
+            .bind(&payload.description)
+            .execute(db)
+            .await?;
+
+        Ok(id)
+    }
+
+    /// Réservé au SEUL Admin (vérifié dans le handler via user.is_admin(&state), même raisonnement
+    /// que BugReportRepository::list_all — demande explicite de l'utilisateur).
+    pub async fn list_all(db: &SqlitePool) -> Result<Vec<FeatureSuggestionView>, AppError> {
+        sqlx::query_as::<_, FeatureSuggestionView>(
+            "SELECT id, author_email, description, created_at FROM feature_suggestions ORDER BY created_at DESC",
+        )
+        .fetch_all(db)
+        .await
+        .map_err(AppError::from)
+    }
+
+    /// Supprime une suggestion une fois examinée — même choix que BugReportRepository::delete : pas
+    /// de statut séparé, la suppression EST la façon de marquer "traité". `RETURNING author_email` +
+    /// `description` : sert au handler pour, éventuellement, prévenir l'auteur par email (voir
+    /// mailer::send_feature_suggestion_reviewed) — ici TOUJOURS un email réel (contrairement à
+    /// bug_reports, author_email n'est jamais NULL, voir la migration).
+    pub async fn delete(db: &SqlitePool, id: &str) -> Result<DeletedFeatureSuggestion, AppError> {
+        let deleted: Option<DeletedFeatureSuggestion> = sqlx::query_as::<_, DeletedFeatureSuggestion>(
+            "DELETE FROM feature_suggestions WHERE id = ? RETURNING author_email, description",
+        )
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
+
+        deleted.ok_or(AppError::NotFound)
+    }
+}
+
+/// Résultat de FeatureSuggestionRepository::delete() — voir DeletedBugReport ci-dessus, même
+/// raisonnement (juste ce qu'il faut pour prévenir l'auteur, pas un type public de models.rs).
+#[derive(sqlx::FromRow)]
+pub struct DeletedFeatureSuggestion {
+    pub author_email: String,
     pub description: String,
 }

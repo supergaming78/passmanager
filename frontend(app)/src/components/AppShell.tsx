@@ -4,6 +4,7 @@ import { useAuth } from "../state/AuthContext";
 import { getEffectiveMenuLayout, type MenuLayout } from "../lib/menuLayout";
 import AppNav from "./AppNav";
 import BugReportModal from "./BugReportModal";
+import FeatureSuggestionModal from "./FeatureSuggestionModal";
 
 /** Contexte passé aux pages enfants via `<Outlet context={...} />` — consommé par
  * components/MenuLayoutSettings.tsx (dans Réglages) pour appliquer un changement de disposition
@@ -38,6 +39,7 @@ export default function AppShell() {
   const { email, isModerator, logout } = useAuth();
   const [menuLayout, setMenuLayout] = useState<MenuLayout>(() => getEffectiveMenuLayout());
   const [showBugReport, setShowBugReport] = useState(false);
+  const [showFeatureSuggestion, setShowFeatureSuggestion] = useState(false);
 
   // CORRECTIF PERF (retour utilisateur, 2026-09-02) : tous ces callbacks + l'objet de contexte
   // ci-dessous étaient recréés à CHAQUE rendu de AppShell (ex: chaque frappe dans une recherche
@@ -55,6 +57,8 @@ export default function AppShell() {
   }, [logout]);
   const handleReportBug = useCallback(() => setShowBugReport(true), []);
   const handleCloseBugReport = useCallback(() => setShowBugReport(false), []);
+  const handleSuggestFeature = useCallback(() => setShowFeatureSuggestion(true), []);
+  const handleCloseFeatureSuggestion = useCallback(() => setShowFeatureSuggestion(false), []);
 
   const context: AppShellContext = useMemo(
     () => ({ menuLayout, onMenuLayoutChange: handleMenuLayoutChange }),
@@ -64,11 +68,19 @@ export default function AppShell() {
 
   return (
     <div className={`h-screen overflow-hidden bg-neutral-50 dark:bg-neutral-950 ${isSideLayout ? "flex" : "flex flex-col"}`}>
-      <AppNav layout={menuLayout} isModerator={isModerator} email={email} onLogout={handleLogout} onReportBug={handleReportBug} />
+      <AppNav
+        layout={menuLayout}
+        isModerator={isModerator}
+        email={email}
+        onLogout={handleLogout}
+        onReportBug={handleReportBug}
+        onSuggestFeature={handleSuggestFeature}
+      />
       <div className="min-w-0 flex-1 overflow-y-auto">
         <Outlet context={context} />
       </div>
       {showBugReport && <BugReportModal onClose={handleCloseBugReport} defaultEmail={email ?? undefined} />}
+      {showFeatureSuggestion && <FeatureSuggestionModal onClose={handleCloseFeatureSuggestion} />}
     </div>
   );
 }

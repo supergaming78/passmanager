@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import type { MenuLayout } from "../lib/menuLayout";
+import { isMobilePlatform } from "../lib/platform";
 import EntryActionsMenu from "./EntryActionsMenu";
 
 interface NavLinkItem {
@@ -24,20 +25,25 @@ interface Props {
   email: string | null;
   onLogout: () => void;
   onReportBug: () => void;
+  onSuggestFeature: () => void;
 }
 
 /** Liens communs à TOUTES les dispositions — un seul endroit pour la liste, chaque disposition
  * décide juste comment les DISPOSER (voir les trois rendus plus bas). "Déconnexion" volontairement
  * exclue d'ici : rendue à part dans chaque disposition (toujours la plus visible/isolée des
  * autres, jamais mélangée à la navigation courante — même parti pris que l'ancien header de
- * Vault.tsx, qui la sortait déjà de la liste des liens). */
-function buildNavItems(isModerator: boolean, onReportBug: () => void): NavItem[] {
+ * Vault.tsx, qui la sortait déjà de la liste des liens). "Suggérer une fonctionnalité" : retour
+ * utilisateur (2026-09-02), "un peu comme le signalement de bug" mais réservée à l'app DESKTOP
+ * (voir isMobilePlatform() — même garde-fou que MenuLayoutSettings.tsx dans Réglages), une
+ * suggestion n'a pas de sens à proposer depuis un petit écran tactile où on tape peu de texte. */
+function buildNavItems(isModerator: boolean, onReportBug: () => void, onSuggestFeature: () => void): NavItem[] {
   return [
     { kind: "link", to: "/vault", label: "Coffre", icon: "🔐" },
     ...(isModerator ? [{ kind: "link" as const, to: "/admin", label: "Administration", icon: "🛡️" }] : []),
     { kind: "link", to: "/shared-with-me", label: "Partagé avec moi", icon: "📥" },
     { kind: "link", to: "/shared-vaults", label: "Coffres partagés", icon: "👪" },
     { kind: "link", to: "/settings", label: "Réglages", icon: "⚙️" },
+    ...(!isMobilePlatform() ? [{ kind: "action" as const, label: "Suggérer une fonctionnalité", icon: "💡", onClick: onSuggestFeature }] : []),
     { kind: "action", label: "Signaler un bug", icon: "🐞", onClick: onReportBug },
   ];
 }
@@ -49,14 +55,18 @@ function buildNavItems(isModerator: boolean, onReportBug: () => void): NavItem[]
  * PORT DIRECT de l'ancien header de pages/Vault.tsx (bandeau horizontal desktop + menu "⋮" replié
  * sur mobile), généralisé pour apparaître sur TOUTES les pages authentifiées au lieu de la seule
  * page Coffre. "sidebar"/"compact" sont nouvelles, jamais engagées sur mobile (voir plus haut). */
-function AppNav({ layout, isModerator, email, onLogout, onReportBug }: Props) {
+function AppNav({ layout, isModerator, email, onLogout, onReportBug, onSuggestFeature }: Props) {
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const navigate = useNavigate();
   // CORRECTIF PERF (retour utilisateur, 2026-09-02) : recalculé à chaque rendu auparavant (nouveau
   // tableau + nouveaux objets à chaque fois) alors que le résultat ne dépend que de isModerator/
-  // onReportBug — voir AppShell.tsx, qui mémorise maintenant onReportBug pour que ce useMemo
-  // profite réellement d'un cache d'un rendu à l'autre plutôt que de recalculer systématiquement.
-  const items = useMemo(() => buildNavItems(isModerator, onReportBug), [isModerator, onReportBug]);
+  // onReportBug/onSuggestFeature — voir AppShell.tsx, qui mémorise maintenant ces callbacks pour
+  // que ce useMemo profite réellement d'un cache d'un rendu à l'autre plutôt que de recalculer
+  // systématiquement.
+  const items = useMemo(
+    () => buildNavItems(isModerator, onReportBug, onSuggestFeature),
+    [isModerator, onReportBug, onSuggestFeature],
+  );
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     `rounded-lg border px-3 py-1.5 text-sm font-medium transition ${

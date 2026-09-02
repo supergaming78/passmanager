@@ -3,7 +3,7 @@ import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
 import { getListLayout } from "../lib/listLayout";
-import type { AdminUserView, AuditLog, BugReportView } from "../api/types";
+import type { AdminUserView, AuditLog, BugReportView, FeatureSuggestionView } from "../api/types";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -500,6 +500,78 @@ function BugReportsSection() {
   );
 }
 
+/** Suggestions de fonctionnalité envoyées depuis l'app desktop (voir
+ * components/FeatureSuggestionModal.tsx, accessible aux comptes connectés uniquement) — même
+ * fonctionnement que BugReportsSection ci-dessus : pas de statut "examinée" séparé, supprimer une
+ * suggestion EST la façon de la marquer traitée (voir handlers/feature_suggestion.rs côté
+ * backend), ce qui prévient TOUJOURS l'auteur par email (contrairement aux signalements de bug, où
+ * l'email de contact est facultatif — author_email ici est toujours un compte réel authentifié). */
+function FeatureSuggestionsSection() {
+  const { authorizedRequest } = useAuth();
+  const [suggestions, setSuggestions] = useState<FeatureSuggestionView[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      setSuggestions(await authorizedRequest((token) => api.listFeatureSuggestions(token)));
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setIsLoading(false);
+    }
+  }, [authorizedRequest]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function handleDelete(suggestion: FeatureSuggestionView) {
+    if (!confirm(`Marquer cette suggestion comme examinée ? Un email sera envoyé à "${suggestion.author_email}".`)) return;
+    const id = suggestion.id;
+    setBusyId(id);
+    setError(null);
+    try {
+      await authorizedRequest((token) => api.deleteFeatureSuggestion(token, id));
+      setSuggestions((prev) => prev.filter((s) => s.id !== id));
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  if (isLoading) return <p className="text-sm text-neutral-500">Chargement…</p>;
+  if (error) return <p className="text-sm text-red-600 dark:text-red-400">{error}</p>;
+  if (suggestions.length === 0) return <p className="text-sm text-neutral-500">Aucune suggestion en attente.</p>;
+
+  return (
+    <ul className="flex max-h-96 flex-col gap-2 overflow-y-auto">
+      {suggestions.map((suggestion) => (
+        <li key={suggestion.id} className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-800">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-xs text-neutral-500">
+              {new Date(suggestion.created_at).toLocaleString()} · {suggestion.author_email}
+            </span>
+            <button
+              type="button"
+              disabled={busyId === suggestion.id}
+              onClick={() => void handleDelete(suggestion)}
+              className="shrink-0 rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              Marquer examinée
+            </button>
+          </div>
+          <p className="whitespace-pre-wrap text-sm text-neutral-800 dark:text-neutral-200">{suggestion.description}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** Réglage GLOBAL (pas par compte, voir handlers/admin.rs::update_server_choice_at_login() côté
  * backend) : visibilité du lien "Configurer le serveur" sur l'écran de connexion, AVANT toute
  * authentification. Lu via GET /public-config (sans auth, même endpoint que pages/Login.tsx) —
@@ -592,6 +664,12 @@ export default function Admin() {
         {isAdmin && (
           <Section title="Signalements de bug (desktop/Android) — visible par toi seul">
             <BugReportsSection />
+          </Section>
+        )}
+
+        {isAdmin && (
+          <Section title="Suggestions de fonctionnalité (desktop) — visible par toi seul">
+            <FeatureSuggestionsSection />
           </Section>
         )}
 

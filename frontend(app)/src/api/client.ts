@@ -59,6 +59,8 @@ import {
   type BlindShareCredentialsView,
   type CreateBugReportPayload,
   type BugReportView,
+  type CreateFeatureSuggestionPayload,
+  type FeatureSuggestionView,
 } from "./types";
 
 /**
@@ -745,6 +747,27 @@ export function listBugReports(accessToken: string): Promise<BugReportView[]> {
 
 export function deleteBugReport(accessToken: string, id: string): Promise<void> {
   return request<void>(`/admin/bug-reports/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(accessToken),
+  });
+}
+
+// --- Suggestion de fonctionnalité (voir api/types.ts) — contrairement à createBugReport
+// ci-dessus, EXIGE un accessToken : cette route n'est jamais accessible avant connexion.
+export function createFeatureSuggestion(accessToken: string, payload: CreateFeatureSuggestionPayload): Promise<{ id: string }> {
+  return request<{ id: string }>("/feature-suggestions", {
+    method: "POST",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listFeatureSuggestions(accessToken: string): Promise<FeatureSuggestionView[]> {
+  return request<FeatureSuggestionView[]>("/admin/feature-suggestions", { headers: authHeaders(accessToken) });
+}
+
+export function deleteFeatureSuggestion(accessToken: string, id: string): Promise<void> {
+  return request<void>(`/admin/feature-suggestions/${encodeURIComponent(id)}`, {
     method: "DELETE",
     headers: authHeaders(accessToken),
   });

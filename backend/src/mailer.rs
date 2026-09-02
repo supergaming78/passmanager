@@ -255,6 +255,32 @@ pub async fn send_bug_report_resolved(to_email: &str, description_snippet: &str,
     Ok(())
 }
 
+/// Prévient l'auteur d'une suggestion de fonctionnalité que l'Admin l'a examinée — voir
+/// handlers/feature_suggestion.rs::delete_feature_suggestion, appelée en `let _ =` (best effort,
+/// ne fait jamais échouer la suppression elle-même si l'envoi rate). Même structure que
+/// send_bug_report_resolved ci-dessus, texte adapté — ici `to_email` est TOUJOURS un compte réel
+/// (author_email n'est jamais NULL, voir models.rs::FeatureSuggestionView), contrairement au
+/// signalement de bug où l'email de contact est facultatif et non vérifié.
+pub async fn send_feature_suggestion_reviewed(to_email: &str, description_snippet: &str, config: &crate::config::Config) -> Result<(), AppError> {
+    let email = build_email(
+        parse_sender(format!("PassManager <{}>", config.smtp_user))?,
+        parse_recipient(to_email)?,
+        "Ta suggestion de fonctionnalité a été examinée",
+        format!("Bonjour,\n\nLa suggestion que tu avais envoyée (\"{description_snippet}\") a été examinée.\n\nMerci pour ton idée !"),
+        format!(
+            "<p>Bonjour,</p><p>La suggestion que tu avais envoyée a été examinée :</p><p style=\"background-color:#f4f4f7; border-radius:8px; padding:12px 16px; font-style:italic; color:#4b5563;\">\"{description_snippet}\"</p><p>Merci pour ton idée ! 💡</p>"
+        ),
+    )?;
+
+    let mailer = get_mailer(config)?;
+    mailer.send(email).await.map_err(|e| {
+        error!(target: "mailer", error = ?e, "échec d'envoi de l'email de suivi de suggestion de fonctionnalité");
+        AppError::Internal("Échec envoi suivi suggestion".to_string())
+    })?;
+
+    Ok(())
+}
+
 // =========================================================================
 // TESTS
 // =========================================================================

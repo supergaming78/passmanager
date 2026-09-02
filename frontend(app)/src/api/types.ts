@@ -510,6 +510,24 @@ export interface BugReportView {
   created_at: string;
 }
 
+// --- Suggestion de fonctionnalité (app desktop, connecté uniquement) : voir
+// components/FeatureSuggestionModal.tsx et backend/src/handlers/feature_suggestion.rs. "Un peu
+// comme le signalement de bug" (retour utilisateur, 2026-09-02) mais toutes les routes exigent un
+// compte connecté — pas de reporter_email/app_version/platform à fournir, author_email vient
+// directement du token côté serveur. ---
+
+export interface CreateFeatureSuggestionPayload {
+  description: string;
+}
+
+/** Vue Admin (GET /admin/feature-suggestions). */
+export interface FeatureSuggestionView {
+  id: string;
+  author_email: string;
+  description: string;
+  created_at: string;
+}
+
 // --- Import / export du coffre ---
 
 export interface ImportVaultPayload {

@@ -1003,6 +1003,30 @@ pub struct BugReportView {
 }
 
 // =========================================================================
+// 5quinquies. SUGGESTION DE FONCTIONNALITÉ — voir migration 20260902000002_feature_suggestions.sql
+// et handlers/feature_suggestion.rs. Retour utilisateur (2026-09-02) : "un peu comme le
+// signalement de bug", mais réservée à l'app DESKTOP et à un compte déjà CONNECTÉ (contrairement
+// au signalement de bug, accessible même avant connexion) — `author_email` vient donc directement
+// de AuthUser, jamais un champ fourni/éditable par le client comme reporter_email dans
+// CreateBugReportPayload.
+// =========================================================================
+
+#[derive(Deserialize, Validate)]
+pub struct CreateFeatureSuggestionPayload {
+    #[validate(length(min = 1, max = 4000, message = "La description doit faire entre 1 et 4000 caractères"))]
+    pub description: String,
+}
+
+/// Une suggestion vue par l'Admin (GET /admin/feature-suggestions).
+#[derive(Serialize, sqlx::FromRow)]
+pub struct FeatureSuggestionView {
+    pub id: String,
+    pub author_email: String,
+    pub description: String,
+    pub created_at: chrono::NaiveDateTime,
+}
+
+// =========================================================================
 // 6. STRUCTURES DIVERSES (PAGINATION & RÉPONSES API)
 // =========================================================================
 

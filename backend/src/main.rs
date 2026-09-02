@@ -635,6 +635,18 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/admin/bug-reports", get(handlers::list_bug_reports)) // Admin SEUL : tous les signalements
         .route("/admin/bug-reports/{id}", delete(handlers::delete_bug_report)) // Admin SEUL : marquer traité (suppression)
 
+        // Suggestion de fonctionnalité (voir handlers/feature_suggestion.rs) — retour utilisateur
+        // (2026-09-02), "un peu comme le signalement de bug" ci-dessus mais TOUTES les routes
+        // exigent un AuthUser (POST inclus, contrairement à /bug-reports) : app desktop uniquement,
+        // compte déjà connecté. Aucun palier dédié — n'importe quel compte connecté peut en poser
+        // une, donc sur global_governor comme le reste de l'API authentifiée (le vrai garde-fou
+        // contre l'abus reste le plafond PAR AUTEUR, voir repository.rs::MAX_FEATURE_SUGGESTIONS_PER_USER).
+        // GET/DELETE réservés au SEUL Admin (vérifié dans le handler via user.is_admin(&state)),
+        // même raisonnement que /admin/bug-reports ci-dessus.
+        .route("/feature-suggestions", post(handlers::create_feature_suggestion))
+        .route("/admin/feature-suggestions", get(handlers::list_feature_suggestions))
+        .route("/admin/feature-suggestions/{id}", delete(handlers::delete_feature_suggestion))
+
         // Application des middlewares globaux de Tower
         // CORRECTIF SÉCURITÉ (voir rewrite_client_ip_from_proxy_headers ci-dessus) : ajoutée EN
         // PREMIER (donc la couche la plus INTERNE, la plus proche des routes/handlers) pour que
