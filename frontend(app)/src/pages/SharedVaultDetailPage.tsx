@@ -421,10 +421,12 @@ export default function SharedVaultDetailPage() {
           // laissait chaque ligne s'étirer sur toute la largeur une fois la page élargie, grand
           // vide au milieu de chaque ligne entre le contenu et les boutons d'action. `divide-y` ne
           // compose pas avec une grille à plusieurs colonnes : bordure individuelle par entrée à la
-          // place, dans un @container — grid-cols-1 par défaut, @6xl:grid-cols-2 seulement (une
-          // ligne "liste" reste plus riche qu'une carte, moins de colonnes lui suffisent).
+          // place, dans un @container — mêmes paliers que
+          // lib/listLayout.ts::listContainerClass pour "list"/"compact" (pas la peine de les
+          // redupliquer ici, cette branche ne gère pas "cards" donc aucun `gridCols` custom à
+          // passer).
           <div className="@container">
-          <ul className="grid grid-cols-1 gap-2 @6xl:grid-cols-2">
+          <ul className={listContainerClass(listLayout)}>
             {entries.map((entry) => (
               <li key={entry.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
                 {renderEntryRow(entry, listLayout === "compact")}

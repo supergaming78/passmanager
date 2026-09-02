@@ -882,14 +882,18 @@ export default function Vault() {
    * écran 1440p) — une seule colonne quelle que soit la largeur laissait chaque ligne s'étirer sur
    * toute la largeur du conteneur élargi (voir plus bas, jusqu'à 110rem désormais), avec un grand
    * vide entre le contenu (à gauche) et les boutons d'action (poussés loin à droite par
-   * `justify-between`) au milieu de chaque ligne. Devient une grille à 2 colonnes à partir de @6xl
-   * (1152px de conteneur réel) — même palier/même raisonnement que
-   * lib/listLayout.ts::listContainerClass, dupliqué ici parce que le Coffre a sa propre logique de
-   * conteneur (gère aussi "cards", que ce module ne gère pas). */
+   * `justify-between`) au milieu de chaque ligne. Devient une grille à plusieurs colonnes selon la
+   * largeur du conteneur — "compact" pousse plus loin que "list" (une ligne compacte, sur une
+   * seule ligne de texte, tient dans un espace bien plus étroit qu'une ligne "list" sur deux
+   * lignes) — même paliers/même raisonnement que lib/listLayout.ts::listContainerClass, dupliqué
+   * ici parce que le Coffre a sa propre logique de conteneur (gère aussi "cards", que ce module ne
+   * gère pas). */
   const entryListContainerClass =
     listLayout === "cards"
       ? "grid grid-cols-2 gap-3 @sm:grid-cols-3 @lg:grid-cols-4 @4xl:grid-cols-5 @6xl:grid-cols-6"
-      : "grid grid-cols-1 gap-2 @6xl:grid-cols-2";
+      : listLayout === "compact"
+        ? "grid grid-cols-1 gap-1.5 @4xl:grid-cols-2 @6xl:grid-cols-3"
+        : "grid grid-cols-1 gap-2 @6xl:grid-cols-2";
   const EntryListContainer = listLayout === "cards" ? "div" : "ul";
 
   return (

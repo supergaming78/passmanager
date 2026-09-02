@@ -61,8 +61,15 @@ export function listContainerClass(layout: ListLayout, gridCols = "grid-cols-2 @
   // s'étirer sur toute sa largeur une fois les pages élargies (voir Vault.tsx/pages.tsx, jusqu'à
   // 100-110rem désormais) : un grand vide entre le contenu (à gauche) et les boutons d'action
   // (poussés loin à droite par `justify-between`) au milieu de chaque ligne. Devient une grille à
-  // 2 colonnes à partir de @6xl (1152px de CONTENEUR réel, pas de fenêtre — voir le commentaire de
-  // fonction ci-dessus) : chaque ligne garde sa largeur naturelle, l'espace en trop accueille une
-  // seconde colonne de lignes plutôt que de rester vide au milieu d'une seule ligne démesurée.
+  // plusieurs colonnes à partir d'un palier de largeur de CONTENEUR (pas de fenêtre — voir le
+  // commentaire de fonction ci-dessus) : chaque ligne garde sa largeur naturelle, l'espace en trop
+  // accueille des colonnes de lignes supplémentaires plutôt que de rester vide au milieu d'une
+  // seule ligne démesurée.
+  //
+  // "compact" pousse plus loin que "list" (retour utilisateur, suite) : une ligne compacte (texte
+  // réduit, une seule ligne de contenu) tient confortablement dans un espace bien plus étroit
+  // qu'une ligne "list" (deux lignes de texte) — 3 colonnes dès @4xl au lieu d'attendre @6xl pour
+  // seulement 2, pour vraiment exploiter l'esprit "compact" une fois l'espace disponible.
+  if (layout === "compact") return "grid grid-cols-1 gap-1.5 @4xl:grid-cols-2 @6xl:grid-cols-3";
   return "grid grid-cols-1 gap-2 @6xl:grid-cols-2";
 }

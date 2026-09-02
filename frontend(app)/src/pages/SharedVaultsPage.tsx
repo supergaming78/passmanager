@@ -175,12 +175,12 @@ export default function SharedVaultsPage() {
           // Vault.tsx pour le même correctif) — grand vide entre le nom et la flèche "→" au milieu
           // de chaque ligne. `divide-y` ne compose pas avec une grille à plusieurs colonnes (les
           // séparateurs n'ont de sens qu'en flux à une seule colonne) : bordure individuelle par
-          // coffre à la place, dans un @container comme le mode "cards" ci-dessus — juste
-          // grid-cols-1 par défaut (une seule colonne tant que le conteneur n'est pas très large)
-          // et un seul palier @6xl (une ligne "liste" reste plus riche qu'une carte, moins de
-          // colonnes lui suffisent).
+          // coffre à la place, dans un @container comme le mode "cards" ci-dessus — mêmes paliers
+          // que lib/listLayout.ts::listContainerClass pour "list"/"compact" (pas la peine de les
+          // redupliquer ici, cette branche ne gère pas "cards" donc aucun `gridCols` custom à
+          // passer).
           <div className="@container">
-          <ul className="grid grid-cols-1 gap-2 @6xl:grid-cols-2">
+          <ul className={listContainerClass(listLayout)}>
             {vaults.map((v) => (
               <li key={v.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
                 {renderVaultLink(v, listLayout === "compact" ? "compact" : "list")}
