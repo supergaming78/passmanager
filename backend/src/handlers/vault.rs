@@ -135,9 +135,10 @@ pub async fn import_vault(
     }
 
     let mut tx = state.db.begin().await?;
-    for entry in &payload.entries {
-        VaultRepository::add_in_tx(&mut tx, &user.email, entry).await?;
-    }
+    // CORRECTIF PERF (retour utilisateur, 2026-09-02) : add_many_in_tx() groupe les entrées en
+    // INSERT multi-lignes par lots, plutôt qu'une requête séparée par entrée — voir son
+    // commentaire dans repository.rs pour le détail (limite de paramètres SQLite, découpage en lots).
+    VaultRepository::add_many_in_tx(&mut tx, &user.email, &payload.entries).await?;
     tx.commit().await?;
 
     let agent = get_user_agent(&headers);
@@ -1697,6 +1698,36 @@ mod tests {
         let audit_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE user_email = ? AND action = 'VAULT_IMPORT'")
             .bind(email).fetch_one(&state.db).await.unwrap();
         assert_eq!(audit_count, 1, "un import doit être tracé dans l'audit");
+    }
+
+    /// RÉGRESSION (correctif perf du 2026-09-02, VaultRepository::add_many_in_tx) : un import
+    /// dépassant CHUNK_SIZE (300, voir repository.rs) doit insérer TOUTES les entrées correctement
+    /// réparties sur plusieurs lots, avec des identifiants tous distincts — pas couvert par le test
+    /// ci-dessus (seulement 2 entrées, jamais assez pour déclencher un second lot).
+    #[tokio::test]
+    async fn test_import_vault_handles_more_entries_than_one_chunk() {
+        let state = build_test_state().await;
+        let email = "importchunked@example.com";
+        register_test_user(&state, email).await;
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+
+        // 650 = deux lots pleins (300 + 300) + un lot partiel (50), avec CHUNK_SIZE = 300.
+        let entries: Vec<VaultEntryInput> = (0..650).map(|i| sample_entry(&format!("Site{i}"))).collect();
+
+        let result = import_vault(
+            State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
+            AuthUser { email: email.to_string(), is_moderator: false },
+            Json(ImportVaultPayload { entries }),
+        ).await.expect("l'import de plusieurs lots doit réussir");
+
+        let value = read_json_body(result.into_response()).await;
+        assert_eq!(value["imported"], 650, "les 650 entrées doivent être comptées comme importées");
+
+        let active_entries = VaultRepository::get_all(&state.db, email, 1000, 0).await.unwrap();
+        assert_eq!(active_entries.len(), 650, "les 650 entrées doivent bien être présentes en base, réparties sur plusieurs lots");
+
+        let distinct_ids: std::collections::HashSet<_> = active_entries.iter().map(|e| e.id.clone()).collect();
+        assert_eq!(distinct_ids.len(), 650, "chaque entrée doit avoir un identifiant distinct, même générés à travers plusieurs lots");
     }
 
     /// GARDE-FOU : si UNE SEULE entrée du lot est invalide, RIEN ne doit être importé (tout ou

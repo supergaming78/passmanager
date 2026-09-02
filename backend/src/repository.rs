@@ -92,28 +92,47 @@ impl VaultRepository {
         Ok(())
     }
 
-    /// Variante de add() DANS une transaction déjà ouverte (voir handlers/vault.rs::import_vault()) :
-    /// permet d'importer plusieurs entrées de façon atomique — soit toutes sont insérées, soit
-    /// aucune ne l'est (même principe que reencrypt() plus bas pour update_password()).
-    pub async fn add_in_tx(tx: &mut sqlx::SqliteConnection, email: &str, entry: &VaultEntryInput) -> Result<(), AppError> {
-        let id = uuid::Uuid::new_v4().to_string();
-
-        sqlx::query("INSERT INTO vault (id, encrypted_site_name, encrypted_username, encrypted_login_email, encrypted_password, encrypted_preferred_login_type, user_email, is_favorite, encrypted_folder, encrypted_notes, encrypted_url, entry_type, encrypted_extra_fields) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-            .bind(id)
-            .bind(&entry.encrypted_site_name)
-            .bind(&entry.encrypted_username)
-            .bind(&entry.encrypted_login_email)
-            .bind(&entry.encrypted_password)
-            .bind(&entry.encrypted_preferred_login_type)
-            .bind(email)
-            .bind(entry.is_favorite)
-            .bind(&entry.encrypted_folder)
-            .bind(&entry.encrypted_notes)
-            .bind(&entry.encrypted_url)
-            .bind(&entry.entry_type)
-            .bind(&entry.encrypted_extra_fields)
-            .execute(tx).await.map_err(AppError::from)?;
-
+    /// Variante GROUPÉE de add() pour DANS une transaction déjà ouverte (voir
+    /// handlers/vault.rs::import_vault()) : permet d'importer plusieurs entrées de façon atomique
+    /// — soit toutes sont insérées, soit aucune ne l'est (même principe que reencrypt() plus bas
+    /// pour update_password()).
+    ///
+    /// CORRECTIF PERF (retour utilisateur, 2026-09-02) : import_vault() appelait auparavant une
+    /// fonction de ce genre une fois PAR ENTRÉE, dans une boucle (un INSERT séparé par entrée
+    /// importée). Sans coût réseau (SQLite est embarqué), mais un import de plusieurs
+    /// centaines/milliers d'entrées représentait autant de requêtes internes séparées. Ici, un
+    /// seul INSERT multi-lignes par lot via QueryBuilder.
+    ///
+    /// Découpé par lots de CHUNK_SIZE plutôt qu'un unique INSERT pour TOUTES les entrées d'un coup :
+    /// SQLite plafonne le nombre de paramètres liés PAR REQUÊTE (SQLITE_MAX_VARIABLE_NUMBER,
+    /// 32766 par défaut depuis SQLite 3.32, mais aussi bas que 999 sur d'anciennes builds) — avec
+    /// 13 colonnes par entrée, MAX_VAULT_ENTRIES_PER_USER (5000) en un seul lot dépasserait 65 000
+    /// paramètres, au-delà de la limite même moderne. 300 entrées/lot x 13 = 3 900 paramètres,
+    /// confortablement sous la limite la plus basse connue.
+    pub async fn add_many_in_tx(tx: &mut sqlx::SqliteConnection, email: &str, entries: &[VaultEntryInput]) -> Result<(), AppError> {
+        const CHUNK_SIZE: usize = 300;
+        for chunk in entries.chunks(CHUNK_SIZE) {
+            let mut builder = sqlx::QueryBuilder::new(
+                "INSERT INTO vault (id, encrypted_site_name, encrypted_username, encrypted_login_email, encrypted_password, encrypted_preferred_login_type, user_email, is_favorite, encrypted_folder, encrypted_notes, encrypted_url, entry_type, encrypted_extra_fields) "
+            );
+            builder.push_values(chunk, |mut b, entry| {
+                let id = uuid::Uuid::new_v4().to_string();
+                b.push_bind(id)
+                    .push_bind(&entry.encrypted_site_name)
+                    .push_bind(&entry.encrypted_username)
+                    .push_bind(&entry.encrypted_login_email)
+                    .push_bind(&entry.encrypted_password)
+                    .push_bind(&entry.encrypted_preferred_login_type)
+                    .push_bind(email)
+                    .push_bind(entry.is_favorite)
+                    .push_bind(&entry.encrypted_folder)
+                    .push_bind(&entry.encrypted_notes)
+                    .push_bind(&entry.encrypted_url)
+                    .push_bind(&entry.entry_type)
+                    .push_bind(&entry.encrypted_extra_fields);
+            });
+            builder.build().execute(&mut *tx).await.map_err(AppError::from)?;
+        }
         Ok(())
     }
 
