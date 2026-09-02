@@ -33,28 +33,29 @@ export function setListLayout(layout: ListLayout): void {
  * l'app (Administration, Partagé avec moi, Coffres partagés...) plutôt que de la redupliquer à
  * chaque écran. Toujours un `<ul>` (voir appelants) : `display: grid` fonctionne aussi bien sur un
  * `<ul>` qu'un `<div>` — inutile de changer de balise juste pour "cards" et de risquer un `<li>`
- * mal imbriqué dans un `<div>` (HTML valide mais moins propre). `gridCols` : nombre de colonnes par
- * palier de largeur, ajustable par appelant — une liste avec peu de métadonnées par élément (ex:
- * partages reçus) tient plus de colonnes qu'une carte de coffre avec logo/avatar.
+ * mal imbriqué dans un `<div>` (HTML valide mais moins propre).
  *
- * CORRECTIF (retour utilisateur, 2026-09-02) : paliers `@sm:`/`@lg:` (container queries CSS,
- * réagissent à la largeur du PARENT le plus proche portant `@container`) plutôt que `sm:`/`lg:`
- * (réagissent à la largeur de la FENÊTRE entière) — avec la disposition de menu "Barre latérale"/
- * "Compacte" (voir lib/menuLayout.ts), l'espace réellement disponible pour cette liste est plus
- * étroit que la fenêtre (le menu en prend une partie), ce que `sm:`/`lg:` ignorait complètement :
- * une grille pouvait forcer 3-4 colonnes dans un espace en réalité bien plus restreint, comprimant
- * les cartes. Nécessite que l'APPELANT enveloppe le `<ul>` (celui qui reçoit cette classe) d'un
- * `<div className="@container">` — un élément ne peut pas réagir à sa PROPRE taille, seulement à
- * celle d'un ancêtre portant `@container` (voir les appelants : Vault.tsx, Admin.tsx,
- * SharedWithMeSettings.tsx, BlindSharesReceivedSettings.tsx, SharedVaultsPage.tsx,
- * SharedVaultDetailPage.tsx). Volontairement PAS posé plus haut dans l'arbre (ex: le conteneur de
- * contenu de AppShell.tsx, qui engloberait toute la page) : `container-type` fait de son élément un
- * point d'ancrage pour tout descendant en `position: fixed` (comme un `transform`) — posé au niveau
- * de toute la page, ÇA AURAIT CASSÉ toutes les fenêtres modales de l'app (ShareEntryModal,
- * VaultEntryForm, BugReportModal...), qui se seraient mises à défiler avec le contenu au lieu de
- * rester ancrées à l'écran. Scopé ICI, juste autour de la liste elle-même, aucun risque : les
- * modales ne sont jamais des descendantes de ce `<div>`. */
-export function listContainerClass(layout: ListLayout, gridCols = "grid-cols-2 @sm:grid-cols-3 @lg:grid-cols-4"): string {
+ * `gridCols` ("cards" uniquement) : CORRECTIF (retour utilisateur, 2026-09-02) — remplacé un
+ * nombre de colonnes FIXE par palier de largeur (`grid-cols-2 @sm:grid-cols-3 @lg:grid-cols-4`...)
+ * par `repeat(auto-fill, minmax(Npx, Npx))` : la TAILLE d'une carte ne change plus jamais (repéré
+ * par l'utilisateur : passer de 4 à 5 colonnes à un palier de largeur changeait visiblement le
+ * format des cartes) — c'est le NOMBRE de colonnes qui s'adapte tout seul à l'espace disponible, en
+ * calculant combien de cartes de largeur FIXE tiennent sur une ligne. `minmax(Npx, Npx)` (même
+ * valeur deux fois, pas `1fr`) : une carte garde EXACTEMENT sa largeur, ne s'étire jamais pour
+ * combler l'espace restant en fin de ligne (ce vide est normal, pas un bug — l'alternative,
+ * `minmax(Npx, 1fr)`, ferait à nouveau varier la largeur des cartes selon combien en tiennent par
+ * ligne, exactement ce qui posait problème). Une liste avec peu de métadonnées par élément (ex:
+ * partages reçus) peut se permettre une carte plus étroite qu'une carte de coffre avec logo/avatar
+ * — ajustable par appelant.
+ *
+ * Fonctionne SANS `@container` (contrairement aux paliers `@sm:`/`@lg:` encore utilisés pour
+ * "list"/"compact" juste en dessous) : `repeat(auto-fill, ...)` calcule directement combien de
+ * colonnes de cette largeur tiennent dans l'espace RÉELLEMENT disponible pour la grille elle-même
+ * (barre latérale déjà déduite, aucune requête de conteneur nécessaire) — le vrai motif CSS pour
+ * "des cartes de taille constante, le nombre qui s'adapte", plus robuste que des paliers de
+ * largeur fixes qui font brusquement sauter le nombre de colonnes (et donc la taille des cartes
+ * avec l'ancien `1fr`) à des seuils arbitraires. */
+export function listContainerClass(layout: ListLayout, gridCols = "grid-cols-[repeat(auto-fill,minmax(200px,200px))]"): string {
   if (layout === "cards") return `grid gap-3 ${gridCols}`;
   // "list"/"compact" : CORRECTIF (retour utilisateur, 2026-09-02, captures d'écran plein écran
   // 1440p) — une seule colonne quelle que soit la largeur du conteneur laissait chaque ligne

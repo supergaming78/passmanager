@@ -945,27 +945,28 @@ export default function Vault() {
     return renderEntryRow(entry, options);
   }
 
-  /** Classes du conteneur — grille pour "cards" (avatars/logos en évidence, plusieurs colonnes
-   * selon la largeur). CORRECTIF (retour utilisateur, 2026-09-02) : `@sm:`/`@lg:` (container
-   * queries, voir lib/listLayout.ts::listContainerClass pour le raisonnement complet et pourquoi
-   * le `@container` qui les active est posé juste autour de la liste ci-dessous, jamais plus haut
-   * dans l'arbre) au lieu de `sm:`/`lg:` — avec un menu latéral/compact, l'espace réel dispo pour
-   * le Coffre est plus étroit que la fenêtre entière, ce que `sm:`/`lg:` ignorait, comprimant les
-   * cartes.
+  /** Classes du conteneur — grille pour "cards". CORRECTIF (retour utilisateur, 2026-09-02) :
+   * `repeat(auto-fill, minmax(210px, 210px))` au lieu d'un nombre de colonnes fixe par palier de
+   * largeur — une carte garde une taille CONSTANTE (repéré par l'utilisateur : le format changeait
+   * visiblement en passant d'un palier à l'autre), c'est le nombre de colonnes qui s'adapte tout
+   * seul à l'espace réellement disponible (voir lib/listLayout.ts::listContainerClass pour le
+   * raisonnement CSS complet — fonctionne SANS `@container`, ce mécanisme calcule directement
+   * l'espace dispo pour la grille elle-même).
    *
    * "list"/"compact" : CORRECTIF (retour utilisateur, 2026-09-02, suite — captures d'écran plein
    * écran 1440p) — une seule colonne quelle que soit la largeur laissait chaque ligne s'étirer sur
    * toute la largeur du conteneur élargi (voir plus bas, jusqu'à 110rem désormais), avec un grand
    * vide entre le contenu (à gauche) et les boutons d'action (poussés loin à droite par
    * `justify-between`) au milieu de chaque ligne. Devient une grille à plusieurs colonnes selon la
-   * largeur du conteneur — "compact" pousse plus loin que "list" (une ligne compacte, sur une
-   * seule ligne de texte, tient dans un espace bien plus étroit qu'une ligne "list" sur deux
-   * lignes) — même paliers/même raisonnement que lib/listLayout.ts::listContainerClass, dupliqué
-   * ici parce que le Coffre a sa propre logique de conteneur (gère aussi "cards", que ce module ne
-   * gère pas). */
+   * largeur du conteneur (via `@container`, ICI toujours nécessaire — contrairement à "cards"
+   * ci-dessus, ces paliers restent des seuils fixes @4xl/@6xl, pas un auto-fill) — "compact" pousse
+   * plus loin que "list" (une ligne compacte, sur une seule ligne de texte, tient dans un espace
+   * bien plus étroit qu'une ligne "list" sur deux lignes) — même paliers/même raisonnement que
+   * lib/listLayout.ts::listContainerClass, dupliqué ici parce que le Coffre a sa propre logique de
+   * conteneur (gère aussi "cards", que ce module ne gère pas). */
   const entryListContainerClass =
     listLayout === "cards"
-      ? "grid grid-cols-2 gap-3 @sm:grid-cols-3 @lg:grid-cols-4 @4xl:grid-cols-5 @6xl:grid-cols-6"
+      ? "grid gap-3 grid-cols-[repeat(auto-fill,minmax(210px,210px))]"
       : listLayout === "compact"
         ? "grid grid-cols-1 gap-1.5 @4xl:grid-cols-2 @6xl:grid-cols-3"
         : "grid grid-cols-1 gap-2 @6xl:grid-cols-2";
