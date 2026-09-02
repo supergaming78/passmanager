@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { decryptEntries, encryptEntry, type PlainVaultEntry } from "../lib/vaultCrypto";
@@ -19,7 +18,6 @@ import VaultHistoryModal from "../components/VaultHistoryModal";
 import AttachmentsModal from "../components/AttachmentsModal";
 import ShareEntryModal from "../components/ShareEntryModal";
 import BlindShareModal from "../components/BlindShareModal";
-import BugReportModal from "../components/BugReportModal";
 import { reseedEntryShares } from "../lib/entrySharing";
 import { recordEntryUse } from "../lib/vaultUsage";
 import EntryActionsMenu from "../components/EntryActionsMenu";
@@ -55,8 +53,7 @@ function EntryTypeIcon({ entryType }: { entryType: PlainVaultEntry["entryType"] 
 type ModalState = { mode: "add"; prefill?: VaultEntryFormValues } | { mode: "edit"; entry: PlainVaultEntry } | null;
 
 export default function Vault() {
-  const { email, isModerator, logout, authorizedRequest, subscribeToVaultSync } = useAuth();
-  const navigate = useNavigate();
+  const { authorizedRequest, subscribeToVaultSync } = useAuth();
 
   const [entries, setEntries] = useState<PlainVaultEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -83,7 +80,6 @@ export default function Vault() {
   const [showTrash, setShowTrash] = useState(false);
   const [showHealth, setShowHealth] = useState(false);
   const [showShortcutsHelp, setShowShortcutsHelp] = useState(false);
-  const [showBugReport, setShowBugReport] = useState(false);
   const [historyEntry, setHistoryEntry] = useState<PlainVaultEntry | null>(null);
   const [attachmentsEntry, setAttachmentsEntry] = useState<PlainVaultEntry | null>(null);
   const [sharingEntry, setSharingEntry] = useState<PlainVaultEntry | null>(null);
@@ -704,91 +700,31 @@ export default function Vault() {
        * de la largeur d'une tablette portrait (768px) puis paysage/desktop (1024px) — CSS pur, donc
        * un même comportement sur Android tablette et iPad (pas de détection de plateforme). */}
       <div className="mx-auto max-w-2xl md:max-w-3xl lg:max-w-4xl">
-        <header className="mb-6 flex flex-col gap-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Coffre</h1>
-              <p className="truncate text-sm text-neutral-500">{email}</p>
-            </div>
-            {/* Menu ⋮ — MOBILE UNIQUEMENT (`sm:hidden`), voir sa déclaration plus haut. Regroupe la
-             * navigation ci-dessous + les actions accessoires de la rangée d'outils (voir plus bas
-             * dans ce fichier) qui, sinon, s'empilaient en une quinzaine de boutons individuels sur
-             * un écran étroit. */}
-            <div className="shrink-0 sm:hidden">
-              <EntryActionsMenu
-                isOpen={showMobileMenu}
-                onToggle={() => setShowMobileMenu((v) => !v)}
-                onClose={() => setShowMobileMenu(false)}
-                items={[
-                  ...(isModerator ? [{ label: "Administration", onClick: () => navigate("/admin") }] : []),
-                  { label: "Partagé avec moi", onClick: () => navigate("/shared-with-me") },
-                  { label: "Coffres partagés", onClick: () => navigate("/shared-vaults") },
-                  { label: "Réglages", onClick: () => navigate("/settings") },
-                  // Pas d'entrée "Aide raccourcis" ici (contrairement à la barre desktop plus bas) :
-                  // demande explicite de l'utilisateur — les raccourcis clavier sont, par nature,
-                  // inutilisables sur téléphone/tablette (pas de clavier physique), inutile d'en
-                  // afficher l'aide sur ces appareils.
-                  { label: isSelecting ? "Annuler la sélection" : "Sélectionner", onClick: () => (isSelecting ? exitSelection() : setIsSelecting(true)) },
-                  { label: "Corbeille", onClick: () => setShowTrash(true) },
-                  { label: "Santé du coffre", onClick: () => setShowHealth(true) },
-                  { label: "Importer", onClick: () => importExportRef.current?.triggerImport() },
-                  { label: "Exporter", onClick: () => importExportRef.current?.triggerExport() },
-                  { label: "Signaler un bug", onClick: () => setShowBugReport(true) },
-                ]}
-              />
-            </div>
-            <button
-              type="button"
-              onClick={() => void logout()}
-              className="shrink-0 rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
-            >
-              Se déconnecter
-            </button>
+        {/* CORRECTIF (retour utilisateur, 2026-09-02) : la navigation (Administration/Partagé avec
+         * moi/Coffres partagés/Réglages/Signaler un bug/Déconnexion) vit maintenant dans
+         * components/AppShell.tsx, commune à TOUTES les pages authentifiées — cet en-tête ne garde
+         * que le TITRE de CETTE page, plus le menu "⋮" MOBILE UNIQUEMENT pour les actions
+         * spécifiques au Coffre (Sélectionner/Corbeille/Santé du coffre/Importer/Exporter, masquées
+         * sur mobile plus bas dans la rangée d'actions — voir son propre commentaire). Un second
+         * "⋮" distinct de celui d'AppShell (nav de toute l'app) : celui-ci reste à cet endroit,
+         * juste à côté des boutons qu'il remplace sur petit écran, pas dans le bandeau du haut. */}
+        <header className="mb-6 flex items-center justify-between gap-3">
+          <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Coffre</h1>
+          <div className="shrink-0 sm:hidden">
+            <EntryActionsMenu
+              isOpen={showMobileMenu}
+              onToggle={() => setShowMobileMenu((v) => !v)}
+              onClose={() => setShowMobileMenu(false)}
+              items={[
+                { label: isSelecting ? "Annuler la sélection" : "Sélectionner", onClick: () => (isSelecting ? exitSelection() : setIsSelecting(true)) },
+                { label: "Corbeille", onClick: () => setShowTrash(true) },
+                { label: "Santé du coffre", onClick: () => setShowHealth(true) },
+                { label: "Importer", onClick: () => importExportRef.current?.triggerImport() },
+                { label: "Exporter", onClick: () => importExportRef.current?.triggerExport() },
+              ]}
+            />
           </div>
-          {/* Navigation séparée du bandeau titre/déconnexion ci-dessus — sur sa propre ligne,
-           * `flex-wrap` pour se répartir proprement sur plusieurs lignes si la fenêtre est étroite
-           * plutôt que d'écraser tous les boutons ensemble (voir les rangées filtres/actions plus
-           * bas, qui suivent déjà ce même principe). `hidden sm:flex` : sur mobile, ces mêmes liens
-           * sont déjà dans le menu ⋮ ci-dessus (voir son commentaire) — inutile de les répéter deux
-           * fois sur un écran étroit. */}
-          <nav className="hidden flex-wrap gap-2 sm:flex">
-            {isModerator && (
-              <Link
-                to="/admin"
-                className="rounded-lg border border-indigo-300 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-800 dark:text-indigo-300 dark:hover:bg-indigo-950"
-              >
-                Administration
-              </Link>
-            )}
-            <Link
-              to="/shared-with-me"
-              className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
-            >
-              Partagé avec moi
-            </Link>
-            <Link
-              to="/shared-vaults"
-              className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
-            >
-              Coffres partagés
-            </Link>
-            <Link
-              to="/settings"
-              className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
-            >
-              Réglages
-            </Link>
-            <button
-              type="button"
-              onClick={() => setShowBugReport(true)}
-              className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
-            >
-              Signaler un bug
-            </button>
-          </nav>
         </header>
-
-        {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} defaultEmail={email ?? undefined} />}
 
         {/* Trois rangées INDÉPENDANTES (pas une seule rangée flex-wrap partagée) plutôt qu'une
          * seule rangée de 10 éléments indifférenciés : 1) recherche + tri/dossier, 2) filtres

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import { openEmergencyVault, closeEmergencyVault } from "../lib/emergencyAccess";
 import { openEntryUrl } from "../lib/openExternalUrl";
@@ -67,17 +67,12 @@ export default function EmergencyVaultPage() {
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
       {/* Largeur progressive tablette/desktop — voir le commentaire équivalent dans Vault.tsx. */}
       <div className="mx-auto max-w-2xl md:max-w-3xl lg:max-w-4xl">
-        <header className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Coffre d'urgence (lecture seule)</h1>
-            <p className="text-sm text-neutral-500">Consultation via l'accès d'urgence — aucune modification possible.</p>
-          </div>
-          <Link
-            to="/settings"
-            className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
-          >
-            ← Retour
-          </Link>
+        {/* Plus de lien "← Retour" ici (retour utilisateur, 2026-09-02) : redondant maintenant
+         * que la navigation vit dans components/AppShell.tsx ("Réglages" y est toujours
+         * accessible d'un clic). */}
+        <header className="mb-6">
+          <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Coffre d'urgence (lecture seule)</h1>
+          <p className="text-sm text-neutral-500">Consultation via l'accès d'urgence — aucune modification possible.</p>
         </header>
 
         {isLoading ? (

@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAuth } from "../state/AuthContext";
 import ChangeEmailForm from "../components/ChangeEmailForm";
@@ -12,6 +11,8 @@ import SecurityHistorySettings from "../components/SecurityHistorySettings";
 import AppUpdateSettings from "../components/AppUpdateSettings";
 import ServerUrlForm from "../components/ServerUrlForm";
 import ThemeSettings from "../components/ThemeSettings";
+import MenuLayoutSettings from "../components/MenuLayoutSettings";
+import { isMobilePlatform } from "../lib/platform";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -32,11 +33,11 @@ export default function Settings() {
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
       {/* Largeur progressive tablette/desktop — voir le commentaire équivalent dans Vault.tsx. */}
       <div className="mx-auto flex max-w-2xl flex-col gap-4 md:max-w-3xl lg:max-w-4xl">
-        <header className="mb-2 flex items-center justify-between">
+        {/* Plus de lien "← Retour au coffre" ici (retour utilisateur, 2026-09-02) : redondant
+         * maintenant que la navigation vit dans components/AppShell.tsx, commune à toutes les
+         * pages authentifiées — "Coffre" y est toujours accessible d'un clic. */}
+        <header className="mb-2">
           <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Réglages</h1>
-          <Link to="/vault" className="text-sm text-indigo-600 hover:underline dark:text-indigo-400">
-            ← Retour au coffre
-          </Link>
         </header>
 
         <Section title="Compte">
@@ -69,7 +70,13 @@ export default function Settings() {
         </Section>
 
         <Section title="Apparence">
-          <ThemeSettings />
+          <div className="flex flex-col gap-4">
+            <ThemeSettings />
+            {/* Disposition du menu : DESKTOP uniquement (voir lib/platform.ts::isMobilePlatform) —
+             * une barre latérale/compacte pensée pour un grand écran avec souris n'a pas vraiment
+             * de sens sur téléphone/tablette, voir son propre commentaire pour le détail. */}
+            {!isMobilePlatform() && <MenuLayoutSettings />}
+          </div>
         </Section>
 
         <Section title="Sécurité">

@@ -4,6 +4,7 @@ import { useAuth } from "./state/AuthContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import AdminRoute from "./components/AdminRoute";
 import ServerSettingsRoute from "./components/ServerSettingsRoute";
+import AppShell from "./components/AppShell";
 import MobileUpdateBanner from "./components/MobileUpdateBanner";
 import DesktopAutoUpdater from "./components/DesktopAutoUpdater";
 import "./App.css";
@@ -62,70 +63,78 @@ function App() {
           </ServerSettingsRoute>
         }
       />
-      <Route
-        path="/vault"
-        element={
-          <ProtectedRoute>
-            <Vault />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/settings"
-        element={
-          <ProtectedRoute>
-            <Settings />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/emergency/:id"
-        element={
-          <ProtectedRoute>
-            <EmergencyVaultPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/shared/:id"
-        element={
-          <ProtectedRoute>
-            <SharedEntryPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/shared-with-me"
-        element={
-          <ProtectedRoute>
-            <SharedReceivedPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/shared-vaults"
-        element={
-          <ProtectedRoute>
-            <SharedVaultsPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/shared-vaults/:id"
-        element={
-          <ProtectedRoute>
-            <SharedVaultDetailPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/admin"
-        element={
-          <AdminRoute>
-            <Admin />
-          </AdminRoute>
-        }
-      />
+      {/* Route de mise en page (voir components/AppShell.tsx) : englobe TOUTES les pages
+       * authentifiées ci-dessous d'une navigation commune (Coffre, Réglages, Administration...) au
+       * lieu de chaque page ayant son propre en-tête dupliqué. Chaque route enfant garde SA PROPRE
+       * garde (ProtectedRoute/AdminRoute) — AppShell lui-même n'en impose aucune, il se contente
+       * d'afficher la nav ; c'est bien la garde de la route enfant qui redirige vers /login si
+       * besoin, exactement comme avant. */}
+      <Route element={<AppShell />}>
+        <Route
+          path="/vault"
+          element={
+            <ProtectedRoute>
+              <Vault />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <ProtectedRoute>
+              <Settings />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/emergency/:id"
+          element={
+            <ProtectedRoute>
+              <EmergencyVaultPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/shared/:id"
+          element={
+            <ProtectedRoute>
+              <SharedEntryPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/shared-with-me"
+          element={
+            <ProtectedRoute>
+              <SharedReceivedPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/shared-vaults"
+          element={
+            <ProtectedRoute>
+              <SharedVaultsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/shared-vaults/:id"
+          element={
+            <ProtectedRoute>
+              <SharedVaultDetailPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin"
+          element={
+            <AdminRoute>
+              <Admin />
+            </AdminRoute>
+          }
+        />
+      </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       </Suspense>

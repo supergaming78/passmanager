@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import * as sharedVault from "../lib/sharedVault";
 import type { UnlockedSharedVault, PlainSharedVaultEntry } from "../lib/sharedVault";
@@ -186,28 +186,23 @@ export default function SharedVaultDetailPage() {
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
       {/* Largeur progressive tablette/desktop — voir le commentaire équivalent dans Vault.tsx. */}
       <div className="mx-auto max-w-2xl md:max-w-3xl lg:max-w-4xl">
+        {/* Plus de lien "← Retour" ici (retour utilisateur, 2026-09-02) : redondant maintenant
+         * que la navigation vit dans components/AppShell.tsx ("Coffres partagés" y est toujours
+         * accessible d'un clic) — "Supprimer le coffre" reste, action propre à CETTE page. */}
         <header className="mb-6 flex items-center justify-between">
           <div className="min-w-0">
             <h1 className="truncate text-xl font-semibold text-neutral-900 dark:text-neutral-100">{vault?.name ?? "Coffre partagé"}</h1>
             <p className="text-sm text-neutral-500">{vault?.isOwner ? "Tu es propriétaire de ce coffre" : `Créé par ${vault?.createdBy ?? "?"}`}</p>
           </div>
-          <div className="flex shrink-0 gap-2">
-            {vault?.isOwner && (
-              <button
-                type="button"
-                onClick={() => void handleDeleteVault()}
-                className="rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-              >
-                Supprimer le coffre
-              </button>
-            )}
-            <Link
-              to="/shared-vaults"
-              className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
+          {vault?.isOwner && (
+            <button
+              type="button"
+              onClick={() => void handleDeleteVault()}
+              className="shrink-0 rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
             >
-              ← Retour
-            </Link>
-          </div>
+              Supprimer le coffre
+            </button>
+          )}
         </header>
 
         {error && <p className="mb-4 text-sm text-red-600 dark:text-red-400">{error}</p>}

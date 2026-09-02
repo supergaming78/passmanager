@@ -1,5 +1,4 @@
 import { useEffect, useState, useCallback } from "react";
-import { Link } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
@@ -527,11 +526,10 @@ export default function Admin() {
        * Déjà max-w-3xl en base (le tableau des comptes a besoin de plus de place qu'un formulaire
        * simple) — même logique, juste décalée d'un cran. */}
       <div className="mx-auto flex max-w-3xl flex-col gap-4 lg:max-w-5xl">
-        <header className="mb-2 flex items-center justify-between">
+        {/* Plus de lien "← Retour au coffre" ici (retour utilisateur, 2026-09-02) : redondant
+         * maintenant que la navigation vit dans components/AppShell.tsx. */}
+        <header className="mb-2">
           <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Administration</h1>
-          <Link to="/vault" className="text-sm text-indigo-600 hover:underline dark:text-indigo-400">
-            ← Retour au coffre
-          </Link>
         </header>
 
         <Section title="Comptes utilisateurs">

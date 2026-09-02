@@ -8,6 +8,22 @@ export function isAndroid(): boolean {
   return /Android/i.test(navigator.userAgent);
 }
 
+/** Même principe que isAndroid() ci-dessus — l'UA de la webview iOS de Tauri (WKWebView) expose
+ * "iPhone"/"iPad" comme n'importe quel Safari iOS standard. */
+export function isIOS(): boolean {
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+/** Vrai sur téléphone/tablette (Android ou iOS), faux sur PC (Windows/macOS/Linux) — retour
+ * utilisateur (2026-09-02) : sert à réserver le choix de disposition du menu principal (voir
+ * lib/menuLayout.ts) au desktop uniquement. Une disposition "barre latérale"/"compacte" pensée
+ * pour un grand écran avec souris n'a pas vraiment de sens sur un écran tactile étroit — pas
+ * interdit techniquement, juste jamais proposé côté mobile pour éviter une option qui ne rendrait
+ * pas bien. */
+export function isMobilePlatform(): boolean {
+  return isAndroid() || isIOS();
+}
+
 /** Étiquette de plateforme lisible, pour le signalement de bug (voir components/BugReportModal.tsx)
  * — un diagnostic grossier suffit (utile pour trier "problème Windows only" vs "problème partout"),
  * pas besoin d'une détection précise ni d'un nouveau plugin natif pour ça (même raisonnement que

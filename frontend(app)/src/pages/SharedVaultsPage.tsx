@@ -60,20 +60,14 @@ export default function SharedVaultsPage() {
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
       {/* Largeur progressive tablette/desktop — voir le commentaire équivalent dans Vault.tsx. */}
       <div className="mx-auto max-w-2xl md:max-w-3xl lg:max-w-4xl">
-        <header className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Coffres partagés</h1>
-            <p className="text-sm text-neutral-500">
-              Un ensemble d'identifiants partagé avec plusieurs personnes, mis à jour en direct pour
-              tout le monde — différent du partage d'une entrée isolée (voir "Partager" dans le coffre).
-            </p>
-          </div>
-          <Link
-            to="/vault"
-            className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-900"
-          >
-            ← Retour au coffre
-          </Link>
+        {/* Plus de lien "← Retour au coffre" ici (retour utilisateur, 2026-09-02) : redondant
+         * maintenant que la navigation vit dans components/AppShell.tsx. */}
+        <header className="mb-6">
+          <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-100">Coffres partagés</h1>
+          <p className="text-sm text-neutral-500">
+            Un ensemble d'identifiants partagé avec plusieurs personnes, mis à jour en direct pour
+            tout le monde — différent du partage d'une entrée isolée (voir "Partager" dans le coffre).
+          </p>
         </header>
 
         {error && <p className="mb-4 text-sm text-red-600 dark:text-red-400">{error}</p>}
