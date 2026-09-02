@@ -39,6 +39,10 @@ C'est signé par Mozilla (comme n'importe quelle extension du store, juste non r
 publiquement) : **installation permanente**, pas besoin de refaire quoi que ce soit au prochain
 démarrage de Firefox.
 
+**Mise à jour automatique** : contrairement à Chrome/Edge, Firefox vérifie tout seul (environ une
+fois par jour) si une nouvelle version est disponible et l'installe automatiquement, sans rien à
+faire de ton côté — comme n'importe quelle extension du store.
+
 ## Firefox pour Android
 
 Chrome pour Android ne supporte aucune extension (restriction Google) — seul Firefox le permet.

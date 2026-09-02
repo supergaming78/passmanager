@@ -151,3 +151,44 @@ jobs:
           # draft: relecture manuelle avant publication effective — même choix de prudence que
           # release-app.yml (voir son commentaire équivalent).
           draft: true
+
+      # CORRECTIF (retour utilisateur, 2026-09-02) : Firefox vérifie périodiquement
+      # browser_specific_settings.gecko.update_url (voir manifest.json) — un fichier JSON qu'on
+      # tient nous-mêmes à jour ici, committé directement dans le dépôt (accessible anonymement via
+      # raw.githubusercontent.com maintenant que le dépôt est PUBLIC) plutôt que de dépendre de
+      # "releases/latest", ambigu sur ce dépôt qui mélange plusieurs types de tags (app-v*/ext-v*) —
+      # "latest" pourrait pointer vers une release app-v* sans rapport. update_link vise l'asset de
+      # CE tag précisément (jamais "latest"), donc jamais cette ambiguïté. update_hash (sha256)
+      # permet à Firefox de vérifier l'intégrité du téléchargement avant installation.
+      #
+      # ATTENTION (limite acceptée) : la release reste en BROUILLON tant que l'utilisateur ne l'a
+      # pas publiée à la main (voir draft: true ci-dessus) — ses assets ne sont PAS accessibles
+      # publiquement avant ça, même une fois ce commit poussé. Il existe donc une fenêtre où
+      # updates.json annonce une version dont le lien de téléchargement 404 encore. Accepté :
+      # Firefox ne vérifie que toutes les 24h par défaut et réessaiera automatiquement plus tard —
+      # publier la release rapidement après ce run reste la bonne pratique.
+      - name: Mettre à jour extension/updates.json (auto-update Firefox)
+        if: steps.check-amo.outputs.configured == 'true'
+        run: |
+          set -e
+          version=$(node -p "require('./extension/manifest.json').version")
+          gecko_id=$(node -p "require('./extension/manifest.json').browser_specific_settings.gecko.id")
+          xpi_filename=$(basename "$XPI_PATH")
+          update_link="https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$xpi_filename"
+          hash="sha256:$(sha256sum "$XPI_PATH" | cut -d' ' -f1)"
+          node -e "
+            const fs = require('fs');
+            const path = 'extension/updates.json';
+            let data = { addons: {} };
+            try { data = JSON.parse(fs.readFileSync(path, 'utf8')); } catch {}
+            if (!data.addons['$gecko_id']) data.addons['$gecko_id'] = { updates: [] };
+            const updates = data.addons['$gecko_id'].updates.filter((u) => u.version !== '$version');
+            updates.push({ version: '$version', update_link: '$update_link', update_hash: '$hash' });
+            data.addons['$gecko_id'].updates = updates;
+            fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
+          "
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add extension/updates.json
+          git commit -m "chore(extension): mise à jour updates.json pour la version $version [skip ci]" || echo "Rien à committer (updates.json déjà à jour)"
+          git push origin HEAD:main
