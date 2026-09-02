@@ -729,15 +729,26 @@ export default function Vault() {
   }
 
   /** Disposition "Compacte" — retour utilisateur (2026-09-02) : une seule ligne dense par entrée,
-   * plus d'entrées visibles à l'écran sans défiler. Mêmes actions que renderEntryRow, juste
-   * réorganisées (voir secondaryActionItems ci-dessus) : Copier/Modifier restent des icônes
-   * visibles, tout le reste passe dans "⋯". */
+   * plus d'entrées visibles à l'écran sans défiler. Mêmes actions que renderEntryRow.
+   * ÉLARGI (retour utilisateur, suite — "essaie d'ajouter les boutons aussi aux colonnes des deux
+   * autres modes") : "Ouvrir le site"/"Voir le mot de passe" rejoignent Copier/Modifier comme
+   * boutons visibles, comme déjà fait pour "cards". Compromis assumé : sur une ligne UNIQUE (pas
+   * les 2 lignes d'une carte), 4 boutons au lieu de 2 poussent le texte tronqué (nom du site,
+   * identifiant) à se réduire davantage — le `min-w-0 flex-1 truncate` déjà en place l'absorbe
+   * sans jamais casser la mise en page (juste "…" plus tôt dans le texte), mais c'est le vrai
+   * compromis "compact" : plus d'actions à portée de clic, un peu moins de texte visible par
+   * ligne. À garder si ça reste lisible en usage réel, sinon facile à revenir en arrière (juste
+   * enlever `false` de secondaryActionItems ci-dessous et les deux boutons ajoutés). */
   function renderEntryCompact(entry: PlainVaultEntry) {
     return (
       <li
         key={entry.id}
         onClick={() => isSelecting && toggleSelected(entry.id)}
-        className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 transition ${isSelecting ? "cursor-pointer" : ""} ${
+        // flex-wrap : sans effet en usage normal (rien ne dépasse d'une seule ligne), mais laisse
+        // le mot de passe révélé (voir tout en bas) retomber sur sa PROPRE ligne plutôt que de se
+        // faire comprimer dans la même ligne que le reste — nécessaire depuis que "Voir" est
+        // devenu un bouton visible ici (voir le commentaire de la fonction).
+        className={`flex flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 transition ${isSelecting ? "cursor-pointer" : ""} ${
           isSelecting && selectedIds.has(entry.id)
             ? "border-indigo-300 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950"
             : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
@@ -769,6 +780,26 @@ export default function Vault() {
         )}
         {!isSelecting && (
           <div className="flex shrink-0 items-center gap-1">
+            {entry.url && (
+              <button
+                type="button"
+                onClick={() => void openEntryUrl(entry.url)}
+                title="Ouvrir le site"
+                className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                Ouvrir
+              </button>
+            )}
+            {entry.entryType !== "note" && (
+              <button
+                type="button"
+                onClick={() => setRevealedId((current) => (current === entry.id ? null : entry.id))}
+                title={revealedId === entry.id ? "Cacher le mot de passe" : "Voir le mot de passe"}
+                className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                {revealedId === entry.id ? "Cacher" : "Voir"}
+              </button>
+            )}
             {entry.entryType !== "note" && (
               <button
                 type="button"
@@ -791,9 +822,12 @@ export default function Vault() {
               isOpen={openMenuId === entry.id}
               onToggle={() => setOpenMenuId((current) => (current === entry.id ? null : entry.id))}
               onClose={() => setOpenMenuId((current) => (current === entry.id ? null : current))}
-              items={secondaryActionItems(entry)}
+              items={secondaryActionItems(entry, false)}
             />
           </div>
+        )}
+        {revealedId === entry.id && entry.entryType !== "note" && (
+          <p className="w-full select-all break-all font-mono text-xs text-neutral-700 dark:text-neutral-300">{entry.password}</p>
         )}
       </li>
     );
