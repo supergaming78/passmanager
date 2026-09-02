@@ -151,6 +151,13 @@ jobs:
           # draft: relecture manuelle avant publication effective — même choix de prudence que
           # release-app.yml (voir son commentaire équivalent).
           draft: true
+          # CORRECTIF (retour utilisateur, 2026-09-02) : le vrai auto-updater de l'app desktop
+          # (tauri.conf.json::plugins.updater.endpoints) dépend de "releases/latest/download/..." —
+          # sans ce réglage, publier une release d'EXTENSION après une release d'APP volait le badge
+          # "Latest" du dépôt à cette dernière, cassant la vérification de mise à jour du desktop
+          # jusqu'à correction manuelle. "Latest" reste réservé aux releases app-v* (release-app.yml,
+          # jamais touché ici) — celle-ci n'est jamais candidate, quelle que soit sa date.
+          make_latest: "false"
 
       # CORRECTIF (retour utilisateur, 2026-09-02) : Firefox vérifie périodiquement
       # browser_specific_settings.gecko.update_url (voir manifest.json) — un fichier JSON qu'on
