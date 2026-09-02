@@ -114,27 +114,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // qui compte sur la propagation automatique vers `vault`/`refresh_tokens`/etc.), donc ce
         // n'est pas le genre de comportement qu'on veut laisser reposer sur un défaut implicite
         // d'une lib tierce qui pourrait changer un jour.
-        .foreign_keys(true)
-        // CORRECTIF PERF — CACHE (retour utilisateur, 2026-09-02) : agrandit le cache de pages
-        // SQLite en mémoire, PAR CONNEXION (défaut SQLite : ~2 Mo). Une fois une page lue une
-        // première fois, les lectures suivantes de la même donnée viennent directement de la RAM
-        // plutôt que de retaper le disque à chaque requête — sensible pour les tables consultées à
-        // chaque appel authentifié (`users`, `devices`) ou à chaque affichage du coffre (`vault`).
-        // 8 Mo/connexion, plafond réel (SQLite n'alloue que ce qu'il utilise, jamais préalloué) —
-        // avec 10 connexions au pool, un plafond total de 80 Mo dans le pire cas, très raisonnable
-        // pour une base qui, à l'usage visé (un foyer, quelques comptes), tient de toute façon très
-        // probablement déjà en entier dans ce budget. Valeur négative = kilooctets (convention
-        // SQLite), voir https://sqlite.org/pragma.html#pragma_cache_size.
-        .pragma("cache_size", "-8000")
-        // Complète cache_size ci-dessus avec le cache de pages MAPPÉ EN MÉMOIRE (`mmap_size`) —
-        // PARTAGÉ par le SYSTÈME D'EXPLOITATION entre TOUTES les connexions du pool (contrairement
-        // à cache_size, qui duplique par connexion), donc pas de coût RAM multiplié par 10 ici :
-        // juste un espace d'adressage virtuel réservé, rempli à la demande par l'OS. Lectures plus
-        // rapides (accès mémoire direct, sans passer par l'appel système read()), sans rien changer
-        // au contenu ni au format du fichier. AUCUN IMPACT SÉCURITÉ : le fichier SQLite ne contient
-        // de toute façon que du texte déjà chiffré côté client (architecture "zero-knowledge", voir
-        // crypto.rs) — pas de secret en clair à protéger différemment selon la méthode de lecture.
-        .pragma("mmap_size", "268435456"); // 256 Mo
+        .foreign_keys(true);
+        // NOTE (retour utilisateur, 2026-09-02) : un agrandissement du cache de pages SQLite
+        // (cache_size/mmap_size) a été essayé ici puis RETIRÉ après discussion. Raison : SQLite met
+        // en cache des PAGES DISQUE, pas des tables — impossible de mettre en cache les données du
+        // coffre (déjà chiffrées, sans risque) sans mettre AUSSI en cache les métadonnées en clair
+        // qui partagent le même fichier (emails, IP d'appareils, journal d'audit...), ce qui aurait
+        // élargi (marginalement, mais réellement) la fenêtre de données lisibles en cas de
+        // compromission mémoire/disque de la machine. Séparer physiquement le fichier en deux
+        // (ATTACH DATABASE) pour cibler le cache uniquement sur `vault` casserait les `ON
+        // UPDATE/DELETE CASCADE` entre `users` et `vault` (non appliqués par SQLite entre deux
+        // fichiers différents) — disproportionné pour un gain de cache marginal sur une base de
+        // cette taille. Cache par défaut de SQLite (~2 Mo) conservé.
 
     // Initialisation du Pool de connexions. Le nombre de connexions n'aide QUE la contention en
     // LECTURE (le mode WAL les gère bien) : SQLite reste de toute façon à un seul écrivain à la
