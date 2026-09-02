@@ -57,7 +57,7 @@ pub async fn export_vault(
         .bind(&user.email)
         .fetch_one(&state.db)
         .await?;
-    if !crypto::verify_password(&payload.master_password_hash, &current_user.password_hash, &state.config.password_pepper) {
+    if !crypto::verify_password(&payload.master_password_hash, &current_user.password_hash, &state.config.password_pepper).await {
         return Err(AppError::InvalidCredentials);
     }
 
@@ -89,7 +89,7 @@ pub async fn export_vault_history(
         .bind(&user.email)
         .fetch_one(&state.db)
         .await?;
-    if !crypto::verify_password(&payload.master_password_hash, &current_user.password_hash, &state.config.password_pepper) {
+    if !crypto::verify_password(&payload.master_password_hash, &current_user.password_hash, &state.config.password_pepper).await {
         return Err(AppError::InvalidCredentials);
     }
 
@@ -523,7 +523,7 @@ mod tests {
     /// Variante avec un VRAI hash Argon2, nécessaire pour tester export_vault() qui vérifie
     /// réellement le mot de passe fourni (contrairement à register_test_user() ci-dessus).
     async fn register_user_with_real_password(state: &Arc<AppState>, email: &str, password: &str) {
-        let hash = crate::crypto::hash_password(password, &state.config.password_pepper).unwrap();
+        let hash = crate::crypto::hash_password(password, &state.config.password_pepper).await.unwrap();
         sqlx::query("INSERT INTO users (email, password_hash) VALUES (?, ?)")
             .bind(email)
             .bind(hash)

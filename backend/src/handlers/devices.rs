@@ -95,7 +95,7 @@ pub async fn update_device_limit(
         .bind(&user.email)
         .fetch_one(&state.db)
         .await?;
-    if !crypto::verify_password(&payload.master_password_hash, &current_user.password_hash, &state.config.password_pepper) {
+    if !crypto::verify_password(&payload.master_password_hash, &current_user.password_hash, &state.config.password_pepper).await {
         return Err(AppError::InvalidCredentials);
     }
 
@@ -356,7 +356,7 @@ mod tests {
     /// register_test_user() ci-dessus), nécessaire pour tester update_device_limit() qui
     /// vérifie réellement le mot de passe fourni.
     async fn register_user_with_real_password(state: &Arc<AppState>, email: &str, password: &str) {
-        let hash = crate::crypto::hash_password(password, &state.config.password_pepper).unwrap();
+        let hash = crate::crypto::hash_password(password, &state.config.password_pepper).await.unwrap();
         sqlx::query("INSERT INTO users (email, password_hash) VALUES (?, ?)")
             .bind(email)
             .bind(hash)

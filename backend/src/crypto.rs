@@ -40,7 +40,31 @@ pub struct Claims {
 /// hash d'authentification distinct de la clé qui chiffre le coffre. Cette fonction rehache
 /// simplement CE hash côté serveur, pour se protéger contre une fuite de la BDD (le serveur
 /// n'a jamais connaissance du mot de passe maître original).
-pub fn hash_password(password: &str, pepper: &str) -> Result<String, argon2::password_hash::Error> {
+///
+/// CORRECTIF PERF/CRITIQUE (retour utilisateur, 2026-09-02 : connexion parfois jusqu'à 10
+/// secondes) : cette fonction (et verify_password() ci-dessous) était SYNCHRONE, appelée
+/// DIRECTEMENT depuis du code async (les handlers Axum) sans `spawn_blocking` — le calcul Argon2id
+/// (46 Mo de mémoire, volontairement coûteux, voir plus bas) bloquait donc entièrement le thread
+/// du runtime Tokio pendant toute sa durée. Sur une machine à peu de cœurs CPU partagés entre
+/// plusieurs services (voir la conversation du 2026-09-02), Tokio n'a qu'un petit nombre de
+/// threads async — un seul calcul Argon2 en cours suffisait à mettre TOUTES les autres requêtes
+/// en attente derrière lui (y compris d'autres logins, la synchro WebSocket, etc.), la latence
+/// s'accumulant si plusieurs requêtes coûteuses arrivaient en même temps. `tokio::task::
+/// spawn_blocking` déplace le calcul sur le pool de threads DÉDIÉ de Tokio (séparé des threads
+/// async, dimensionné bien plus largement) — le runtime async reste entièrement disponible
+/// pendant le calcul, quelle que soit sa durée.
+pub async fn hash_password(password: &str, pepper: &str) -> Result<String, argon2::password_hash::Error> {
+    let password = password.to_string();
+    let pepper = pepper.to_string();
+    tokio::task::spawn_blocking(move || hash_password_blocking(&password, &pepper))
+        .await
+        .expect("le calcul Argon2 (hash_password) ne devrait jamais paniquer")
+}
+
+/// Calcul RÉEL, synchrone — jamais appelé directement en dehors de hash_password() ci-dessus
+/// (qui le déplace sur le pool bloquant de Tokio) et des tests unitaires plus bas (exécutés hors
+/// runtime async, aucun risque d'y bloquer quoi que ce soit).
+fn hash_password_blocking(password: &str, pepper: &str) -> Result<String, argon2::password_hash::Error> {
     // Paramètres Argon2id explicites (au lieu de Params::default() = m=19456,t=2,p=1).
     // Note : le défaut du crate était déjà l'une des options recommandées par l'OWASP,
     // donc ce n'était pas un problème de sécurité en soi. On prend ici l'option la PLUS
@@ -66,7 +90,26 @@ pub fn hash_password(password: &str, pepper: &str) -> Result<String, argon2::pas
 /// Vérifie si le hash d'authentification soumis par le client correspond au hash stocké en BDD.
 /// Même remarque que hash_password() : `password` est le hash d'authentification dérivé côté
 /// client, jamais le mot de passe maître lui-même.
-pub fn verify_password(password: &str, hash: &str, pepper: &str) -> bool {
+///
+/// CORRECTIF PERF/CRITIQUE : voir le commentaire de hash_password() ci-dessus — même correctif
+/// (spawn_blocking), pour la même raison (appelée à CHAQUE login, en plus des changements de mot
+/// de passe/email, donc la fonction la plus fréquemment invoquée des deux).
+pub async fn verify_password(password: &str, hash: &str, pepper: &str) -> bool {
+    let password = password.to_string();
+    let hash = hash.to_string();
+    let pepper = pepper.to_string();
+    // `.unwrap_or(false)` plutôt que `.expect(...)` comme hash_password() ci-dessus : en cas de
+    // panique improbable dans le calcul (thread bloquant tué/JoinError), on préfère un échec de
+    // vérification "propre" (mot de passe refusé) à un crash de toute la requête — cette
+    // fonction-ci est sur le chemin critique de l'authentification, une dégradation silencieuse
+    // vers "refusé" reste le comportement le plus sûr par défaut.
+    tokio::task::spawn_blocking(move || verify_password_blocking(&password, &hash, &pepper))
+        .await
+        .unwrap_or(false)
+}
+
+/// Calcul RÉEL, synchrone — même principe que hash_password_blocking() ci-dessus.
+fn verify_password_blocking(password: &str, hash: &str, pepper: &str) -> bool {
     // Faux hash valide utilisé pour simuler un calcul si l'utilisateur n'existe pas en BDD.
     // ATTENTION : ce hash doit être syntaxiquement valide (parsable par Argon2), sinon
     // PasswordHash::new() échoue immédiatement plus bas et la protection anti-timing-attack
@@ -173,19 +216,23 @@ mod tests {
     use super::*;
 
     /// Test unitaire vérifiant la validité du hachage et de la vérification des mots de passe.
+    /// Appelle les variantes _blocking directement (logique pure, testée hors runtime async) —
+    /// hash_password()/verify_password() elles-mêmes ne sont que le déplacement sur
+    /// spawn_blocking, voir leur commentaire, pas testable depuis un #[test] synchrone sans
+    /// runtime Tokio actif.
     #[test]
     fn test_password_hashing() {
         let password = "mon_super_password_123";
         let pepper = "test_pepper_secret"; // Simule la variable d'environnement secrète du serveur
 
         // Test de la génération du hash
-        let hash = hash_password(password, pepper).expect("Le hachage a échoué");
+        let hash = hash_password_blocking(password, pepper).expect("Le hachage a échoué");
 
         // Vérifie qu'un bon mot de passe avec le bon pepper renvoie bien true
-        assert!(verify_password(password, &hash, pepper));
+        assert!(verify_password_blocking(password, &hash, pepper));
 
         // Vérifie qu'un mauvais mot de passe renvoie bien false
-        assert!(!verify_password("mauvais_password", &hash, pepper));
+        assert!(!verify_password_blocking("mauvais_password", &hash, pepper));
     }
 
     /// RÉGRESSION CRITIQUE (migration argon2 0.5.x -> 0.6.0, voir Cargo.toml) : un hash produit
@@ -203,11 +250,11 @@ mod tests {
         let pepper = "peppertest1234567890123456789012";
 
         assert!(
-            verify_password(password, legacy_hash, pepper),
+            verify_password_blocking(password, legacy_hash, pepper),
             "un hash produit avant la migration argon2 0.6.0 doit rester vérifiable après coup"
         );
         assert!(
-            !verify_password("mauvais_password", legacy_hash, pepper),
+            !verify_password_blocking("mauvais_password", legacy_hash, pepper),
             "un mauvais mot de passe contre un hash pré-migration doit toujours être rejeté"
         );
     }
@@ -264,7 +311,7 @@ mod tests {
     /// (protection anti-timing-attack).
     #[test]
     fn test_verify_password_with_empty_hash_uses_dummy_and_returns_false() {
-        let result = verify_password("peu_importe_le_mot_de_passe", "", "un_pepper_quelconque");
+        let result = verify_password_blocking("peu_importe_le_mot_de_passe", "", "un_pepper_quelconque");
         assert!(!result, "un hash vide (utilisateur inconnu) ne doit jamais valider un mot de passe");
     }
 

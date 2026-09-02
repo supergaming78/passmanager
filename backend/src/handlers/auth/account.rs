@@ -59,7 +59,7 @@ pub async fn update_password(
         .await?;
 
     // 2. Vérification que l'ANCIEN hash d'authentification fourni correspond bien au hash stocké
-    if !crypto::verify_password(&payload.old_master_password_hash, &current_user.password_hash, &state.config.password_pepper) {
+    if !crypto::verify_password(&payload.old_master_password_hash, &current_user.password_hash, &state.config.password_pepper).await {
         return Err(AppError::InvalidCredentials);
     }
 
@@ -90,7 +90,7 @@ pub async fn update_password(
     }
 
     // 4. Calcul du hachage du NOUVEAU hash d'authentification (double hachage, comme au login)
-    let new_password_hash = crypto::hash_password(&payload.new_master_password_hash, &state.config.password_pepper)?;
+    let new_password_hash = crypto::hash_password(&payload.new_master_password_hash, &state.config.password_pepper).await?;
 
     // 5. TRANSACTION ATOMIQUE : mot de passe + TOUTES les entrées re-chiffrées + TOUT l'historique
     // re-chiffré + invalidation des sessions. Si UNE SEULE ligne échoue à se mettre à jour (ex: id
@@ -168,7 +168,7 @@ pub async fn update_email(
         .fetch_one(&state.db)
         .await?;
 
-    if !crypto::verify_password(&payload.master_password_hash, &current_user.password_hash, &state.config.password_pepper) {
+    if !crypto::verify_password(&payload.master_password_hash, &current_user.password_hash, &state.config.password_pepper).await {
         return Err(AppError::InvalidCredentials);
     }
 
@@ -365,6 +365,7 @@ pub async fn confirm_password_reset(
 
     // 2. Calcul du hash du nouveau mot de passe maître
     let new_hash = crypto::hash_password(&payload.new_master_password_hash, &state.config.password_pepper)
+        .await
         .map_err(|_| AppError::HashError)?;
 
     // 3. TRANSACTION CRITIQUE MULTI-CIBLES
@@ -688,7 +689,7 @@ mod tests {
         let current_user: User = sqlx::query_as("SELECT * FROM users WHERE email = ?")
             .bind(email).fetch_one(&state.db).await.unwrap();
         assert!(
-            crypto::verify_password("mot_de_passe_actuel_123", &current_user.password_hash, &state.config.password_pepper),
+            crypto::verify_password("mot_de_passe_actuel_123", &current_user.password_hash, &state.config.password_pepper).await,
             "l'ancien mot de passe doit rester valide, rien ne doit avoir changé"
         );
     }
@@ -798,7 +799,7 @@ mod tests {
         let current_user: User = sqlx::query_as("SELECT * FROM users WHERE email = ?")
             .bind(email).fetch_one(&state.db).await.unwrap();
         assert!(
-            crypto::verify_password("ancien_mot_de_passe_123", &current_user.password_hash, &state.config.password_pepper),
+            crypto::verify_password("ancien_mot_de_passe_123", &current_user.password_hash, &state.config.password_pepper).await,
             "l'ancien mot de passe doit rester valide, rien ne doit avoir changé"
         );
     }
@@ -991,7 +992,7 @@ mod tests {
         let current_user: User = sqlx::query_as("SELECT * FROM users WHERE email = ?")
             .bind(email).fetch_one(&state.db).await.unwrap();
         assert!(
-            crypto::verify_password("mot_de_passe_actuel_123", &current_user.password_hash, &state.config.password_pepper),
+            crypto::verify_password("mot_de_passe_actuel_123", &current_user.password_hash, &state.config.password_pepper).await,
             "l'ancien mot de passe doit rester valide, rien ne doit avoir changé"
         );
     }

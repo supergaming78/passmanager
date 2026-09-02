@@ -147,7 +147,7 @@ pub async fn login(
     let hash_to_verify = user_opt.as_ref().map(|user| user.password_hash.as_str()).unwrap_or("");
 
     // 3. Vérification du mot de passe (Lourd calcul Argon2 exécuté dans TOUS les cas)
-    let is_password_valid = crypto::verify_password(&payload.master_password_hash, hash_to_verify, &state.config.password_pepper);
+    let is_password_valid = crypto::verify_password(&payload.master_password_hash, hash_to_verify, &state.config.password_pepper).await;
 
     // 4. Validation de la sécurité
     // Si l'utilisateur n'existe pas en BDD OU si son mot de passe est incorrect, on rejette la demande.

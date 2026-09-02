@@ -992,7 +992,7 @@ mod tests {
         // de update_password(), avant Json) laisse passer la requête jusqu'à la lecture du corps —
         // sinon AuthUser court-circuiterait AVANT que quoi que ce soit ne touche au corps, et ce
         // test ne prouverait rien sur la limite de taille elle-même.
-        let hash = crate::crypto::hash_password("mot_de_passe_test_123", &state.config.password_pepper).unwrap();
+        let hash = crate::crypto::hash_password("mot_de_passe_test_123", &state.config.password_pepper).await.unwrap();
         sqlx::query("INSERT INTO users (email, password_hash, email_verified) VALUES (?, ?, 1)")
             .bind(email)
             .bind(hash)

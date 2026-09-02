@@ -37,6 +37,7 @@ pub async fn register(
 
     // 2. Hache le mot de passe maître avec un "pepper" (grain de sel global) pour sécuriser le stockage
     let hash = crypto::hash_password(&payload.master_password_hash, &state.config.password_pepper)
+        .await
         .map_err(|_| AppError::HashError)?;
     let email = payload.email.to_lowercase();
 
