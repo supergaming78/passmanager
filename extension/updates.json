@@ -1,7 +1,13 @@
 {
   "addons": {
     "passmanager@supergaming78.dev": {
-      "updates": []
+      "updates": [
+        {
+          "version": "0.1.5",
+          "update_link": "https://github.com/supergaming78/passmanager/releases/download/ext-v0.1.5/178929067fc54fec984d-0.1.5.xpi",
+          "update_hash": "sha256:ee990f5625861a9e3a1e8d237ca335919a001ac7b2726e68226f2eae0fcbb3dd"
+        }
+      ]
     }
   }
 }
