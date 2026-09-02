@@ -133,6 +133,15 @@ jobs:
           printf 'key<<__EOF__\n%s\n__EOF__\n' "$clean_key" >> "$GITHUB_OUTPUT"
           printf 'password<<__EOF__\n%s\n__EOF__\n' "$clean_password" >> "$GITHUB_OUTPUT"
 
+      # CORRECTIF (retour utilisateur, 2026-09-02) : le guide utilisateur n'était visible qu'une
+      # fois un installeur téléchargé et le dossier ouvert — rien sur la page de release elle-même.
+      # tauri-action n'a pas d'option pour lire releaseBody depuis un fichier (juste une chaîne en
+      # ligne, voir sa doc) : lu ici et passé en sortie multi-lignes (même technique que pour les
+      # secrets ci-dessus) plutôt que codé en dur dans le YAML.
+      - name: Lire le guide utilisateur (pour le corps de la release)
+        id: guide
+        run: printf 'content<<__EOF__\n%s\n__EOF__\n' "$(cat GUIDE_UTILISATEUR.md)" >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -153,7 +162,7 @@ jobs:
           projectPath: "frontend(app)"
           tagName: app-v__VERSION__
           releaseName: "PassManager v__VERSION__"
-          releaseBody: "Voir les notes de version ci-dessous, ou le journal des modifications du dépôt."
+          releaseBody: ${{ steps.guide.outputs.content }}
           releaseDraft: true
           prerelease: false
 
