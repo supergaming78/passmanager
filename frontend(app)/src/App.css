@@ -49,7 +49,15 @@
 
 /* "Océan" — même structure de contraste que l'accent indigo par défaut (identique
  * lightness/chroma à chaque palier), teinte tournée vers un bleu franc plutôt que le violet de
- * "indigo" (277° → 215°, voir le commentaire d'en-tête de ce bloc pour pourquoi c'est sûr). */
+ * "indigo" (277° → 215°, voir le commentaire d'en-tête de ce bloc pour pourquoi c'est sûr).
+ *
+ * CORRECTIF (retour utilisateur, 2026-09-03) : "ça reste majoritairement noir" — seul l'ACCENT
+ * (boutons, liens, focus ring) changeait de couleur, le FOND restait le même gris neutre pour
+ * tous les thèmes de teinte sauf "Ambre". `--color-neutral-950/900/800` reçoivent maintenant
+ * chacun la MÊME légère teinte que leur accent (recette identique à "Ambre" plus bas — chroma très
+ * faible, 0.006-0.01, la même utilisée pour l'accent restant à 0.09-0.262) : une ambiance colorée
+ * cohérente perceptible partout, tout en restant largement sombre — pas un lavage de couleur, un
+ * dosage volontairement discret. */
 .theme-ocean {
   --color-indigo-50: oklch(96.2% 0.018 215);
   --color-indigo-100: oklch(93% 0.034 215);
@@ -62,6 +70,9 @@
   --color-indigo-800: oklch(39.8% 0.195 215);
   --color-indigo-900: oklch(35.9% 0.144 215);
   --color-indigo-950: oklch(25.7% 0.09 215);
+  --color-neutral-950: oklch(12% 0.006 215);
+  --color-neutral-900: oklch(19% 0.008 215);
+  --color-neutral-800: oklch(29% 0.01 215);
 }
 
 /* RETOUR UTILISATEUR (2026-09-03) : "plein de thème différent, de couleur différente, de style
@@ -69,7 +80,9 @@
  * de l'indigo par défaut STRICTEMENT inchangés, seule la teinte tourne, donc les contrastes déjà
  * éprouvés — texte sur fond, focus ring... — restent valables sans re-vérification), plus une
  * variante de FOND ("Ardoise", même esprit que "Minuit" mais un gris froid plutôt qu'un noir
- * pur), plus une variante qui touche les DEUX à la fois ("Ambre"). */
+ * pur), plus une variante qui touche les DEUX à la fois ("Ambre"). Fond légèrement teinté sur
+ * TOUS les accents (voir le correctif détaillé sur "Océan" ci-dessus) : même dosage discret
+ * partout, pas seulement sur "Ambre". */
 
 /* "Forêt" — vert franc (277° → 145°). */
 .theme-forest {
@@ -84,6 +97,9 @@
   --color-indigo-800: oklch(39.8% 0.195 145);
   --color-indigo-900: oklch(35.9% 0.144 145);
   --color-indigo-950: oklch(25.7% 0.09 145);
+  --color-neutral-950: oklch(12% 0.006 145);
+  --color-neutral-900: oklch(19% 0.008 145);
+  --color-neutral-800: oklch(29% 0.01 145);
 }
 
 /* "Coucher de soleil" — orange chaud (277° → 35°). */
@@ -99,6 +115,9 @@
   --color-indigo-800: oklch(39.8% 0.195 35);
   --color-indigo-900: oklch(35.9% 0.144 35);
   --color-indigo-950: oklch(25.7% 0.09 35);
+  --color-neutral-950: oklch(12% 0.006 35);
+  --color-neutral-900: oklch(19% 0.008 35);
+  --color-neutral-800: oklch(29% 0.01 35);
 }
 
 /* "Rose" — rose/rouge franc (277° → 0°). */
@@ -114,6 +133,9 @@
   --color-indigo-800: oklch(39.8% 0.195 0);
   --color-indigo-900: oklch(35.9% 0.144 0);
   --color-indigo-950: oklch(25.7% 0.09 0);
+  --color-neutral-950: oklch(12% 0.006 0);
+  --color-neutral-900: oklch(19% 0.008 0);
+  --color-neutral-800: oklch(29% 0.01 0);
 }
 
 /* "Violet" — pourpre franc (277° → 300°, à ne pas confondre avec l'indigo par défaut, plus proche
@@ -130,6 +152,9 @@
   --color-indigo-800: oklch(39.8% 0.195 300);
   --color-indigo-900: oklch(35.9% 0.144 300);
   --color-indigo-950: oklch(25.7% 0.09 300);
+  --color-neutral-950: oklch(12% 0.006 300);
+  --color-neutral-900: oklch(19% 0.008 300);
+  --color-neutral-800: oklch(29% 0.01 300);
 }
 
 /* "Ardoise" — variante de FOND (comme "Minuit" plus haut), gris-bleu froid et doux plutôt qu'un
@@ -142,9 +167,9 @@
   --color-neutral-800: oklch(30% 0.02 255);
 }
 
-/* "Ambre" — les DEUX à la fois : accent doré (277° → 75°) ET fond légèrement réchauffé (même
- * teinte que l'accent, à très faible chroma — un dosage bien plus discret que "Minuit"/"Ardoise",
- * juste assez pour une ambiance cohérente avec l'accent plutôt qu'un gris neutre par-dessus). */
+/* "Ambre" — accent doré (277° → 75°), fond légèrement réchauffé à la même teinte (même dosage
+ * discret que tous les autres accents désormais — voir le correctif sur "Océan" plus haut,
+ * "Ambre" était le premier à en profiter, généralisé depuis). */
 .theme-amber {
   --color-indigo-50: oklch(96.2% 0.018 75);
   --color-indigo-100: oklch(93% 0.034 75);

@@ -34,6 +34,10 @@ body {
   --color-neutral-800: oklch(24% 0 none);
 }
 
+/* CORRECTIF (retour utilisateur, 2026-09-03) : "ça reste majoritairement noir" — voir
+ * frontend(app)/src/App.css pour le raisonnement détaillé. `--color-neutral-950/900/800` reçoivent
+ * désormais la MÊME légère teinte que leur accent sur chaque thème ci-dessous (chroma très
+ * faible, 0.006-0.01), pas seulement l'accent lui-même. */
 .theme-ocean {
   --color-indigo-50: oklch(96.2% 0.018 215);
   --color-indigo-100: oklch(93% 0.034 215);
@@ -46,6 +50,9 @@ body {
   --color-indigo-800: oklch(39.8% 0.195 215);
   --color-indigo-900: oklch(35.9% 0.144 215);
   --color-indigo-950: oklch(25.7% 0.09 215);
+  --color-neutral-950: oklch(12% 0.006 215);
+  --color-neutral-900: oklch(19% 0.008 215);
+  --color-neutral-800: oklch(29% 0.01 215);
 }
 
 /* RETOUR UTILISATEUR (2026-09-03) : "plein de thème différent" — voir frontend(app)/src/App.css
@@ -62,6 +69,9 @@ body {
   --color-indigo-800: oklch(39.8% 0.195 145);
   --color-indigo-900: oklch(35.9% 0.144 145);
   --color-indigo-950: oklch(25.7% 0.09 145);
+  --color-neutral-950: oklch(12% 0.006 145);
+  --color-neutral-900: oklch(19% 0.008 145);
+  --color-neutral-800: oklch(29% 0.01 145);
 }
 
 .theme-sunset {
@@ -76,6 +86,9 @@ body {
   --color-indigo-800: oklch(39.8% 0.195 35);
   --color-indigo-900: oklch(35.9% 0.144 35);
   --color-indigo-950: oklch(25.7% 0.09 35);
+  --color-neutral-950: oklch(12% 0.006 35);
+  --color-neutral-900: oklch(19% 0.008 35);
+  --color-neutral-800: oklch(29% 0.01 35);
 }
 
 .theme-rose {
@@ -90,6 +103,9 @@ body {
   --color-indigo-800: oklch(39.8% 0.195 0);
   --color-indigo-900: oklch(35.9% 0.144 0);
   --color-indigo-950: oklch(25.7% 0.09 0);
+  --color-neutral-950: oklch(12% 0.006 0);
+  --color-neutral-900: oklch(19% 0.008 0);
+  --color-neutral-800: oklch(29% 0.01 0);
 }
 
 .theme-violet {
@@ -104,6 +120,9 @@ body {
   --color-indigo-800: oklch(39.8% 0.195 300);
   --color-indigo-900: oklch(35.9% 0.144 300);
   --color-indigo-950: oklch(25.7% 0.09 300);
+  --color-neutral-950: oklch(12% 0.006 300);
+  --color-neutral-900: oklch(19% 0.008 300);
+  --color-neutral-800: oklch(29% 0.01 300);
 }
 
 .theme-slate {
