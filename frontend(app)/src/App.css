@@ -30,11 +30,21 @@
  * sombre, un vrai gain de batterie sur ce type d'écran. Seules les nuances les plus sombres
  * (950/900/800, celles utilisées pour les fonds de page/carte/bordures — voir Section/Vault.tsx)
  * sont recreusées ; les nuances claires (texte, icônes...) restent celles de Tailwind par défaut,
- * déjà éprouvées pour le contraste. */
+ * déjà éprouvées pour le contraste.
+ *
+ * CORRECTIF (retour utilisateur, 2026-09-02) : `--color-neutral-800` (la bordure `dark:border-
+ * neutral-800`, utilisée PARTOUT pour délimiter cartes/sections — voir Section/Vault.tsx et la
+ * plupart des composants) était réglée à 10% de luminosité, bien trop proche des 5% du fond
+ * `neutral-900` qu'elle est censée délimiter (à peine 5 points d'écart, quasi invisible à l'œil
+ * sur des valeurs aussi sombres — la perception humaine compresse encore plus les différences
+ * près du noir pur). Remontée à 24% : la bordure reste sombre (toujours bien plus foncée que le
+ * gris neutre par défaut de Tailwind, l'esprit "Minuit" est préservé), mais nettement visible
+ * contre les fonds à 0%/5% — 950/900 INCHANGÉS, l'objectif "noir profond OLED" des FONDS ne
+ * bouge pas, seule la bordure gagne en contraste. */
 .theme-midnight {
   --color-neutral-950: oklch(0% 0 none);
   --color-neutral-900: oklch(5% 0 none);
-  --color-neutral-800: oklch(10% 0 none);
+  --color-neutral-800: oklch(24% 0 none);
 }
 
 /* "Océan" — même structure de contraste que l'accent indigo par défaut (identique

@@ -24,11 +24,14 @@ body {
 /* THÈMES SUPPLÉMENTAIRES (retour utilisateur, 2026-09-02) — voir lib/theme.ts pour le
  * raisonnement complet et frontend(app)/src/App.css pour les mêmes blocs commentés en détail
  * (valeurs OKLCH identiques, même mécanisme : redéfinir ces variables Tailwind retexture toute la
- * popup sans toucher un composant). */
+ * popup sans toucher un composant). CORRECTIF (même jour, suite) : `--color-neutral-800` (bordure
+ * `dark:border-neutral-800`) remontée de 10% à 24% de luminosité — voir le commentaire détaillé
+ * dans frontend(app)/src/App.css, même correctif ici (trop proche des 5% du fond `neutral-900`,
+ * quasi invisible à l'œil). */
 .theme-midnight {
   --color-neutral-950: oklch(0% 0 none);
   --color-neutral-900: oklch(5% 0 none);
-  --color-neutral-800: oklch(10% 0 none);
+  --color-neutral-800: oklch(24% 0 none);
 }
 
 .theme-ocean {
