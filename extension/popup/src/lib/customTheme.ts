@@ -116,10 +116,14 @@ export interface CustomThemeConfig {
  * "ajoute un bouton pour réinitialiser les curseurs par défaut, les mêmes que le mode sombre") ET
  * la valeur de départ d'un tout nouveau profil. Luminosités = valeurs natives Tailwind (delta nul)
  * pour accent/danger/succès/favoris ; fond neutre (chroma nulle) à la luminosité native de
- * neutral-950 (14.5%), IDENTIQUE au thème "Sombre". */
+ * neutral-950 (14.5%, ARRONDIE à 15 — CORRECTIF, voir l'historique : le serveur stocke les
+ * luminosités en entier (i64, voir models.rs::ThemeProfilePayload côté backend), un 14.5 envoyé
+ * tel quel faisait échouer la désérialisation JSON avec une 422, pour CHAQUE nouveau profil créé
+ * avec les valeurs par défaut — reproductible à coup sûr, pas un problème de build), IDENTIQUE au
+ * thème "Sombre" à l'imperceptible près. */
 export const DEFAULT_CUSTOM_THEME: CustomThemeConfig = {
   backgroundHue: 0,
-  backgroundLightness: 14.5,
+  backgroundLightness: 15,
   backgroundNeutral: true,
   accentHue: 277, // teinte "native" de l'indigo Tailwind.
   accentLightness: Math.round(INDIGO_ANCHOR_L),

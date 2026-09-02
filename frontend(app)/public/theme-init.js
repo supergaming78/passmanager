@@ -28,7 +28,7 @@
 
     if (theme === "custom") {
       var cfg = {
-        backgroundHue: 0, backgroundLightness: 14.5, backgroundNeutral: true,
+        backgroundHue: 0, backgroundLightness: 15, backgroundNeutral: true,
         accentHue: 277, accentLightness: 59,
         dangerHue: 27, dangerLightness: 64,
         successHue: 163, successLightness: 70,

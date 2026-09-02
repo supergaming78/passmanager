@@ -162,19 +162,24 @@ export default function SettingsView({
   }
 
   function configToProfilePayload(name: string, c: CustomThemeConfig) {
+    // Math.round() défensif : le serveur stocke teintes/luminosités en entier (i64, voir
+    // models.rs::ThemeProfilePayload) — un flottant échoue la désérialisation JSON avec une 422
+    // (voir le CORRECTIF sur customTheme.ts::DEFAULT_CUSTOM_THEME.backgroundLightness, la cause
+    // déjà rencontrée une fois). Les curseurs eux-mêmes ne peuvent produire que des entiers
+    // (step=1), donc en théorie inutile — filet de sécurité si une future valeur oubliait d'arrondir.
     return {
       name,
-      background_hue: c.backgroundHue,
-      background_lightness: c.backgroundLightness,
+      background_hue: Math.round(c.backgroundHue),
+      background_lightness: Math.round(c.backgroundLightness),
       background_neutral: c.backgroundNeutral,
-      accent_hue: c.accentHue,
-      accent_lightness: c.accentLightness,
-      danger_hue: c.dangerHue,
-      danger_lightness: c.dangerLightness,
-      success_hue: c.successHue,
-      success_lightness: c.successLightness,
-      favorite_hue: c.favoriteHue,
-      favorite_lightness: c.favoriteLightness,
+      accent_hue: Math.round(c.accentHue),
+      accent_lightness: Math.round(c.accentLightness),
+      danger_hue: Math.round(c.dangerHue),
+      danger_lightness: Math.round(c.dangerLightness),
+      success_hue: Math.round(c.successHue),
+      success_lightness: Math.round(c.successLightness),
+      favorite_hue: Math.round(c.favoriteHue),
+      favorite_lightness: Math.round(c.favoriteLightness),
     };
   }
 
