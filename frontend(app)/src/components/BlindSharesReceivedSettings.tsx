@@ -102,57 +102,79 @@ export default function BlindSharesReceivedSettings() {
         <p className="text-sm text-neutral-500">Aucun partage à usage limité en attente.</p>
       ) : (
         <ul className={listContainerClass(listLayout, "grid-cols-1 sm:grid-cols-2")}>
-          {shares.map((share) => (
-            <li
-              key={share.id}
-              className={`flex flex-col gap-2 rounded-lg border border-neutral-200 dark:border-neutral-800 ${
-                listLayout === "compact" ? "px-3 py-2" : "p-3"
-              }`}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{share.siteName}</p>
-                  <p className="text-xs text-neutral-500">Partagé par {share.ownerEmail} — {share.remainingUses} / {share.maxUses} usage(s) restant(s)</p>
+          {shares.map((share) => {
+            // CORRECTIF (retour utilisateur, 2026-09-02) : "compact" ne changeait auparavant QUE le
+            // padding vertical (p-3 -> px-3 py-2) — trop proche visuellement de "list". Fusionne
+            // maintenant nom du site + sous-titre sur UNE seule ligne et réduit texte/boutons, comme
+            // pages/Vault.tsx::renderEntryCompact pour le Coffre.
+            const isCompact = listLayout === "compact";
+            return (
+              <li
+                key={share.id}
+                className={`flex flex-col gap-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 ${
+                  isCompact ? "px-3 py-1.5" : "gap-2 p-3"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  {isCompact ? (
+                    <p className="min-w-0 truncate text-xs text-neutral-800 dark:text-neutral-200">
+                      <span className="font-medium text-neutral-900 dark:text-neutral-100">{share.siteName}</span>
+                      {" · "}{share.ownerEmail} · {share.remainingUses}/{share.maxUses}
+                    </p>
+                  ) : (
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{share.siteName}</p>
+                      <p className="text-xs text-neutral-500">Partagé par {share.ownerEmail} — {share.remainingUses} / {share.maxUses} usage(s) restant(s)</p>
+                    </div>
+                  )}
+                  <div className={`flex shrink-0 ${isCompact ? "gap-1" : "gap-1.5"}`}>
+                    <button
+                      type="button"
+                      onClick={() => void handleUse(share)}
+                      disabled={busyId === share.id || share.remainingUses <= 0}
+                      className={`rounded-lg bg-indigo-600 font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 ${
+                        isCompact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-1 text-xs"
+                      }`}
+                    >
+                      Utiliser
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleRevoke(share)}
+                      disabled={busyId === share.id}
+                      className={`rounded-lg border border-red-300 font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950 ${
+                        isCompact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-1 text-xs"
+                      }`}
+                    >
+                      Retirer
+                    </button>
+                  </div>
                 </div>
-                <div className="flex shrink-0 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => void handleUse(share)}
-                    disabled={busyId === share.id || share.remainingUses <= 0}
-                    className="rounded-lg bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Utiliser
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleRevoke(share)}
-                    disabled={busyId === share.id}
-                    className="rounded-lg border border-red-300 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-                  >
-                    Retirer
-                  </button>
-                </div>
-              </div>
-              {unlocked[share.id] && (
-                <div className="flex gap-1.5 border-t border-neutral-100 pt-2 dark:border-neutral-800">
-                  <button
-                    type="button"
-                    onClick={() => void handleCopyUsername(share)}
-                    className="rounded-lg border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                  >
-                    {copiedLabel === `${share.id}-username` ? "Copié !" : "Copier l'identifiant"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleCopyPassword(share)}
-                    className="rounded-lg border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                  >
-                    {copiedLabel === `${share.id}-password` ? "Copié !" : "Copier le mot de passe"}
-                  </button>
-                </div>
-              )}
-            </li>
-          ))}
+                {unlocked[share.id] && (
+                  <div className={`flex gap-1.5 border-t border-neutral-100 dark:border-neutral-800 ${isCompact ? "pt-1.5" : "pt-2"}`}>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyUsername(share)}
+                      className={`rounded-lg border border-neutral-300 text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800 ${
+                        isCompact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-1 text-xs"
+                      }`}
+                    >
+                      {copiedLabel === `${share.id}-username` ? "Copié !" : "Copier l'identifiant"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyPassword(share)}
+                      className={`rounded-lg border border-neutral-300 text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800 ${
+                        isCompact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-1 text-xs"
+                      }`}
+                    >
+                      {copiedLabel === `${share.id}-password` ? "Copié !" : "Copier le mot de passe"}
+                    </button>
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

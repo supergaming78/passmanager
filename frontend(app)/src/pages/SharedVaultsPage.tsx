@@ -60,16 +60,35 @@ export default function SharedVaultsPage() {
   }
 
   // Contenu partagé entre le mode "cards" (grille, une bordure par coffre) et "list"/"compact"
-  // (liste à séparateurs) — seul le padding vertical change, voir les deux appels ci-dessous.
-  function renderVaultLink(v: UnlockedSharedVault, verticalPadding: string) {
+  // (liste à séparateurs) — voir les deux appels ci-dessous. CORRECTIF (retour utilisateur,
+  // 2026-09-02) : "compact" ne changeait auparavant QUE le padding vertical — trop proche
+  // visuellement de "list" pour être perçu. Fusionne maintenant nom + sous-titre sur UNE seule
+  // ligne et réduit le texte, comme pages/Vault.tsx::renderEntryCompact pour le Coffre.
+  function renderVaultLink(v: UnlockedSharedVault, variant: "list" | "compact" | "cards") {
+    const subtitle = v.isOwner ? "Propriétaire" : `Créé par ${v.createdBy}`;
+    if (variant === "compact") {
+      return (
+        <Link
+          to={`/shared-vaults/${v.id}`}
+          className="flex items-center justify-between gap-3 px-4 py-1 hover:bg-neutral-50 dark:hover:bg-neutral-800"
+        >
+          <p className="min-w-0 truncate text-xs text-neutral-800 dark:text-neutral-200">
+            <span className="font-medium text-neutral-900 dark:text-neutral-100">{v.name}</span> · {subtitle}
+          </p>
+          <span className="shrink-0 text-neutral-400">→</span>
+        </Link>
+      );
+    }
+    // "list"/"cards" restants : contenu identique, seul le conteneur autour (bordure partagée vs
+    // par coffre) diffère, voir les deux appels ci-dessous.
     return (
       <Link
         to={`/shared-vaults/${v.id}`}
-        className={`flex items-center justify-between gap-3 px-4 hover:bg-neutral-50 dark:hover:bg-neutral-800 ${verticalPadding}`}
+        className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-800"
       >
         <div className="min-w-0">
           <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">{v.name}</p>
-          <p className="text-xs text-neutral-500">{v.isOwner ? "Propriétaire" : `Créé par ${v.createdBy}`}</p>
+          <p className="text-xs text-neutral-500">{subtitle}</p>
         </div>
         <span className="shrink-0 text-neutral-400">→</span>
       </Link>
@@ -140,14 +159,14 @@ export default function SharedVaultsPage() {
           <ul className={listContainerClass("cards", "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3")}>
             {vaults.map((v) => (
               <li key={v.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-                {renderVaultLink(v, "py-3")}
+                {renderVaultLink(v, "cards")}
               </li>
             ))}
           </ul>
         ) : (
           <ul className="flex flex-col divide-y divide-neutral-200 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
             {vaults.map((v) => (
-              <li key={v.id}>{renderVaultLink(v, listLayout === "compact" ? "py-1.5" : "py-3")}</li>
+              <li key={v.id}>{renderVaultLink(v, listLayout === "compact" ? "compact" : "list")}</li>
             ))}
           </ul>
         )}

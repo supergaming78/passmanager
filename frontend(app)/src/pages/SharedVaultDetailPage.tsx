@@ -184,34 +184,57 @@ export default function SharedVaultDetailPage() {
   }
 
   // Contenu partagé entre le mode "cards" (grille, une bordure par entrée) et "list"/"compact"
-  // (liste à séparateurs) — seul le padding vertical change, voir les deux appels ci-dessous.
-  function renderEntryRow(entry: PlainSharedVaultEntry, verticalPadding: string) {
+  // (liste à séparateurs) — voir les deux appels ci-dessous. CORRECTIF (retour utilisateur,
+  // 2026-09-02) : "compact" ne changeait auparavant QUE le padding vertical — trop proche
+  // visuellement de "list" pour être perçu. Fusionne maintenant nom + identifiant sur UNE seule
+  // ligne (l'auteur de l'ajout, moins utile au quotidien, est retiré ICI pour la place — reste
+  // visible en "list"/"cards") et réduit texte/boutons, comme
+  // pages/Vault.tsx::renderEntryCompact pour le Coffre.
+  function renderEntryRow(entry: PlainSharedVaultEntry, isCompact: boolean) {
+    const actionButtonClass = `rounded-md border border-neutral-300 text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800 ${
+      isCompact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-1 text-xs"
+    }`;
     return (
-      <div className={`flex items-center justify-between gap-3 px-4 ${verticalPadding}`}>
+      <div className={`flex items-center justify-between gap-3 px-4 ${isCompact ? "py-1" : "py-3"}`}>
         <div className="min-w-0 flex-1">
-          <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
-          <p className="truncate text-xs text-neutral-500">
-            {getPreferredIdentifier(entry) || "—"}
-            {" · ajouté par "}{entry.createdBy}
-          </p>
+          {isCompact ? (
+            <p className="truncate text-xs text-neutral-800 dark:text-neutral-200">
+              <span className="font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</span>
+              {" · "}{getPreferredIdentifier(entry) || "—"}
+            </p>
+          ) : (
+            <>
+              <p className="truncate font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
+              <p className="truncate text-xs text-neutral-500">
+                {getPreferredIdentifier(entry) || "—"}
+                {" · ajouté par "}{entry.createdBy}
+              </p>
+            </>
+          )}
           {revealedId === entry.id && <p className="mt-1 select-all font-mono text-xs text-neutral-700 dark:text-neutral-300">{entry.password}</p>}
         </div>
-        <div className="flex shrink-0 flex-wrap gap-1.5">
+        <div className={`flex shrink-0 flex-wrap ${isCompact ? "gap-1" : "gap-1.5"}`}>
           {entry.url && (
-            <button type="button" onClick={() => void openEntryUrl(entry.url)} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+            <button type="button" onClick={() => void openEntryUrl(entry.url)} className={actionButtonClass}>
               Ouvrir
             </button>
           )}
-          <button type="button" onClick={() => setRevealedId((cur) => (cur === entry.id ? null : entry.id))} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+          <button type="button" onClick={() => setRevealedId((cur) => (cur === entry.id ? null : entry.id))} className={actionButtonClass}>
             {revealedId === entry.id ? "Cacher" : "Voir"}
           </button>
-          <button type="button" onClick={() => void handleCopy(entry)} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+          <button type="button" onClick={() => void handleCopy(entry)} className={actionButtonClass}>
             {copiedId === entry.id ? "Copié !" : "Copier"}
           </button>
-          <button type="button" onClick={() => openEditForm(entry)} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+          <button type="button" onClick={() => openEditForm(entry)} className={actionButtonClass}>
             Modifier
           </button>
-          <button type="button" onClick={() => void handleDeleteEntry(entry.id)} className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950">
+          <button
+            type="button"
+            onClick={() => void handleDeleteEntry(entry.id)}
+            className={`rounded-md border border-red-300 text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950 ${
+              isCompact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-1 text-xs"
+            }`}
+          >
             Supprimer
           </button>
         </div>
@@ -384,14 +407,14 @@ export default function SharedVaultDetailPage() {
           <ul className={listContainerClass("cards", "grid-cols-1 sm:grid-cols-2")}>
             {entries.map((entry) => (
               <li key={entry.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-                {renderEntryRow(entry, "py-3")}
+                {renderEntryRow(entry, false)}
               </li>
             ))}
           </ul>
         ) : (
           <ul className="flex flex-col divide-y divide-neutral-200 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
             {entries.map((entry) => (
-              <li key={entry.id}>{renderEntryRow(entry, listLayout === "compact" ? "py-1.5" : "py-3")}</li>
+              <li key={entry.id}>{renderEntryRow(entry, listLayout === "compact")}</li>
             ))}
           </ul>
         )}

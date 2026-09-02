@@ -64,34 +64,48 @@ export default function SharedWithMeSettings() {
         <p className="text-sm text-neutral-500">Aucune entrée n'a été partagée avec vous.</p>
       ) : (
         <ul className={listContainerClass(listLayout, "grid-cols-2 sm:grid-cols-3")}>
-          {shares.map((share) => (
-            <li
-              key={share.id}
-              className={`flex items-center justify-between gap-2 rounded-lg border border-neutral-200 dark:border-neutral-800 ${
-                listLayout === "compact" ? "px-3 py-1.5" : "p-3"
-              }`}
-            >
-              <p className="min-w-0 truncate text-sm text-neutral-800 dark:text-neutral-200">Partagé par {share.owner_email}</p>
-              <div className="flex shrink-0 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => navigate(`/shared/${encodeURIComponent(share.id)}`)}
-                  disabled={busyId === share.id}
-                  className="rounded-lg bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Voir
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleLeave(share)}
-                  disabled={busyId === share.id}
-                  className="rounded-lg border border-red-300 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-                >
-                  Quitter
-                </button>
-              </div>
-            </li>
-          ))}
+          {shares.map((share) => {
+            // CORRECTIF (retour utilisateur, 2026-09-02) : "compact" ne changeait auparavant QUE le
+            // padding vertical du conteneur (p-3 -> px-3 py-1.5) — une différence trop fine pour être
+            // perçue à côté de "list". Réduit maintenant aussi la taille du texte/des boutons, comme
+            // le fait déjà pages/Vault.tsx::renderEntryCompact pour le Coffre, pour une densité
+            // réellement visible.
+            const isCompact = listLayout === "compact";
+            return (
+              <li
+                key={share.id}
+                className={`flex items-center justify-between gap-2 rounded-lg border border-neutral-200 dark:border-neutral-800 ${
+                  isCompact ? "px-3 py-1" : "p-3"
+                }`}
+              >
+                <p className={`min-w-0 truncate text-neutral-800 dark:text-neutral-200 ${isCompact ? "text-xs" : "text-sm"}`}>
+                  Partagé par {share.owner_email}
+                </p>
+                <div className={`flex shrink-0 ${isCompact ? "gap-1" : "gap-1.5"}`}>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/shared/${encodeURIComponent(share.id)}`)}
+                    disabled={busyId === share.id}
+                    className={`rounded-lg bg-indigo-600 font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 ${
+                      isCompact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-1 text-xs"
+                    }`}
+                  >
+                    Voir
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleLeave(share)}
+                    disabled={busyId === share.id}
+                    className={`rounded-lg border border-red-300 font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950 ${
+                      isCompact ? "px-1.5 py-0.5 text-[11px]" : "px-2 py-1 text-xs"
+                    }`}
+                  >
+                    Quitter
+                  </button>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
