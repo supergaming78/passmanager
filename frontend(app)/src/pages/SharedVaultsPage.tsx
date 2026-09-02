@@ -169,11 +169,25 @@ export default function SharedVaultsPage() {
           </ul>
           </div>
         ) : (
-          <ul className="flex flex-col divide-y divide-neutral-200 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
+          // CORRECTIF (retour utilisateur, 2026-09-02, captures d'écran plein écran 1440p) : un
+          // `divide-y` empilé sur une seule colonne, quelle que soit la largeur du conteneur,
+          // laissait chaque ligne s'étirer sur toute la largeur une fois la page élargie (voir
+          // Vault.tsx pour le même correctif) — grand vide entre le nom et la flèche "→" au milieu
+          // de chaque ligne. `divide-y` ne compose pas avec une grille à plusieurs colonnes (les
+          // séparateurs n'ont de sens qu'en flux à une seule colonne) : bordure individuelle par
+          // coffre à la place, dans un @container comme le mode "cards" ci-dessus — juste
+          // grid-cols-1 par défaut (une seule colonne tant que le conteneur n'est pas très large)
+          // et un seul palier @6xl (une ligne "liste" reste plus riche qu'une carte, moins de
+          // colonnes lui suffisent).
+          <div className="@container">
+          <ul className="grid grid-cols-1 gap-2 @6xl:grid-cols-2">
             {vaults.map((v) => (
-              <li key={v.id}>{renderVaultLink(v, listLayout === "compact" ? "compact" : "list")}</li>
+              <li key={v.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+                {renderVaultLink(v, listLayout === "compact" ? "compact" : "list")}
+              </li>
             ))}
           </ul>
+          </div>
         )}
       </div>
     </main>

@@ -56,5 +56,13 @@ export function setListLayout(layout: ListLayout): void {
  * modales ne sont jamais des descendantes de ce `<div>`. */
 export function listContainerClass(layout: ListLayout, gridCols = "grid-cols-2 @sm:grid-cols-3 @lg:grid-cols-4"): string {
   if (layout === "cards") return `grid gap-3 ${gridCols}`;
-  return "flex flex-col gap-2";
+  // "list"/"compact" : CORRECTIF (retour utilisateur, 2026-09-02, captures d'écran plein écran
+  // 1440p) — une seule colonne quelle que soit la largeur du conteneur laissait chaque ligne
+  // s'étirer sur toute sa largeur une fois les pages élargies (voir Vault.tsx/pages.tsx, jusqu'à
+  // 100-110rem désormais) : un grand vide entre le contenu (à gauche) et les boutons d'action
+  // (poussés loin à droite par `justify-between`) au milieu de chaque ligne. Devient une grille à
+  // 2 colonnes à partir de @6xl (1152px de CONTENEUR réel, pas de fenêtre — voir le commentaire de
+  // fonction ci-dessus) : chaque ligne garde sa largeur naturelle, l'espace en trop accueille une
+  // seconde colonne de lignes plutôt que de rester vide au milieu d'une seule ligne démesurée.
+  return "grid grid-cols-1 gap-2 @6xl:grid-cols-2";
 }

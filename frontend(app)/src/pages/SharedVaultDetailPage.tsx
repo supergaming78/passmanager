@@ -416,11 +416,22 @@ export default function SharedVaultDetailPage() {
           </ul>
           </div>
         ) : (
-          <ul className="flex flex-col divide-y divide-neutral-200 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
+          // CORRECTIF (retour utilisateur, 2026-09-02, captures d'écran plein écran 1440p) : même
+          // correctif que le mode "cards" ci-dessus — un `divide-y` empilé sur une seule colonne
+          // laissait chaque ligne s'étirer sur toute la largeur une fois la page élargie, grand
+          // vide au milieu de chaque ligne entre le contenu et les boutons d'action. `divide-y` ne
+          // compose pas avec une grille à plusieurs colonnes : bordure individuelle par entrée à la
+          // place, dans un @container — grid-cols-1 par défaut, @6xl:grid-cols-2 seulement (une
+          // ligne "liste" reste plus riche qu'une carte, moins de colonnes lui suffisent).
+          <div className="@container">
+          <ul className="grid grid-cols-1 gap-2 @6xl:grid-cols-2">
             {entries.map((entry) => (
-              <li key={entry.id}>{renderEntryRow(entry, listLayout === "compact")}</li>
+              <li key={entry.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+                {renderEntryRow(entry, listLayout === "compact")}
+              </li>
             ))}
           </ul>
+          </div>
         )}
       </div>
     </main>
