@@ -1,7 +1,17 @@
 @import "tailwindcss";
 
+/* CORRECTIF (retour utilisateur, 2026-09-02) : bascule le variant `dark:` de Tailwind de sa
+ * stratégie par défaut ("media", purement `prefers-color-scheme`) vers une stratégie "class" —
+ * `dark:` s'applique désormais quand `<html>` porte la classe `dark`, posée/retirée par
+ * lib/theme.ts (voir aussi le script anti-flash dans index.html), plutôt que suivre aveuglément
+ * le thème système. Permet de forcer un thème (défaut : sombre) indépendamment de l'appareil. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Réglages globaux minimaux — le reste de la mise en page passe par les classes Tailwind
-   directement dans les composants, pas par du CSS custom accumulé ici. */
+   directement dans les composants, pas par du CSS custom accumulé ici. `color-scheme` n'est plus
+   fixé ici : lib/theme.ts le pose dynamiquement sur <html> selon le thème actif (voir sa raison
+   d'être dans applyTheme()) — cette valeur "light dark" ne sert que de repli le temps très bref
+   avant que le script anti-flash de index.html ne s'exécute. */
 :root {
   color-scheme: light dark;
 }

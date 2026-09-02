@@ -11,6 +11,7 @@ import EmergencyAccessSettings from "../components/EmergencyAccessSettings";
 import SecurityHistorySettings from "../components/SecurityHistorySettings";
 import AppUpdateSettings from "../components/AppUpdateSettings";
 import ServerUrlForm from "../components/ServerUrlForm";
+import ThemeSettings from "../components/ThemeSettings";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -65,6 +66,10 @@ export default function Settings() {
               Changer le mot de passe maître
             </button>
           )}
+        </Section>
+
+        <Section title="Apparence">
+          <ThemeSettings />
         </Section>
 
         <Section title="Sécurité">

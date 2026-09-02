@@ -8,6 +8,10 @@
          plutôt qu'une bande de couleur du système autour du contenu. Sans effet sur desktop. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>PassManager</title>
+    <!-- Anti-flash du thème (voir public/theme-init.js) : chargé le plus tôt possible dans <head>,
+         AVANT le CSS de l'app, pour que <html class="dark"> soit déjà posé au moment où la feuille
+         de style s'applique — voir aussi src/lib/theme.ts. -->
+    <script src="/theme-init.js"></script>
   </head>
 
   <body>

@@ -1,9 +1,15 @@
 @import "tailwindcss";
 
+/* CORRECTIF (retour utilisateur, 2026-09-02) : bascule le variant `dark:` de Tailwind de sa
+ * stratégie par défaut ("media", purement `prefers-color-scheme`) vers une stratégie "class" —
+ * voir frontend(app)/src/App.css pour le même correctif, raisonnement identique. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Une popup de navigateur se dimensionne à son contenu (pas de fenêtre redimensionnable comme
    l'app desktop) — largeur fixe raisonnable, hauteur plafonnée avec défilement interne pour la
    liste du coffre plutôt que de laisser la popup grandir sans limite (Chrome la contraint de
-   toute façon à une taille maximale). */
+   toute façon à une taille maximale). `color-scheme` n'est plus fixé ici : lib/theme.ts le pose
+   dynamiquement sur <html> selon le thème actif. */
 :root {
   color-scheme: light dark;
 }

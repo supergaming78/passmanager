@@ -4,12 +4,18 @@ import { HashRouter } from "react-router-dom";
 import { AuthProvider } from "./state/AuthContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { installDiagnosticLogCapture } from "./lib/diagnosticLog";
+import { initTheme } from "./lib/theme";
 import App from "./App";
 
 // AVANT tout le reste : pour que le journal de diagnostic (voir lib/diagnosticLog.ts, inclus
 // automatiquement dans chaque signalement de bug) capture aussi les erreurs qui surviennent tôt,
 // avant même le premier rendu.
 installDiagnosticLogCapture();
+
+// Le thème a déjà été appliqué une première fois par index.html::theme-init.js (anti-flash, voir
+// son commentaire) — cet appel prend juste le relais pour le reste de la session (notamment le
+// suivi en direct des changements de thème système si l'utilisateur a choisi "system").
+initTheme();
 
 // HashRouter plutôt que BrowserRouter : dans Tauri, l'app est servie comme un bundle statique
 // (pas un vrai serveur HTTP avec routage côté serveur) — HashRouter garde toute la navigation

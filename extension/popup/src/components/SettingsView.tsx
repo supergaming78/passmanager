@@ -19,6 +19,7 @@ import {
   setWindowMode,
   type WindowMode,
 } from "../lib/settings";
+import { getTheme, setTheme, type Theme } from "../lib/theme";
 import type { TrustedDevice } from "../api/types";
 import { getErrorMessage } from "../lib/errors";
 
@@ -51,6 +52,7 @@ export default function SettingsView({
   const [lockMinutes, setLockMinutes] = useState(getPopupLockMinutes());
   const [clipboardSeconds, setClipboardSeconds] = useState(getClipboardClearSeconds());
   const [windowMode, setWindowModeState] = useState(getWindowMode());
+  const [theme, setThemeState] = useState<Theme>(() => getTheme());
 
   const [newEmail, setNewEmail] = useState("");
   const [emailPassword, setEmailPassword] = useState("");
@@ -109,6 +111,11 @@ export default function SettingsView({
   function handleSaveWindowMode(mode: WindowMode) {
     setWindowModeState(mode);
     setWindowMode(mode);
+  }
+
+  function handleSaveTheme(value: Theme) {
+    setThemeState(value);
+    setTheme(value);
   }
 
   async function handleChangeEmail(e: FormEvent) {
@@ -183,6 +190,15 @@ export default function SettingsView({
           </div>
         </Section>
       )}
+
+      <Section title="Apparence">
+        <label className="mb-1 block text-xs text-neutral-500">Thème</label>
+        <select value={theme} onChange={(e) => handleSaveTheme(e.target.value as Theme)} className={inputClass()}>
+          <option value="dark">Sombre</option>
+          <option value="light">Clair</option>
+          <option value="system">Suivre l'appareil</option>
+        </select>
+      </Section>
 
       <Section title="Sécurité">
         <label className="mb-1 block text-xs text-neutral-500">Verrouiller après une popup fermée depuis plus de…</label>
