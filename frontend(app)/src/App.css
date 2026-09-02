@@ -16,6 +16,44 @@
   color-scheme: light dark;
 }
 
+/* THÈMES SUPPLÉMENTAIRES (retour utilisateur, 2026-09-02) — voir lib/theme.ts pour le
+ * raisonnement complet : Tailwind v4 génère ses utilitaires en lisant ces variables au lieu de
+ * valeurs codées en dur (`bg-neutral-950` → `background-color: var(--color-neutral-950)`), donc
+ * les redéfinir ici suffit à retexturer TOUTE l'app déjà écrite avec ces classes — aucun composant
+ * à toucher. Lightness/chroma (OKLCH) laissés STRICTEMENT identiques aux valeurs par défaut de
+ * Tailwind pour "ocean" (juste la teinte tourne vers le bleu) : les contrastes déjà éprouvés
+ * (texte sur fond, focus ring...) restent valables sans re-vérification manuelle de lisibilité. */
+
+/* "Minuit" — noir plus profond que le gris anthracite par défaut de Tailwind (neutral-950 ≈ 14.5%
+ * de luminosité, pas un vrai noir) — pensé pour les écrans OLED/AMOLED des téléphones, où un pixel
+ * réellement noir (luminosité 0%) s'éteint complètement au lieu d'être rétroéclairé en gris très
+ * sombre, un vrai gain de batterie sur ce type d'écran. Seules les nuances les plus sombres
+ * (950/900/800, celles utilisées pour les fonds de page/carte/bordures — voir Section/Vault.tsx)
+ * sont recreusées ; les nuances claires (texte, icônes...) restent celles de Tailwind par défaut,
+ * déjà éprouvées pour le contraste. */
+.theme-midnight {
+  --color-neutral-950: oklch(0% 0 none);
+  --color-neutral-900: oklch(5% 0 none);
+  --color-neutral-800: oklch(10% 0 none);
+}
+
+/* "Océan" — même structure de contraste que l'accent indigo par défaut (identique
+ * lightness/chroma à chaque palier), teinte tournée vers un bleu franc plutôt que le violet de
+ * "indigo" (277° → 215°, voir le commentaire d'en-tête de ce bloc pour pourquoi c'est sûr). */
+.theme-ocean {
+  --color-indigo-50: oklch(96.2% 0.018 215);
+  --color-indigo-100: oklch(93% 0.034 215);
+  --color-indigo-200: oklch(87% 0.065 215);
+  --color-indigo-300: oklch(78.5% 0.115 215);
+  --color-indigo-400: oklch(67.3% 0.182 215);
+  --color-indigo-500: oklch(58.5% 0.233 215);
+  --color-indigo-600: oklch(51.1% 0.262 215);
+  --color-indigo-700: oklch(45.7% 0.24 215);
+  --color-indigo-800: oklch(39.8% 0.195 215);
+  --color-indigo-900: oklch(35.9% 0.144 215);
+  --color-indigo-950: oklch(25.7% 0.09 215);
+}
+
 /* touch-action: manipulation — supprime le délai d'env. 300ms que certains navigateurs mobiles
  * ajoutent avant un tap (le temps de vérifier s'il s'agit d'un double-tap pour zoomer) et empêche
  * un double-tap accidentel de zoomer la page plutôt que d'activer deux fois le bouton. Sans effet

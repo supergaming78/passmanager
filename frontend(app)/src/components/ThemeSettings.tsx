@@ -4,6 +4,8 @@ import { getTheme, setTheme, type Theme } from "../lib/theme";
 const THEME_OPTIONS: { value: Theme; label: string }[] = [
   { value: "dark", label: "Sombre" },
   { value: "light", label: "Clair" },
+  { value: "midnight", label: "Minuit (noir OLED)" },
+  { value: "ocean", label: "Océan (accent bleu)" },
   { value: "system", label: "Suivre l'appareil" },
 ];
 
@@ -36,7 +38,9 @@ export default function ThemeSettings() {
       </select>
       <p className="mt-1 text-xs text-neutral-500">
         "Suivre l'appareil" utilise le thème clair/sombre configuré dans les réglages de ton
-        système d'exploitation.
+        système d'exploitation. "Minuit" et "Océan" sont deux variantes sombres — noir plus
+        profond (pensé pour économiser la batterie sur un écran OLED de téléphone) ou accent bleu
+        plutôt qu'indigo.
       </p>
     </div>
   );

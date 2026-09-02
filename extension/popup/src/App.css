@@ -20,3 +20,27 @@ body {
   overflow-y: auto;
   margin: 0;
 }
+
+/* THÈMES SUPPLÉMENTAIRES (retour utilisateur, 2026-09-02) — voir lib/theme.ts pour le
+ * raisonnement complet et frontend(app)/src/App.css pour les mêmes blocs commentés en détail
+ * (valeurs OKLCH identiques, même mécanisme : redéfinir ces variables Tailwind retexture toute la
+ * popup sans toucher un composant). */
+.theme-midnight {
+  --color-neutral-950: oklch(0% 0 none);
+  --color-neutral-900: oklch(5% 0 none);
+  --color-neutral-800: oklch(10% 0 none);
+}
+
+.theme-ocean {
+  --color-indigo-50: oklch(96.2% 0.018 215);
+  --color-indigo-100: oklch(93% 0.034 215);
+  --color-indigo-200: oklch(87% 0.065 215);
+  --color-indigo-300: oklch(78.5% 0.115 215);
+  --color-indigo-400: oklch(67.3% 0.182 215);
+  --color-indigo-500: oklch(58.5% 0.233 215);
+  --color-indigo-600: oklch(51.1% 0.262 215);
+  --color-indigo-700: oklch(45.7% 0.24 215);
+  --color-indigo-800: oklch(39.8% 0.195 215);
+  --color-indigo-900: oklch(35.9% 0.144 215);
+  --color-indigo-950: oklch(25.7% 0.09 215);
+}
