@@ -1,138 +1,159 @@
-// PERSONNALISATION DE THÈME AVANCÉE — synchronisée par compte (retour utilisateur, 2026-09-03) :
-// en plus des thèmes "presets" (voir theme.ts/App.css), un thème "custom" où l'utilisateur choisit
-// LUI-MÊME chaque teinte (curseur de teinte 0-359°, PAS un vrai sélecteur RGB — voir la décision
-// prise avec l'utilisateur) plutôt qu'un jeu de couleurs figé à l'avance. Contrairement aux presets
-// (classes statiques dans App.css, un nombre fini de teintes possibles), une teinte choisie au
-// curseur peut être N'IMPORTE quelle valeur entre 0 et 359 — impossible à précompiler en CSS statique
-// à l'avance. On applique donc les variables directement en JS via `style.setProperty()` sur
-// `<html>`, qui l'emporte en spécificité CSS sur n'importe quelle classe `.theme-X` (voir theme.ts).
+// PERSONNALISATION DE THÈME AVANCÉE — synchronisée par compte, en PROFILS nommés (retour
+// utilisateur, 2026-09-03, affiné le même jour) : en plus des thèmes "presets" (voir
+// theme.ts/App.css), un thème "custom" où l'utilisateur choisit LUI-MÊME chaque couleur — teinte
+// (curseur 0-359°) ET luminosité (curseur 0-100%, "rendre une couleur plus sombre ou plus claire")
+// pour l'accent (boutons/liens), le danger (Supprimer, erreurs), le succès (confirmations), les
+// favoris (★), ET le fond lui-même (PAS une bascule clair/sombre séparée — voir applyBackground
+// ci-dessous : le mode clair/sombre de l'interface se DÉDUIT de la luminosité de fond choisie).
 //
-// MÊME RECETTE que les thèmes presets (voir le long commentaire d'en-tête d'App.css) : la Lumino-
-// sité (L) et la Chroma (C) de chaque palier Tailwind ne bougent JAMAIS — seule la Teinte (H) est
-// remplacée par celle choisie par l'utilisateur, IDENTIQUE pour tous les paliers d'une même famille
-// (c'est aussi ce que fait Tailwind par défaut à l'affichage : le "vrai" indigo a une teinte qui
-// varie légèrement d'un palier à l'autre — 272° à 281° — les thèmes de ce projet l'aplatissent déjà
-// tous à une seule valeur, donc rien de nouveau ici). Ça garantit que TOUS les contrastes déjà
-// vérifiés (texte sur fond, anneaux de focus...) restent corrects sans re-tester quoi que ce soit :
-// seule la teinte change, jamais ce qui fait la lisibilité.
+// MÊME RECETTE que les thèmes presets pour l'accent/danger/succès/favoris (voir le long commentaire
+// d'en-tête d'App.css) : la Chroma (C) de chaque palier Tailwind ne bouge JAMAIS — seules la
+// Teinte (H, comme les presets) ET maintenant la Luminosité (L) sont personnalisables. La
+// luminosité n'est PAS réglée palier par palier (11 curseurs par couleur serait ingérable) : un
+// SEUL curseur positionne le palier "500" (le plus représentatif — boutons, badges...) à la
+// luminosité choisie, et le MÊME décalage (delta = luminosité choisie − luminosité native du palier
+// 500) est appliqué à TOUS les autres paliers de la famille, en gardant intact l'écart relatif
+// entre paliers (donc toujours plus clair au fur et à mesure qu'on monte les paliers, jamais un
+// dégradé aplati) — clampé à [0, 100] aux extrêmes.
 //
-// Valeurs L/C extraites du CSS Tailwind v4 réellement compilé (dist/assets/*.css), PAS
-// approximées — même technique que pour les thèmes presets (voir App.css). Un seul palier
-// manquant (ex: amber-200) n'a simplement jamais été utilisé nulle part dans l'app (vérifié par
-// grep) — inutile de le fabriquer.
+// Valeurs L/C natives extraites du CSS Tailwind v4 réellement compilé (dist/assets/*.css), PAS
+// approximées — même technique que pour les thèmes presets (voir App.css).
 
 interface Step {
-  l: string; // ex: "58.5%"
-  c: string; // ex: ".233"
+  l: number; // luminosité native Tailwind pour ce palier, en % (ex: 58.5)
+  c: string; // chroma native, INCHANGÉE quelle que soit la personnalisation (ex: ".233")
 }
 
-/** Accent (boutons, liens, focus) — palette `indigo`, remplace la teinte de TOUS les paliers déjà
- * utilisés par les thèmes presets ocean/forest/sunset/rose/violet/amber (voir App.css). */
+/** Accent (boutons, liens, focus) — palette `indigo`. */
 const INDIGO_STEPS: Record<string, Step> = {
-  "50": { l: "96.2%", c: ".018" },
-  "100": { l: "93%", c: ".034" },
-  "200": { l: "87%", c: ".065" },
-  "300": { l: "78.5%", c: ".115" },
-  "400": { l: "67.3%", c: ".182" },
-  "500": { l: "58.5%", c: ".233" },
-  "600": { l: "51.1%", c: ".262" },
-  "700": { l: "45.7%", c: ".24" },
-  "800": { l: "39.8%", c: ".195" },
-  "900": { l: "35.9%", c: ".144" },
-  "950": { l: "25.7%", c: ".09" },
+  "50": { l: 96.2, c: ".018" },
+  "100": { l: 93, c: ".034" },
+  "200": { l: 87, c: ".065" },
+  "300": { l: 78.5, c: ".115" },
+  "400": { l: 67.3, c: ".182" },
+  "500": { l: 58.5, c: ".233" },
+  "600": { l: 51.1, c: ".262" },
+  "700": { l: 45.7, c: ".24" },
+  "800": { l: 39.8, c: ".195" },
+  "900": { l: 35.9, c: ".144" },
+  "950": { l: 25.7, c: ".09" },
 };
+const INDIGO_ANCHOR_L = INDIGO_STEPS["500"].l;
 
 /** Danger (Supprimer, erreurs) — palette `red`, uniquement les paliers réellement utilisés dans
  * l'app (vérifié par grep sur src/). */
 const RED_STEPS: Record<string, Step> = {
-  "50": { l: "97.1%", c: ".013" },
-  "100": { l: "93.6%", c: ".032" },
-  "200": { l: "88.5%", c: ".062" },
-  "300": { l: "80.8%", c: ".114" },
-  "400": { l: "70.4%", c: ".191" },
-  "500": { l: "63.7%", c: ".237" },
-  "600": { l: "57.7%", c: ".245" },
-  "700": { l: "50.5%", c: ".213" },
-  "800": { l: "44.4%", c: ".177" },
-  "900": { l: "39.6%", c: ".141" },
-  "950": { l: "25.8%", c: ".092" },
+  "50": { l: 97.1, c: ".013" },
+  "100": { l: 93.6, c: ".032" },
+  "200": { l: 88.5, c: ".062" },
+  "300": { l: 80.8, c: ".114" },
+  "400": { l: 70.4, c: ".191" },
+  "500": { l: 63.7, c: ".237" },
+  "600": { l: 57.7, c: ".245" },
+  "700": { l: 50.5, c: ".213" },
+  "800": { l: 44.4, c: ".177" },
+  "900": { l: 39.6, c: ".141" },
+  "950": { l: 25.8, c: ".092" },
 };
+const RED_ANCHOR_L = RED_STEPS["500"].l;
 
-/** Favoris (★) — palette `amber`. */
+/** Favoris (★) — palette `amber` (pas de palier 500 utilisé dans l'app — ancrage sur 400, le
+ * palier le plus proche réellement présent). */
 const AMBER_STEPS: Record<string, Step> = {
-  "50": { l: "98.7%", c: ".022" },
-  "100": { l: "96.2%", c: ".059" },
-  "300": { l: "87.9%", c: ".169" },
-  "400": { l: "82.8%", c: ".189" },
-  "500": { l: "76.9%", c: ".188" },
-  "600": { l: "66.6%", c: ".179" },
-  "700": { l: "55.5%", c: ".163" },
-  "900": { l: "41.4%", c: ".112" },
-  "950": { l: "27.9%", c: ".077" },
+  "50": { l: 98.7, c: ".022" },
+  "100": { l: 96.2, c: ".059" },
+  "300": { l: 87.9, c: ".169" },
+  "400": { l: 82.8, c: ".189" },
+  "500": { l: 76.9, c: ".188" },
+  "600": { l: 66.6, c: ".179" },
+  "700": { l: 55.5, c: ".163" },
+  "900": { l: 41.4, c: ".112" },
+  "950": { l: 27.9, c: ".077" },
 };
+const AMBER_ANCHOR_L = AMBER_STEPS["500"].l;
 
 /** Succès (confirmations) — DEUX familles utilisées côte à côte dans l'app pour ce sens
  * (`emerald` la plupart du temps, `green` à deux endroits — AutoBackupSettings.tsx,
- * PasswordStrengthMeter.tsx) : les deux tournent ensemble sur la même teinte choisie. */
+ * PasswordStrengthMeter.tsx) : les deux tournent ET se déclarent ensemble, ancrées sur le 500
+ * d'`emerald` (`green` n'a pas de palier 500 utilisé dans l'app). */
 const EMERALD_STEPS: Record<string, Step> = {
-  "100": { l: "95%", c: ".052" },
-  "300": { l: "84.5%", c: ".143" },
-  "400": { l: "76.5%", c: ".177" },
-  "500": { l: "69.6%", c: ".17" },
-  "600": { l: "59.6%", c: ".145" },
-  "700": { l: "50.8%", c: ".118" },
-  "950": { l: "26.2%", c: ".051" },
+  "100": { l: 95, c: ".052" },
+  "300": { l: 84.5, c: ".143" },
+  "400": { l: 76.5, c: ".177" },
+  "500": { l: 69.6, c: ".17" },
+  "600": { l: 59.6, c: ".145" },
+  "700": { l: 50.8, c: ".118" },
+  "950": { l: 26.2, c: ".051" },
 };
+const EMERALD_ANCHOR_L = EMERALD_STEPS["500"].l;
 const GREEN_STEPS: Record<string, Step> = {
-  "400": { l: "79.2%", c: ".209" },
-  "600": { l: "62.7%", c: ".194" },
+  "400": { l: 79.2, c: ".209" },
+  "600": { l: 62.7, c: ".194" },
 };
 
 export interface CustomThemeConfig {
-  mode: "dark" | "light";
-  accentHue: number; // 0-359
-  backgroundTinted: boolean;
+  backgroundHue: number; // 0-359
+  backgroundLightness: number; // 0-100 — luminosité du fond PRINCIPAL (page) ; < 50 = régime
+  // sombre (fond très luminosité basse, texte clair), >= 50 = régime clair — voir applyBackground.
+  accentHue: number;
+  accentLightness: number; // 0-100 — luminosité voulue pour le palier "500" de l'accent
   dangerHue: number;
+  dangerLightness: number;
   successHue: number;
+  successLightness: number;
   favoriteHue: number;
+  favoriteLightness: number;
 }
 
-/** Repose exactement sur celle du serveur (voir models.rs::UpdateThemeCustomizationPayload côté
- * backend) — c'est aussi ce que renvoie `null` quand le compte n'a jamais rien configuré (voir
- * api/client.ts::getThemeCustomization). */
+/** Repose exactement sur celle du serveur (voir models.rs::ThemeProfilePayload côté backend).
+ * Luminosités par défaut = valeurs natives Tailwind (delta nul) pour accent/danger/succès/favoris ;
+ * fond en régime sombre par défaut, à la luminosité déjà utilisée par les thèmes preset (12%). */
 export const DEFAULT_CUSTOM_THEME: CustomThemeConfig = {
-  mode: "dark",
-  accentHue: 277, // teinte "native" de l'indigo Tailwind — un thème custom flambant neuf ressemble
-  // donc au thème "dark" par défaut tant que l'utilisateur n'a rien bougé.
-  backgroundTinted: false,
+  backgroundHue: 0,
+  backgroundLightness: 12,
+  accentHue: 277, // teinte "native" de l'indigo Tailwind.
+  accentLightness: Math.round(INDIGO_ANCHOR_L),
   dangerHue: 27,
+  dangerLightness: Math.round(RED_ANCHOR_L),
   successHue: 163,
+  successLightness: Math.round(EMERALD_ANCHOR_L),
   favoriteHue: 75,
+  favoriteLightness: Math.round(AMBER_ANCHOR_L),
 };
 
-function applyFamily(el: HTMLElement, family: string, steps: Record<string, Step>, hue: number): void {
+function clampL(l: number): number {
+  return Math.min(100, Math.max(0, l));
+}
+
+function applyFamily(el: HTMLElement, family: string, steps: Record<string, Step>, hue: number, lightness: number, anchorNativeL: number): void {
+  const offset = lightness - anchorNativeL;
   for (const [step, { l, c }] of Object.entries(steps)) {
-    el.style.setProperty(`--color-${family}-${step}`, `oklch(${l} ${c} ${hue})`);
+    el.style.setProperty(`--color-${family}-${step}`, `oklch(${clampL(l + offset).toFixed(1)}% ${c} ${hue})`);
   }
 }
 
-/** Fond légèrement teinté par l'accent (case à cocher "teinté") — MÊME recette que les thèmes
- * presets ocean/forest/... en mode sombre (voir App.css, section "fond teinté") : L et C décalés
- * (pas juste C) par rapport au neutral natif, valeur tranchée à l'œil sur captures d'écran lors de
- * l'ajout des thèmes presets, reprise ici telle quelle. En mode clair, pas de recette déjà vérifiée
- * du même genre à reprendre : on se contente d'une chroma faible SANS toucher la luminosité
- * (paliers 50/100/200 gardent leur L Tailwind natif) — un vrai "tint" sans en changer la clarté.
- */
-function applyBackgroundTint(el: HTMLElement, mode: "dark" | "light", hue: number): void {
-  if (mode === "dark") {
-    el.style.setProperty("--color-neutral-950", `oklch(12% .006 ${hue})`);
-    el.style.setProperty("--color-neutral-900", `oklch(19% .008 ${hue})`);
-    el.style.setProperty("--color-neutral-800", `oklch(29% .01 ${hue})`);
+/** Fond ENTIÈREMENT personnalisé (teinte + luminosité, retour utilisateur : "je ne veux pas que le
+ * fond soit soit clair soit sombre je veux aussi pouvoir choisir la couleur pour le fond") — PAS
+ * une bascule binaire : le régime clair/sombre se déduit simplement d'où se trouve la luminosité
+ * choisie (< 50% = plutôt sombre, le fond `page` prend directement cette valeur et les 2 fonds
+ * "secondaires" (cartes/bordures) sont dérivés avec les MÊMES écarts que la palette Tailwind native
+ * neutral-950/900/800 ; >= 50% = plutôt clair, dérivés comme neutral-50/100/200). Chroma faible et
+ * fixe (indépendante du choix utilisateur, pour ne jamais nuire au contraste du texte par-dessus),
+ * seule la teinte suit le choix. */
+function applyBackground(el: HTMLElement, hue: number, lightness: number): boolean {
+  const isDark = lightness < 50;
+  if (isDark) {
+    // Écarts natifs Tailwind neutral 950->900->800 : 14.5 -> 20.5 (+6) -> 26.9 (+12.4).
+    el.style.setProperty("--color-neutral-950", `oklch(${clampL(lightness).toFixed(1)}% .006 ${hue})`);
+    el.style.setProperty("--color-neutral-900", `oklch(${clampL(lightness + 6).toFixed(1)}% .008 ${hue})`);
+    el.style.setProperty("--color-neutral-800", `oklch(${clampL(lightness + 12.4).toFixed(1)}% .01 ${hue})`);
   } else {
-    el.style.setProperty("--color-neutral-50", `oklch(98.5% .008 ${hue})`);
-    el.style.setProperty("--color-neutral-100", `oklch(97% .01 ${hue})`);
-    el.style.setProperty("--color-neutral-200", `oklch(92.2% .015 ${hue})`);
+    // Écarts natifs Tailwind neutral 50->100->200 : 98.5 -> 97 (-1.5) -> 92.2 (-6.3).
+    el.style.setProperty("--color-neutral-50", `oklch(${clampL(lightness).toFixed(1)}% .008 ${hue})`);
+    el.style.setProperty("--color-neutral-100", `oklch(${clampL(lightness - 1.5).toFixed(1)}% .01 ${hue})`);
+    el.style.setProperty("--color-neutral-200", `oklch(${clampL(lightness - 6.3).toFixed(1)}% .015 ${hue})`);
   }
+  return isDark;
 }
 
 const TINT_PROPERTIES_DARK = ["--color-neutral-950", "--color-neutral-900", "--color-neutral-800"];
@@ -146,23 +167,21 @@ const ALL_FAMILY_PROPERTIES = [
 ];
 
 /** Applique la personnalisation sur `<html>` — appelée quand `getTheme() === "custom"` (voir
- * theme.ts::applyTheme). Écrase toute classe de palette preset éventuellement encore présente :
- * inutile ici, les propriétés inline ci-dessous l'emportent de toute façon en spécificité CSS, mais
- * clearCustomTheme() les retire proprement en sens inverse quand on QUITTE "custom" pour un preset. */
-export function applyCustomTheme(config: CustomThemeConfig): void {
+ * theme.ts::applyTheme). Renvoie `isDark` (déduit de la luminosité de fond, voir applyBackground
+ * ci-dessus) — c'est applyTheme() qui pose la classe `dark`/`color-scheme`, PAS cette fonction :
+ * elle ne touche qu'aux propriétés de couleur elles-mêmes. */
+export function applyCustomTheme(config: CustomThemeConfig): boolean {
   const el = document.documentElement;
-  applyFamily(el, "indigo", INDIGO_STEPS, config.accentHue);
-  applyFamily(el, "red", RED_STEPS, config.dangerHue);
-  applyFamily(el, "amber", AMBER_STEPS, config.favoriteHue);
-  applyFamily(el, "emerald", EMERALD_STEPS, config.successHue);
-  applyFamily(el, "green", GREEN_STEPS, config.successHue);
+  applyFamily(el, "indigo", INDIGO_STEPS, config.accentHue, config.accentLightness, INDIGO_ANCHOR_L);
+  applyFamily(el, "red", RED_STEPS, config.dangerHue, config.dangerLightness, RED_ANCHOR_L);
+  applyFamily(el, "amber", AMBER_STEPS, config.favoriteHue, config.favoriteLightness, AMBER_ANCHOR_L);
+  applyFamily(el, "emerald", EMERALD_STEPS, config.successHue, config.successLightness, EMERALD_ANCHOR_L);
+  applyFamily(el, "green", GREEN_STEPS, config.successHue, config.successLightness, EMERALD_ANCHOR_L);
 
-  // Retire l'éventuel tint de l'AUTRE mode (ex: on vient de basculer clair -> sombre) avant
-  // d'appliquer celui du mode courant — sinon les deux jeux de propriétés inline coexisteraient
-  // sans jamais se nettoyer (l'un des deux jeux ne serait de toute façon pas utilisé par les
-  // utilitaires Tailwind du mode courant, mais autant ne rien laisser traîner en mémoire du DOM).
+  // Retire l'éventuel jeu de propriétés de fond de l'AUTRE régime (ex: on vient de passer d'un
+  // fond sombre à un fond clair) avant d'appliquer celui du régime courant.
   for (const prop of [...TINT_PROPERTIES_DARK, ...TINT_PROPERTIES_LIGHT]) el.style.removeProperty(prop);
-  if (config.backgroundTinted) applyBackgroundTint(el, config.mode, config.accentHue);
+  return applyBackground(el, config.backgroundHue, config.backgroundLightness);
 }
 
 /** Retire toute personnalisation inline posée par applyCustomTheme() — appelée en quittant

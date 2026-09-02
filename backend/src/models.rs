@@ -1027,42 +1027,69 @@ pub struct FeatureSuggestionView {
 }
 
 // =========================================================================
-// 5sexies. PERSONNALISATION DE THÈME (SYNCHRONISÉE PAR COMPTE) — voir migration
-// 20260903000000_user_theme_customization.sql et handlers/theme_customization.rs. Retour
-// utilisateur (2026-09-03) : contrairement à TOUS les autres réglages d'apparence (thème preset
-// choisi dans le client, dispositions de menu/listes...), volontairement locaux à chaque appareil
-// jusqu'ici, celle-ci suit explicitement le compte sur tous les appareils, à la demande explicite
-// de l'utilisateur ("en profil"). Teintes en degrés OKLCH (0-359) — le calcul de la palette
-// complète (luminosité/chroma sûrs, déjà éprouvés) reste entièrement CÔTÉ CLIENT, le serveur ne
-// fait que stocker/valider des entiers.
+// 5sexies. PERSONNALISATION DE THÈME (PROFILS, SYNCHRONISÉS PAR COMPTE) — voir migration
+// 20260903010000_theme_customization_profiles.sql et handlers/theme_customization.rs. Retour
+// utilisateur (2026-09-03, puis affiné le même jour) : contrairement à TOUS les autres réglages
+// d'apparence (thème preset choisi dans le client, dispositions de menu/listes...), volontairement
+// locaux à chaque appareil jusqu'ici, celle-ci suit explicitement le compte sur tous les appareils
+// ("en profil"). PLUSIEURS profils nommés par compte (pas un réglage unique) — plafonnés à
+// MAX_PROFILES_PER_USER (voir repository.rs) pour tout compte SAUF l'Admin (AuthUser::is_admin,
+// voir handlers/theme_customization.rs), qui n'a aucune limite.
+//
+// Chaque couleur (fond/accent/danger/succès/favoris) est désormais teinte (0-359°) ET luminosité
+// (0-100%) INDÉPENDANTES — pas juste un mode clair/sombre global : "rendre une couleur plus sombre
+// ou plus claire" doit s'appliquer À CHAQUE couleur individuellement, fond compris (plus de bascule
+// binaire clair/sombre pour le fond : sa luminosité EST directement choisie, voir lib/customTheme.ts
+// côté client — le mode clair/sombre de l'interface se déduit simplement de si le fond choisi est
+// plutôt sombre ou plutôt clair). Le calcul de la palette complète (luminosité/chroma sûrs par
+// palier Tailwind, déjà éprouvés) reste entièrement CÔTÉ CLIENT, le serveur ne fait que
+// stocker/valider des entiers.
 // =========================================================================
 
 #[derive(Deserialize, Validate)]
-pub struct UpdateThemeCustomizationPayload {
-    /// "dark" ou "light" — validé À LA MAIN dans le handler (juste deux valeurs possibles, pas la
-    /// peine d'un validateur `custom` pour ça, voir handlers/theme_customization.rs).
-    pub mode: String,
+pub struct ThemeProfilePayload {
+    #[validate(length(min = 1, max = 60, message = "Le nom doit faire entre 1 et 60 caractères"))]
+    pub name: String,
+    #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
+    pub background_hue: i64,
+    #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
+    pub background_lightness: i64,
     #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
     pub accent_hue: i64,
-    pub background_tinted: bool,
+    #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
+    pub accent_lightness: i64,
     #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
     pub danger_hue: i64,
+    #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
+    pub danger_lightness: i64,
     #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
     pub success_hue: i64,
+    #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
+    pub success_lightness: i64,
     #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
     pub favorite_hue: i64,
+    #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
+    pub favorite_lightness: i64,
 }
 
-/// Vue renvoyée par GET /theme-customization — `None` (pas cette structure, voir le handler)
-/// signifie "aucune personnalisation enregistrée, thème preset actif", pas une erreur.
+/// Un profil enregistré, renvoyé par GET/POST/PUT /theme-profiles. `is_active` : au plus UN profil
+/// actif à la fois par compte (voir ThemeProfileRepository::activate) — aucun n'est actif tant que
+/// l'utilisateur n'en a jamais activé un (thème preset actif côté client dans ce cas).
 #[derive(Serialize, sqlx::FromRow)]
-pub struct ThemeCustomizationView {
-    pub mode: String,
+pub struct ThemeProfileView {
+    pub id: String,
+    pub name: String,
+    pub background_hue: i64,
+    pub background_lightness: i64,
     pub accent_hue: i64,
-    pub background_tinted: bool,
+    pub accent_lightness: i64,
     pub danger_hue: i64,
+    pub danger_lightness: i64,
     pub success_hue: i64,
+    pub success_lightness: i64,
     pub favorite_hue: i64,
+    pub favorite_lightness: i64,
+    pub is_active: bool,
 }
 
 // =========================================================================

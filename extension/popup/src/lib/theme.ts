@@ -86,17 +86,21 @@ export function setCachedCustomTheme(config: CustomThemeConfig): void {
  * sa résolution du moment). Toutes les variantes de palette PRESET sont volontairement des
  * variantes SOMBRES uniquement (tout leur intérêt — noir plus profond, accent différent —
  * s'exprime sur fond sombre) : `theme !== "light"` suffit à les forcer en sombre ci-dessous.
- * "custom" fait exception (voir CustomThemeConfig.mode). */
+ * "custom" fait exception — `isDark` y est DÉDUIT par applyCustomTheme() (voir son commentaire,
+ * basé sur la luminosité de fond choisie), pas décidé ici. */
 function applyTheme(theme: Theme): void {
-  const isDark = theme === "custom" ? getCachedCustomTheme().mode === "dark" : theme !== "light" && (theme !== "system" || systemPrefersDark());
+  document.documentElement.classList.remove(...PALETTE_CLASSES);
+  if (theme === "custom") {
+    const isDark = applyCustomTheme(getCachedCustomTheme());
+    document.documentElement.classList.toggle("dark", isDark);
+    document.documentElement.style.colorScheme = isDark ? "dark" : "light";
+    return;
+  }
+
+  const isDark = theme !== "light" && (theme !== "system" || systemPrefersDark());
   document.documentElement.classList.toggle("dark", isDark);
   document.documentElement.style.colorScheme = isDark ? "dark" : "light";
 
-  document.documentElement.classList.remove(...PALETTE_CLASSES);
-  if (theme === "custom") {
-    applyCustomTheme(getCachedCustomTheme());
-    return;
-  }
   clearCustomTheme();
   const paletteClass = paletteClassFor(theme);
   if (paletteClass) document.documentElement.classList.add(paletteClass);

@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
+import type { ThemeProfileView } from "../api/types";
+import { getErrorMessage } from "../lib/errors";
 
 const THEME_OPTIONS: { value: Theme; label: string }[] = [
   { value: "dark", label: "Sombre" },
@@ -18,97 +20,201 @@ const THEME_OPTIONS: { value: Theme; label: string }[] = [
   { value: "custom", label: "Personnalisé…" },
 ];
 
-/** Aperçu de teinte — palier "500" d'indigo (voir lib/customTheme.ts), assez saturé pour bien
- * distinguer les teintes au survol du curseur sans avoir à dupliquer toute une table L/C ici. */
-function swatchStyle(hue: number): React.CSSProperties {
-  return { backgroundColor: `oklch(58.5% .233 ${hue})` };
+const MAX_PROFILES = 3;
+
+/** Aperçu teinte+luminosité — chroma fixe assez saturée pour bien distinguer les réglages. */
+function swatchStyle(hue: number, lightness: number): React.CSSProperties {
+  return { backgroundColor: `oklch(${lightness}% .18 ${hue})` };
 }
 
-function HueSlider({ label, value, onChange }: { label: string; value: number; onChange: (hue: number) => void }) {
+function ColorRow({
+  label,
+  hue,
+  lightness,
+  onChange,
+}: {
+  label: string;
+  hue: number;
+  lightness: number;
+  onChange: (patch: { hue?: number; lightness?: number }) => void;
+}) {
   return (
     <div>
       <div className="mb-1 flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-400">
         <span>{label}</span>
-        <span
-          className="h-4 w-4 rounded-full border border-neutral-300 dark:border-neutral-700"
-          style={swatchStyle(value)}
-          aria-hidden="true"
+        <span className="h-4 w-4 rounded-full border border-neutral-300 dark:border-neutral-700" style={swatchStyle(hue, lightness)} aria-hidden="true" />
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="w-16 shrink-0 text-[11px] text-neutral-500">Teinte</span>
+        <input type="range" min={0} max={359} value={hue} onChange={(e) => onChange({ hue: Number(e.target.value) })} className="w-full accent-indigo-600" aria-label={`${label} — teinte`} />
+      </div>
+      <div className="mt-0.5 flex items-center gap-2">
+        <span className="w-16 shrink-0 text-[11px] text-neutral-500">Luminosité</span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={lightness}
+          onChange={(e) => onChange({ lightness: Number(e.target.value) })}
+          className="w-full accent-indigo-600"
+          aria-label={`${label} — luminosité (plus sombre/plus clair)`}
         />
       </div>
-      <input
-        type="range"
-        min={0}
-        max={359}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full accent-indigo-600"
-        aria-label={label}
-      />
     </div>
   );
 }
 
+function profileToConfig(p: ThemeProfileView): CustomThemeConfig {
+  return {
+    backgroundHue: p.background_hue,
+    backgroundLightness: p.background_lightness,
+    accentHue: p.accent_hue,
+    accentLightness: p.accent_lightness,
+    dangerHue: p.danger_hue,
+    dangerLightness: p.danger_lightness,
+    successHue: p.success_hue,
+    successLightness: p.success_lightness,
+    favoriteHue: p.favorite_hue,
+    favoriteLightness: p.favorite_lightness,
+  };
+}
+
+function configToPayload(name: string, c: CustomThemeConfig) {
+  return {
+    name,
+    background_hue: c.backgroundHue,
+    background_lightness: c.backgroundLightness,
+    accent_hue: c.accentHue,
+    accent_lightness: c.accentLightness,
+    danger_hue: c.dangerHue,
+    danger_lightness: c.dangerLightness,
+    success_hue: c.successHue,
+    success_lightness: c.successLightness,
+    favorite_hue: c.favoriteHue,
+    favorite_lightness: c.favoriteLightness,
+  };
+}
+
 /** Réglage du thème visuel — CORRECTIF (retour utilisateur, 2026-09-02) : jusqu'ici, aucun réglage
- * n'existait, le thème suivait purement la préférence système (sombre sur un PC configuré en
- * sombre, mais clair sur un mobile configuré en clair par défaut — pas un bug, juste l'absence de
- * contrôle). Les thèmes "presets" (Sombre/Minuit/Océan/...) restent purement locaux à cet appareil
- * (localStorage, voir lib/theme.ts) — pas partagés entre appareils, comme les autres réglages de
- * cette page (AutoLockSettings...).
+ * n'existait, le thème suivait purement la préférence système. Les thèmes "presets"
+ * (Sombre/Minuit/Océan/...) restent purement locaux à cet appareil (localStorage, voir
+ * lib/theme.ts) — pas partagés entre appareils, comme les autres réglages de cette page
+ * (AutoLockSettings...).
  *
- * "Personnalisé…" (retour utilisateur, 2026-09-03) fait EXCEPTION à ça : SEUL réglage de cette
- * page synchronisé par compte (voir api/client.ts::getThemeCustomization/updateThemeCustomization
- * et state/AuthContext.tsx::establishSession) — le choisir sur un appareil l'active sur tous les
- * autres au prochain démarrage de chacun. */
+ * "Personnalisé…" (retour utilisateur, 2026-09-03, affiné le même jour) fait EXCEPTION : PLUSIEURS
+ * profils nommés, synchronisés par COMPTE (voir api/client.ts, state/AuthContext.tsx::
+ * establishSession) — les créer/activer/modifier ici prend effet sur tous les appareils connectés
+ * à ce compte. Plafonnés à 3 profils par compte, ILLIMITÉ pour l'Admin. */
 export default function ThemeSettings() {
-  const { authorizedRequest } = useAuth();
+  const { authorizedRequest, isAdmin } = useAuth();
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
-  const [custom, setCustom] = useState<CustomThemeConfig>(() => getCachedCustomTheme());
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+
+  const [profiles, setProfiles] = useState<ThemeProfileView[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | "new" | null>(null);
+  const [draftName, setDraftName] = useState("");
+  const [draft, setDraft] = useState<CustomThemeConfig>(() => getCachedCustomTheme());
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+
+  useEffect(() => {
+    if (theme !== "custom" || profiles !== null) return;
+    authorizedRequest((token) => api.listThemeProfiles(token))
+      .then((list) => {
+        setProfiles(list);
+        const active = list.find((p) => p.is_active);
+        if (active) {
+          setEditingId(active.id);
+          setDraftName(active.name);
+          setDraft(profileToConfig(active));
+        }
+      })
+      .catch((err) => setLoadError(getErrorMessage(err)));
+  }, [theme, profiles, authorizedRequest]);
 
   async function handleThemeChange(value: Theme) {
     setThemeState(value);
     setTheme(value);
-    if (value !== "custom") {
-      // On quitte "custom" pour un preset classique : supprime la personnalisation côté serveur
-      // (best-effort) — sinon elle reviendrait forcer "custom" sur CET appareil (et tous les
-      // autres) au prochain lancement, voir establishSession(). Aucun effet si le compte n'avait
-      // de toute façon jamais rien enregistré (DELETE idempotent, voir handlers backend).
-      try {
-        await authorizedRequest((token) => api.deleteThemeCustomization(token));
-      } catch {
-        // best-effort — le pire cas est de revoir "custom" réapparaître au prochain démarrage,
-        // rien de destructif ; l'utilisateur peut relancer l'action.
-      }
-    }
   }
 
-  function updateCustom(patch: Partial<CustomThemeConfig>) {
-    const next = { ...custom, ...patch };
-    setCustom(next);
-    // Aperçu immédiat, purement local — la synchro serveur se fait explicitement via le bouton
-    // "Enregistrer" ci-dessous (évite un appel réseau à chaque tick du curseur pendant le glissé).
-    setCachedCustomTheme(next);
+  function startNewProfile() {
+    setEditingId("new");
+    setDraftName(`Profil ${(profiles?.length ?? 0) + 1}`);
+    setDraft(getCachedCustomTheme());
+    setActionError(null);
     setSaveState("idle");
   }
 
-  async function handleSave() {
+  function startEditProfile(p: ThemeProfileView) {
+    setEditingId(p.id);
+    setDraftName(p.name);
+    setDraft(profileToConfig(p));
+    setActionError(null);
+    setSaveState("idle");
+  }
+
+  function updateDraft(patch: Partial<CustomThemeConfig>) {
+    const next = { ...draft, ...patch };
+    setDraft(next);
+    setSaveState("idle");
+    // Aperçu immédiat SEULEMENT si ce profil est déjà le profil actif — éditer un profil inactif
+    // ne doit pas changer ce qui est affiché tant qu'on ne l'a pas explicitement activé.
+    const editingActiveProfile = profiles?.some((p) => p.id === editingId && p.is_active);
+    if (editingActiveProfile) setCachedCustomTheme(next);
+  }
+
+  async function handleSaveProfile() {
     setSaveState("saving");
+    setActionError(null);
     try {
-      await authorizedRequest((token) =>
-        api.updateThemeCustomization(token, {
-          mode: custom.mode,
-          accent_hue: custom.accentHue,
-          background_tinted: custom.backgroundTinted,
-          danger_hue: custom.dangerHue,
-          success_hue: custom.successHue,
-          favorite_hue: custom.favoriteHue,
-        }),
-      );
+      const payload = configToPayload(draftName.trim() || "Sans nom", draft);
+      if (editingId === "new") {
+        const created = await authorizedRequest((token) => api.createThemeProfile(token, payload));
+        setProfiles((prev) => [...(prev ?? []), created]);
+        setEditingId(created.id);
+      } else if (editingId) {
+        await authorizedRequest((token) => api.updateThemeProfile(token, editingId, payload));
+        setProfiles((prev) => (prev ?? []).map((p) => (p.id === editingId ? { ...p, ...payload } : p)));
+      }
       setSaveState("saved");
-    } catch {
-      setSaveState("error");
+    } catch (err) {
+      setActionError(getErrorMessage(err));
+      setSaveState("idle");
     }
   }
+
+  async function handleActivate(p: ThemeProfileView) {
+    setActionError(null);
+    try {
+      await authorizedRequest((token) => api.activateThemeProfile(token, p.id));
+      setProfiles((prev) => (prev ?? []).map((item) => ({ ...item, is_active: item.id === p.id })));
+      setCachedCustomTheme(profileToConfig(p));
+      setTheme("custom");
+      setThemeState("custom");
+    } catch (err) {
+      setActionError(getErrorMessage(err));
+    }
+  }
+
+  async function handleDelete(p: ThemeProfileView) {
+    if (!confirm(`Supprimer le profil "${p.name}" ? Cette action est irréversible.`)) return;
+    setActionError(null);
+    try {
+      await authorizedRequest((token) => api.deleteThemeProfile(token, p.id));
+      setProfiles((prev) => (prev ?? []).filter((item) => item.id !== p.id));
+      if (editingId === p.id) setEditingId(null);
+      // Le profil supprimé était actif : revient à un thème preset plutôt que de laisser un
+      // aperçu figé sur des couleurs qui n'existent plus côté serveur (voir DELETE côté backend).
+      if (p.is_active) {
+        setTheme("dark");
+        setThemeState("dark");
+      }
+    } catch (err) {
+      setActionError(getErrorMessage(err));
+    }
+  }
+
+  const atLimit = !isAdmin && (profiles?.length ?? 0) >= MAX_PROFILES;
 
   return (
     <div>
@@ -127,57 +233,84 @@ export default function ThemeSettings() {
       <p className="mt-1 text-xs text-neutral-500">
         "Suivre l'appareil" utilise le thème clair/sombre configuré dans les réglages de ton
         système d'exploitation. Minuit, Ardoise, Océan, Forêt, Coucher de soleil, Rose, Violet et
-        Ambre sont des versions sombres toutes prêtes — seuls le fond et/ou la couleur d'accent
-        changent. "Personnalisé…" te laisse choisir chaque teinte toi-même, et se synchronise sur
-        tous tes appareils connectés à ce compte.
+        Ambre sont des versions sombres toutes prêtes. "Personnalisé…" te laisse enregistrer
+        jusqu'à {MAX_PROFILES} profils où chaque couleur (fond compris) a sa propre teinte et sa
+        propre luminosité — synchronisés sur tous tes appareils connectés à ce compte.
       </p>
 
       {theme === "custom" && (
         <div className="mt-4 space-y-4 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-          <div className="flex gap-2">
-            {(["dark", "light"] as const).map((m) => (
+          {loadError && <p className="text-xs text-red-600 dark:text-red-400">{loadError}</p>}
+          {actionError && <p className="text-xs text-red-600 dark:text-red-400">{actionError}</p>}
+
+          {profiles && (
+            <div className="flex flex-wrap gap-2">
+              {profiles.map((p) => (
+                <div
+                  key={p.id}
+                  className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-xs ${
+                    p.is_active ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300" : "border-neutral-300 dark:border-neutral-700"
+                  }`}
+                >
+                  <button type="button" onClick={() => startEditProfile(p)} className="font-medium hover:underline">
+                    {p.name}
+                    {p.is_active ? " ✓" : ""}
+                  </button>
+                  {!p.is_active && (
+                    <button type="button" onClick={() => void handleActivate(p)} className="text-neutral-500 hover:text-indigo-600 dark:hover:text-indigo-400" title="Activer">
+                      Activer
+                    </button>
+                  )}
+                  <button type="button" onClick={() => void handleDelete(p)} className="text-neutral-500 hover:text-red-600 dark:hover:text-red-400" title="Supprimer">
+                    ✕
+                  </button>
+                </div>
+              ))}
               <button
-                key={m}
                 type="button"
-                onClick={() => updateCustom({ mode: m })}
-                className={`flex-1 rounded-lg border px-3 py-1.5 text-sm ${
-                  custom.mode === m
-                    ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
-                    : "border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
-                }`}
+                onClick={startNewProfile}
+                disabled={atLimit}
+                className="rounded-lg border border-dashed border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:border-indigo-400 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-400"
+                title={atLimit ? `Limite de ${MAX_PROFILES} profils atteinte` : "Nouveau profil"}
               >
-                {m === "dark" ? "Sombre" : "Clair"}
+                + Nouveau profil
               </button>
-            ))}
-          </div>
+            </div>
+          )}
+          {atLimit && <p className="text-xs text-neutral-500">Limite de {MAX_PROFILES} profils atteinte — supprime-en un pour en créer un nouveau.</p>}
 
-          <HueSlider label="Accent (boutons, liens)" value={custom.accentHue} onChange={(h) => updateCustom({ accentHue: h })} />
-          <HueSlider label="Danger (supprimer, erreurs)" value={custom.dangerHue} onChange={(h) => updateCustom({ dangerHue: h })} />
-          <HueSlider label="Succès (confirmations)" value={custom.successHue} onChange={(h) => updateCustom({ successHue: h })} />
-          <HueSlider label="Favoris (★)" value={custom.favoriteHue} onChange={(h) => updateCustom({ favoriteHue: h })} />
+          {editingId && (
+            <div className="space-y-3 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+              <input
+                type="text"
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                placeholder="Nom du profil"
+                maxLength={60}
+                className="w-full rounded-lg border border-neutral-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
+              />
 
-          <label className="flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-300">
-            <input
-              type="checkbox"
-              checked={custom.backgroundTinted}
-              onChange={(e) => updateCustom({ backgroundTinted: e.target.checked })}
-              className="h-4 w-4 rounded border-neutral-300 text-indigo-600 dark:border-neutral-700"
-            />
-            Teinter aussi le fond avec la couleur d'accent
-          </label>
+              <ColorRow label="Fond de l'app" hue={draft.backgroundHue} lightness={draft.backgroundLightness} onChange={(p) => updateDraft({ backgroundHue: p.hue ?? draft.backgroundHue, backgroundLightness: p.lightness ?? draft.backgroundLightness })} />
+              <ColorRow label="Accent (boutons, liens)" hue={draft.accentHue} lightness={draft.accentLightness} onChange={(p) => updateDraft({ accentHue: p.hue ?? draft.accentHue, accentLightness: p.lightness ?? draft.accentLightness })} />
+              <ColorRow label="Danger (supprimer, erreurs)" hue={draft.dangerHue} lightness={draft.dangerLightness} onChange={(p) => updateDraft({ dangerHue: p.hue ?? draft.dangerHue, dangerLightness: p.lightness ?? draft.dangerLightness })} />
+              <ColorRow label="Succès (confirmations)" hue={draft.successHue} lightness={draft.successLightness} onChange={(p) => updateDraft({ successHue: p.hue ?? draft.successHue, successLightness: p.lightness ?? draft.successLightness })} />
+              <ColorRow label="Favoris (★)" hue={draft.favoriteHue} lightness={draft.favoriteLightness} onChange={(p) => updateDraft({ favoriteHue: p.hue ?? draft.favoriteHue, favoriteLightness: p.lightness ?? draft.favoriteLightness })} />
 
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => void handleSave()}
-              disabled={saveState === "saving"}
-              className="rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
-            >
-              {saveState === "saving" ? "Enregistrement…" : "Enregistrer sur ce compte"}
-            </button>
-            {saveState === "saved" && <span className="text-xs text-emerald-600 dark:text-emerald-400">Enregistré — synchronisé sur tous tes appareils.</span>}
-            {saveState === "error" && <span className="text-xs text-red-600 dark:text-red-400">Échec de l'enregistrement — réessaie.</span>}
-          </div>
+              <p className="text-xs text-neutral-500">Une luminosité de fond inférieure à 50% donne une interface sombre, au-delà une interface claire.</p>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void handleSaveProfile()}
+                  disabled={saveState === "saving"}
+                  className="rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+                >
+                  {saveState === "saving" ? "Enregistrement…" : editingId === "new" ? "Créer le profil" : "Enregistrer"}
+                </button>
+                {saveState === "saved" && <span className="text-xs text-emerald-600 dark:text-emerald-400">Enregistré — synchronisé sur tous tes appareils.</span>}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -647,14 +647,16 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/admin/feature-suggestions", get(handlers::list_feature_suggestions))
         .route("/admin/feature-suggestions/{id}", delete(handlers::delete_feature_suggestion))
 
-        // Personnalisation de thème SYNCHRONISÉE PAR COMPTE (voir handlers/theme_customization.rs)
-        // — retour utilisateur (2026-09-03), "en profil" : contrairement au thème preset/aux
-        // dispositions (locaux à chaque appareil, jamais envoyés au serveur), celle-ci suit le
-        // compte. Chaque route agit UNIQUEMENT sur la personnalisation du compte APPELANT (email
-        // tiré de AuthUser, jamais d'un paramètre) — aucune restriction de rôle au-delà d'être
-        // connecté, ce n'est pas une ressource administrée. Sur global_governor, comme le reste de
-        // l'API authentifiée.
-        .route("/theme-customization", get(handlers::get_theme_customization).put(handlers::update_theme_customization).delete(handlers::delete_theme_customization))
+        // Personnalisation de thème SYNCHRONISÉE PAR COMPTE, en PROFILS nommés (voir
+        // handlers/theme_customization.rs) — retour utilisateur (2026-09-03), "en profil" :
+        // contrairement au thème preset/aux dispositions (locaux à chaque appareil, jamais envoyés
+        // au serveur), celle-ci suit le compte. Chaque route agit UNIQUEMENT sur les profils du
+        // compte APPELANT (email tiré de AuthUser, jamais d'un paramètre) — aucune restriction de
+        // rôle au-delà d'être connecté, SAUF le plafond de création (3 profils, illimité pour
+        // l'Admin, voir le handler). Sur global_governor, comme le reste de l'API authentifiée.
+        .route("/theme-profiles", get(handlers::list_theme_profiles).post(handlers::create_theme_profile))
+        .route("/theme-profiles/{id}", put(handlers::update_theme_profile).delete(handlers::delete_theme_profile))
+        .route("/theme-profiles/{id}/activate", post(handlers::activate_theme_profile))
 
         // Application des middlewares globaux de Tower
         // CORRECTIF SÉCURITÉ (voir rewrite_client_ip_from_proxy_headers ci-dessus) : ajoutée EN

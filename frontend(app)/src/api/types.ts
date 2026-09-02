@@ -550,21 +550,29 @@ export interface TfaRequiredResponse {
   status: "2FA_REQUIRED";
 }
 
-// --- Personnalisation de thème (voir handlers/theme_customization.rs côté backend) ---
+// --- Personnalisation de thème, en PROFILS (voir handlers/theme_customization.rs côté backend) ---
 
-/** `null` si le compte n'a jamais rien enregistré (voir getThemeCustomization ci-dessous) — le
- * client applique alors un thème preset. Teintes en degrés (0-359) ; toute la dérivation de
- * palette (L/C par palier Tailwind) reste côté client, voir lib/customTheme.ts. */
-export interface ThemeCustomizationView {
-  mode: "dark" | "light";
+/** Teintes en degrés (0-359), luminosités en pourcentage (0-100) — toute la dérivation de palette
+ * (chroma sûr par palier Tailwind, décalage de luminosité relatif) reste côté client, voir
+ * lib/customTheme.ts. Pas de mode clair/sombre séparé : déduit de `background_lightness`. */
+export interface ThemeProfileView {
+  id: string;
+  name: string;
+  background_hue: number;
+  background_lightness: number;
   accent_hue: number;
-  background_tinted: boolean;
+  accent_lightness: number;
   danger_hue: number;
+  danger_lightness: number;
   success_hue: number;
+  success_lightness: number;
   favorite_hue: number;
+  favorite_lightness: number;
+  /** Au plus UN profil actif à la fois par compte (voir activateThemeProfile côté client). */
+  is_active: boolean;
 }
 
-export type UpdateThemeCustomizationPayload = ThemeCustomizationView;
+export type ThemeProfilePayload = Omit<ThemeProfileView, "id" | "is_active">;
 
 /** Erreur générique renvoyée par le backend, voir error.rs::AppError::into_response(). */
 export interface ApiErrorBody {

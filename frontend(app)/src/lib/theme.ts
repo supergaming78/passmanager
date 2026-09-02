@@ -17,14 +17,16 @@
 // "media") — voir `@custom-variant dark (&:where(.dark, .dark *));` dans App.css, qui bascule sur
 // une stratégie "class" (présence de `.dark` sur `<html>`, gérée ici) pour pouvoir le forcer.
 //
-// "custom" (retour utilisateur, 2026-09-03) : un thème de PLUS, à côté des presets ci-dessus, où
-// l'utilisateur choisit lui-même chaque teinte (accent/danger/succès/favoris + fond teinté ou non)
-// via un curseur — voir lib/customTheme.ts pour la mécanique (propriétés CSS posées en inline,
-// PAS une classe statique comme les presets, puisque la teinte choisie peut être n'importe quelle
-// valeur 0-359°). Contrairement aux presets (volontairement sombre uniquement), "custom" supporte
-// AUSSI un mode clair (voir CustomThemeConfig.mode) — seul thème de la liste dans ce cas. Synchro-
-// nisé par COMPTE (voir api/client.ts::getThemeCustomization), pas seulement en local comme le
-// reste de ce fichier — voir state/AuthContext.tsx::establishSession pour le point de récupération.
+// "custom" (retour utilisateur, 2026-09-03, affiné le même jour) : un thème de PLUS, à côté des
+// presets ci-dessus, où l'utilisateur choisit lui-même CHAQUE couleur — teinte ET luminosité
+// indépendantes, fond compris (pas juste "teinté ou pas") — via des curseurs, voir
+// lib/customTheme.ts pour la mécanique (propriétés CSS posées en inline, PAS une classe statique
+// comme les presets, puisque la teinte/luminosité choisies peuvent être n'importe quelle valeur).
+// Contrairement aux presets (volontairement sombres uniquement), "custom" peut être clair OU
+// sombre — mais ce n'est PAS une bascule séparée : ça se déduit simplement de la luminosité de
+// fond choisie (voir customTheme.ts::applyBackground). PLUSIEURS profils nommés, synchronisés par
+// COMPTE (voir api/client.ts, state/AuthContext.tsx::establishSession) — pas juste en local comme
+// le reste de ce fichier.
 import { applyCustomTheme, clearCustomTheme, DEFAULT_CUSTOM_THEME, type CustomThemeConfig } from "./customTheme";
 
 export type Theme = "dark" | "light" | "system" | "midnight" | "ocean" | "forest" | "sunset" | "rose" | "violet" | "amber" | "slate" | "custom";
@@ -112,21 +114,24 @@ export function setCachedCustomTheme(config: CustomThemeConfig): void {
  * rose/violet/amber/slate) sont volontairement des variantes SOMBRES uniquement (tout leur
  * intérêt — noir plus profond, accent différent — s'exprime sur fond sombre) : `theme !== "light"`
  * suffit à les forcer en sombre ci-dessous, quel que soit leur nombre. "custom" fait exception —
- * seul thème à supporter un mode clair (voir CustomThemeConfig.mode ci-dessus) — d'où la branche
- * séparée pour lui juste en dessous. */
+ * pour lui, `isDark` est DÉDUIT par applyCustomTheme() (voir son commentaire, basé sur la
+ * luminosité de fond choisie), pas décidé ici. */
 function applyTheme(theme: Theme): void {
-  const isDark = theme === "custom" ? getCachedCustomTheme().mode === "dark" : theme !== "light" && (theme !== "system" || systemPrefersDark());
+  document.documentElement.classList.remove(...PALETTE_CLASSES);
+  if (theme === "custom") {
+    const isDark = applyCustomTheme(getCachedCustomTheme());
+    document.documentElement.classList.toggle("dark", isDark);
+    document.documentElement.style.colorScheme = isDark ? "dark" : "light";
+    return;
+  }
+
+  const isDark = theme !== "light" && (theme !== "system" || systemPrefersDark());
   document.documentElement.classList.toggle("dark", isDark);
   // `color-scheme` (PAS juste la classe `dark` ci-dessus) : contrôle le rendu des éléments natifs
   // du navigateur/webview (barres de défilement, cases à cocher non stylées...) — sans ça, ils
   // resteraient clairs même avec `dark` forcé sur le reste de la page.
   document.documentElement.style.colorScheme = isDark ? "dark" : "light";
 
-  document.documentElement.classList.remove(...PALETTE_CLASSES);
-  if (theme === "custom") {
-    applyCustomTheme(getCachedCustomTheme());
-    return;
-  }
   // Retire toute personnalisation inline qui pourrait rester d'un précédent "custom" — sinon elle
   // masquerait la classe de palette preset ci-dessous (spécificité inline > classe, voir
   // customTheme.ts). Sans effet si "custom" n'avait jamais été utilisé (rien à retirer).

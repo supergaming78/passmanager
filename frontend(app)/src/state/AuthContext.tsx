@@ -233,20 +233,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // best-effort, voir la doc ci-dessus.
       }
       try {
-        const customization = await api.getThemeCustomization(accessToken);
-        if (customization) {
-          // Une personnalisation existe côté serveur : ce compte utilise "custom" sur AU MOINS un
+        const profiles = await api.listThemeProfiles(accessToken);
+        const active = profiles.find((p) => p.is_active);
+        if (active) {
+          // Un profil est actif côté serveur : ce compte utilise "custom" sur AU MOINS un
           // appareil — on l'active ici aussi (voir la doc ci-dessus). Un compte qui n'a jamais
-          // personnalisé, ou qui est explicitement revenu à un preset (DELETE, voir
-          // ThemeSettings.tsx), reçoit `null` ici : le thème local (preset) choisi sur CET
-          // appareil reste inchangé dans ce cas, voir setTheme()/getTheme() dans lib/theme.ts.
+          // créé de profil, ou dont aucun n'est actif (le dernier actif a été supprimé, voir
+          // ThemeSettings.tsx), ne reçoit aucun profil actif ici : le thème local (preset) choisi
+          // sur CET appareil reste inchangé dans ce cas, voir setTheme()/getTheme() dans lib/theme.ts.
           setCachedCustomTheme({
-            mode: customization.mode,
-            accentHue: customization.accent_hue,
-            backgroundTinted: customization.background_tinted,
-            dangerHue: customization.danger_hue,
-            successHue: customization.success_hue,
-            favoriteHue: customization.favorite_hue,
+            backgroundHue: active.background_hue,
+            backgroundLightness: active.background_lightness,
+            accentHue: active.accent_hue,
+            accentLightness: active.accent_lightness,
+            dangerHue: active.danger_hue,
+            dangerLightness: active.danger_lightness,
+            successHue: active.success_hue,
+            successLightness: active.success_lightness,
+            favoriteHue: active.favorite_hue,
+            favoriteLightness: active.favorite_lightness,
           });
           setTheme("custom");
         }

@@ -35,26 +35,31 @@ type Screen =
   | { kind: "tfa"; email: string; authHashHex: string; vaultKey: Uint8Array; rememberMe: boolean }
   | { kind: "vault"; email: string; vaultKey: Uint8Array };
 
-/** Récupère la personnalisation de thème du compte et l'active si elle existe (voir
- * lib/theme.ts::setTheme, api/client.ts::getThemeCustomization) — équivalent, pour la popup, du
- * bloc fait dans state/AuthContext.tsx::establishSession côté desktop (voir son commentaire pour
- * le raisonnement complet). Ici, PAS de point "établissement de session" unique comme là-bas (la
- * popup n'en a pas, voir lib/session.ts) : appelée à la fois quand une session déjà active est
- * retrouvée au montage (la popup vient d'être rouverte, potentiellement des jours après une
- * modification faite depuis un autre appareil) ET juste après une connexion/2FA réussie (voir
- * goToVault() ci-dessous, appelée dans les deux cas). Best-effort : une coupure réseau laisse
+/** Récupère les profils de personnalisation de thème du compte et active le profil actif s'il y
+ * en a un (voir lib/theme.ts::setTheme, api/client.ts::listThemeProfiles) — équivalent, pour la
+ * popup, du bloc fait dans state/AuthContext.tsx::establishSession côté desktop (voir son
+ * commentaire pour le raisonnement complet). Ici, PAS de point "établissement de session" unique
+ * comme là-bas (la popup n'en a pas, voir lib/session.ts) : appelée à la fois quand une session
+ * déjà active est retrouvée au montage (la popup vient d'être rouverte, potentiellement des jours
+ * après une modification faite depuis un autre appareil) ET juste après une connexion/2FA réussie
+ * (voir goToVault() ci-dessous, appelée dans les deux cas). Best-effort : une coupure réseau laisse
  * simplement le thème local (preset ou dernière personnalisation connue) inchangé. */
 async function syncThemeCustomization(accessToken: string): Promise<void> {
   try {
-    const customization = await api.getThemeCustomization(accessToken);
-    if (customization) {
+    const profiles = await api.listThemeProfiles(accessToken);
+    const active = profiles.find((p) => p.is_active);
+    if (active) {
       setCachedCustomTheme({
-        mode: customization.mode,
-        accentHue: customization.accent_hue,
-        backgroundTinted: customization.background_tinted,
-        dangerHue: customization.danger_hue,
-        successHue: customization.success_hue,
-        favoriteHue: customization.favorite_hue,
+        backgroundHue: active.background_hue,
+        backgroundLightness: active.background_lightness,
+        accentHue: active.accent_hue,
+        accentLightness: active.accent_lightness,
+        dangerHue: active.danger_hue,
+        dangerLightness: active.danger_lightness,
+        successHue: active.success_hue,
+        successLightness: active.success_lightness,
+        favoriteHue: active.favorite_hue,
+        favoriteLightness: active.favorite_lightness,
       });
       setTheme("custom");
     }

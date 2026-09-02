@@ -1388,56 +1388,85 @@ Contrairement aux signalements de bug, cet email part TOUJOURS (`author_email` n
 **Erreurs** : `403` si l'appelant n'est pas l'Admin (même un modérateur reçoit `403`). `404`
 suggestion inconnue.
 
-## Endpoints — Personnalisation de thème
+## Endpoints — Personnalisation de thème (profils)
 
-Retour utilisateur (2026-09-03), "en profil" : contrairement au thème preset choisi côté client et
-aux dispositions de menu/listes (tous locaux à chaque appareil, jamais envoyés au serveur), cette
-personnalisation SUIT LE COMPTE sur tous les appareils. Jamais chiffrée Zero-Knowledge — une
-préférence d'affichage n'a rien à protéger. Chaque route agit UNIQUEMENT sur la personnalisation du
-compte APPELANT (email tiré du token, jamais d'un paramètre) — aucune restriction de rôle au-delà
-d'être connecté.
+Retour utilisateur (2026-09-03, affiné le même jour) : contrairement au thème preset choisi côté
+client et aux dispositions de menu/listes (tous locaux à chaque appareil, jamais envoyés au
+serveur), cette personnalisation SUIT LE COMPTE sur tous les appareils, sous forme de PLUSIEURS
+profils nommés (pas un réglage unique). Jamais chiffrée Zero-Knowledge — une préférence d'affichage
+n'a rien à protéger. Chaque route agit UNIQUEMENT sur les profils du compte APPELANT (email tiré du
+token, jamais d'un paramètre) — aucune restriction de rôle au-delà d'être connecté, SAUF la
+création, plafonnée à **3 profils par compte non-admin** (illimité pour le compte `ADMIN_EMAIL`).
 
-### `GET /theme-customization`
+Chaque couleur (fond/accent/danger/succès/favoris) a sa propre teinte OKLCH (`*_hue`, 0-359°) ET sa
+propre luminosité (`*_lightness`, 0-100%) — pas de mode clair/sombre séparé : le client déduit s'il
+doit afficher en clair ou en sombre à partir de la luminosité du fond choisi (voir
+`lib/customTheme.ts` côté client). Le calcul de la palette complète (chroma sûr par palier
+Tailwind) reste entièrement côté client, le serveur ne stocke/valide que des entiers.
 
-*Authentification requise.* Renvoie la personnalisation du compte connecté.
+### `GET /theme-profiles`
 
-**Réponse** : `200 OK`, soit `null` (aucune personnalisation enregistrée — le client applique un
-thème preset), soit :
+*Authentification requise.* Liste tous les profils du compte connecté, du plus ancien au plus
+récent.
+
+**Réponse** : `200 OK`, tableau (vide si le compte n'a jamais rien créé) :
 ```json
-{
-  "mode": "dark",
-  "accent_hue": 277,
-  "background_tinted": false,
-  "danger_hue": 27,
-  "success_hue": 163,
-  "favorite_hue": 75
-}
+[
+  {
+    "id": "b6b5...",
+    "name": "Mon thème",
+    "background_hue": 220, "background_lightness": 12,
+    "accent_hue": 180, "accent_lightness": 55,
+    "danger_hue": 20, "danger_lightness": 60,
+    "success_hue": 150, "success_lightness": 65,
+    "favorite_hue": 60, "favorite_lightness": 75,
+    "is_active": true
+  }
+]
 ```
-(Teintes en degrés OKLCH, 0-359 — le calcul de la palette complète reste côté client.)
+`is_active` : au plus UN profil actif à la fois par compte (voir `POST .../activate` ci-dessous).
 
-### `PUT /theme-customization`
+### `POST /theme-profiles`
 
-*Authentification requise.* Enregistre/remplace la personnalisation du compte connecté (une seule
-ligne par compte, un second appel REMPLACE le premier plutôt que de s'accumuler).
+*Authentification requise.* Crée un nouveau profil (jamais actif à la création — voir `activate`
+ci-dessous pour ça). Corps identique aux champs de la vue ci-dessus, `name` en plus (1-60
+caractères), sans `id`/`is_active`.
 
 | Champ | Type | Contrainte |
 |---|---|---|
-| `mode` | string | `"dark"` ou `"light"` uniquement |
-| `accent_hue` | entier | 0-359 |
-| `background_tinted` | booléen | — |
-| `danger_hue` | entier | 0-359 |
-| `success_hue` | entier | 0-359 |
-| `favorite_hue` | entier | 0-359 |
+| `name` | string | 1-60 caractères |
+| `background_hue`, `accent_hue`, `danger_hue`, `success_hue`, `favorite_hue` | entier | 0-359 |
+| `background_lightness`, `accent_lightness`, `danger_lightness`, `success_lightness`, `favorite_lightness` | entier | 0-100 |
+
+**Réponse** : `201 Created`, le profil créé (même forme que GET, `is_active: false`).
+**Erreurs** : `400` validation (nom/teinte/luminosité hors plage, OU plafond de 3 profils atteint
+pour un compte non-admin).
+
+### `PUT /theme-profiles/{id}`
+
+*Authentification requise.* Modifie un profil existant du compte connecté (nom + toutes les
+teintes/luminosités) — n'affecte jamais `is_active` (voir `activate` ci-dessous). Mêmes champs que
+`POST` ci-dessus.
 
 **Réponse** : `204 No Content`.
-**Erreurs** : `400` validation (mode invalide, teinte hors plage).
+**Erreurs** : `400` validation. `404` si `id` n'existe pas ou n'appartient pas au compte connecté.
 
-### `DELETE /theme-customization`
+### `DELETE /theme-profiles/{id}`
 
-*Authentification requise.* Revient au thème preset — supprime la personnalisation enregistrée.
-Idempotent (aucune erreur si rien n'existait déjà).
+*Authentification requise.* Supprime un profil du compte connecté. Si le profil supprimé était
+actif, plus AUCUN profil n'est actif ensuite (le client retombe sur un thème preset) — jamais
+réactivé automatiquement un autre profil à sa place.
 
 **Réponse** : `204 No Content`.
+**Erreurs** : `404` si `id` n'existe pas ou n'appartient pas au compte connecté.
+
+### `POST /theme-profiles/{id}/activate`
+
+*Authentification requise.* Active ce profil et désactive tous les autres profils du compte
+connecté, de façon atomique (jamais deux profils actifs en même temps).
+
+**Réponse** : `204 No Content`.
+**Erreurs** : `404` si `id` n'existe pas ou n'appartient pas au compte connecté.
 
 ## Endpoints — Divers
 
