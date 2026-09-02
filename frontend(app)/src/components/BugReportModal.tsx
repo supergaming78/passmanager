@@ -106,7 +106,7 @@ export default function BugReportModal({ onClose, defaultEmail, initialDescripti
 
   return (
     <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 px-4 py-8">
-      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-neutral-900">
+      <div className="w-full max-w-md rounded-2xl border border-neutral-200 bg-white p-6 shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
         <div className="mb-1 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Signaler un bug</h2>
           <button type="button" onClick={onClose} className="text-sm text-neutral-500 hover:underline">

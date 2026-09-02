@@ -326,7 +326,7 @@ const ImportExportBar = forwardRef<ImportExportBarHandle, {
 
       {exportModal?.step === "password" && (
         <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/40 px-4">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl dark:bg-neutral-900">
+          <div className="w-full max-w-sm rounded-2xl border border-neutral-200 bg-white p-6 shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
             <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Exporter le coffre</h2>
             <p className="mt-2 text-xs text-red-600 dark:text-red-400">
               ⚠️ Par défaut, le fichier exporté n'est PAS chiffré — c'est un fichier en clair sur ton
@@ -436,7 +436,7 @@ function ImportDecryptStep({
 }) {
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/40 px-4">
-      <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl dark:bg-neutral-900">
+      <div className="w-full max-w-sm rounded-2xl border border-neutral-200 bg-white p-6 shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
         <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Fichier chiffré</h2>
         <p className="mt-2 text-xs text-neutral-500">
           Ce fichier a été exporté avec un mot de passe de protection. Saisis-le pour continuer l'import.
@@ -545,7 +545,7 @@ function ExportSelectStep({
 
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/40 px-4 py-8">
-      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-neutral-900">
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-2xl border border-neutral-200 bg-white p-6 shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
         <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Choisir quoi exporter</h2>
         {preselectedIds.size > 0 && (
           <p className="mt-1 text-xs text-indigo-700 dark:text-indigo-400">
@@ -697,7 +697,7 @@ function ImportSelectStep({
 
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/40 px-4 py-8">
-      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-neutral-900">
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-2xl border border-neutral-200 bg-white p-6 shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
         <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Choisir quoi importer</h2>
         <p className="mt-1 text-xs text-neutral-500">{entries.length} entrée(s) trouvée(s) dans le fichier.</p>
         {(exactCount > 0 || conflictCount > 0) && (

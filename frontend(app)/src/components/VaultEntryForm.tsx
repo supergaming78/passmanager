@@ -109,7 +109,7 @@ export default function VaultEntryForm({ title, initialValues, submitLabel, onSu
 
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/40 px-4 py-8">
-      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-xl dark:bg-neutral-900">
+      <div className="max-h-full w-full max-w-md overflow-y-auto rounded-2xl border border-neutral-200 bg-white p-6 shadow-xl dark:border-neutral-800 dark:bg-neutral-900">
         <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">{title}</h2>
 
         <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-3">
