@@ -9,12 +9,22 @@ export type ListLayout = "list" | "cards" | "compact";
 const STORAGE_KEY = "passmanager.listLayout";
 const VALID_LAYOUTS: readonly ListLayout[] = ["list", "cards", "compact"];
 
+// CORRECTIF PERF (retour utilisateur, 2026-09-02) : getListLayout() est maintenant lu au montage
+// par 6 écrans (Coffre, Administration, Partagé avec moi, partage à usage limité, coffres
+// partagés, entrées d'un coffre partagé) — même raisonnement/même petit cache mémoire que
+// lib/theme.ts::cachedTheme, pour éviter de retaper `localStorage` (E/S synchrone) à chaque
+// montage. Aucune implication sécurité : préférence d'affichage, pas une donnée sensible.
+let cachedListLayout: ListLayout | null = null;
+
 export function getListLayout(): ListLayout {
+  if (cachedListLayout) return cachedListLayout;
   const stored = localStorage.getItem(STORAGE_KEY);
-  return (VALID_LAYOUTS as readonly string[]).includes(stored ?? "") ? (stored as ListLayout) : "list";
+  cachedListLayout = (VALID_LAYOUTS as readonly string[]).includes(stored ?? "") ? (stored as ListLayout) : "list";
+  return cachedListLayout;
 }
 
 export function setListLayout(layout: ListLayout): void {
+  cachedListLayout = layout;
   localStorage.setItem(STORAGE_KEY, layout);
 }
 

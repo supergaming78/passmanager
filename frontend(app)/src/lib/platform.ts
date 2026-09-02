@@ -20,8 +20,15 @@ export function isIOS(): boolean {
  * pour un grand écran avec souris n'a pas vraiment de sens sur un écran tactile étroit — pas
  * interdit techniquement, juste jamais proposé côté mobile pour éviter une option qui ne rendrait
  * pas bien. */
+// CORRECTIF PERF (retour utilisateur, 2026-09-02) : `navigator.userAgent` ne change JAMAIS en
+// cours de session (contrairement au thème/à la disposition, qui peuvent être changés en direct
+// depuis Réglages) — deux tests regex à chaque appel n'ont donc aucune raison d'être refaits,
+// voir lib/menuLayout.ts::getEffectiveMenuLayout(), appelée à chaque montage de AppShell.tsx.
+let cachedIsMobilePlatform: boolean | null = null;
+
 export function isMobilePlatform(): boolean {
-  return isAndroid() || isIOS();
+  if (cachedIsMobilePlatform === null) cachedIsMobilePlatform = isAndroid() || isIOS();
+  return cachedIsMobilePlatform;
 }
 
 /** Étiquette de plateforme lisible, pour le signalement de bug (voir components/BugReportModal.tsx)

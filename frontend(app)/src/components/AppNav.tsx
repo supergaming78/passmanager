@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import type { MenuLayout } from "../lib/menuLayout";
 import EntryActionsMenu from "./EntryActionsMenu";
@@ -49,10 +49,14 @@ function buildNavItems(isModerator: boolean, onReportBug: () => void): NavItem[]
  * PORT DIRECT de l'ancien header de pages/Vault.tsx (bandeau horizontal desktop + menu "⋮" replié
  * sur mobile), généralisé pour apparaître sur TOUTES les pages authentifiées au lieu de la seule
  * page Coffre. "sidebar"/"compact" sont nouvelles, jamais engagées sur mobile (voir plus haut). */
-export default function AppNav({ layout, isModerator, email, onLogout, onReportBug }: Props) {
+function AppNav({ layout, isModerator, email, onLogout, onReportBug }: Props) {
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const navigate = useNavigate();
-  const items = buildNavItems(isModerator, onReportBug);
+  // CORRECTIF PERF (retour utilisateur, 2026-09-02) : recalculé à chaque rendu auparavant (nouveau
+  // tableau + nouveaux objets à chaque fois) alors que le résultat ne dépend que de isModerator/
+  // onReportBug — voir AppShell.tsx, qui mémorise maintenant onReportBug pour que ce useMemo
+  // profite réellement d'un cache d'un rendu à l'autre plutôt que de recalculer systématiquement.
+  const items = useMemo(() => buildNavItems(isModerator, onReportBug), [isModerator, onReportBug]);
 
   const linkClass = ({ isActive }: { isActive: boolean }) =>
     `rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
@@ -185,3 +189,11 @@ export default function AppNav({ layout, isModerator, email, onLogout, onReportB
     </header>
   );
 }
+
+// CORRECTIF PERF (retour utilisateur, 2026-09-02) : AppNav se re-rendait avec le reste de
+// AppShell.tsx même quand aucune de ses propres props n'avait changé (ex: `showBugReport` qui
+// bascule pour afficher BugReportModal). `memo()` saute le rendu quand toutes les props sont
+// identiques par égalité de référence — n'a d'effet réel que parce qu'AppShell.tsx mémorise
+// maintenant onLogout/onReportBug (sinon de nouvelles fonctions à chaque rendu casseraient cette
+// égalité de toute façon, rendant le memo() inutile).
+export default memo(AppNav);

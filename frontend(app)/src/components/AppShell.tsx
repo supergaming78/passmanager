@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Outlet } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import { getEffectiveMenuLayout, type MenuLayout } from "../lib/menuLayout";
@@ -39,20 +39,36 @@ export default function AppShell() {
   const [menuLayout, setMenuLayout] = useState<MenuLayout>(() => getEffectiveMenuLayout());
   const [showBugReport, setShowBugReport] = useState(false);
 
-  function handleMenuLayoutChange(layout: MenuLayout) {
+  // CORRECTIF PERF (retour utilisateur, 2026-09-02) : tous ces callbacks + l'objet de contexte
+  // ci-dessous étaient recréés à CHAQUE rendu de AppShell (ex: chaque frappe dans une recherche
+  // ailleurs dans l'app ne le déclenche pas, mais un changement d'état ici — thème appliqué en
+  // direct, etc. — si. Une nouvelle référence d'objet à chaque fois force React à re-rendre
+  // TOUTE la sous-arborescence de l'Outlet consommant useOutletContext(), même quand menuLayout
+  // n'a pas changé). `useCallback`/`useMemo` gardent la même référence tant que les dépendances
+  // réelles ne changent pas — permet aussi à AppNav ci-dessous d'être enveloppé de `React.memo`
+  // (voir AppNav.tsx) sans que ça perde son intérêt.
+  const handleMenuLayoutChange = useCallback((layout: MenuLayout) => {
     setMenuLayout(layout);
-  }
+  }, []);
+  const handleLogout = useCallback(() => {
+    void logout();
+  }, [logout]);
+  const handleReportBug = useCallback(() => setShowBugReport(true), []);
+  const handleCloseBugReport = useCallback(() => setShowBugReport(false), []);
 
-  const context: AppShellContext = { menuLayout, onMenuLayoutChange: handleMenuLayoutChange };
+  const context: AppShellContext = useMemo(
+    () => ({ menuLayout, onMenuLayoutChange: handleMenuLayoutChange }),
+    [menuLayout, handleMenuLayoutChange],
+  );
   const isSideLayout = menuLayout === "sidebar" || menuLayout === "compact";
 
   return (
     <div className={`h-screen overflow-hidden bg-neutral-50 dark:bg-neutral-950 ${isSideLayout ? "flex" : "flex flex-col"}`}>
-      <AppNav layout={menuLayout} isModerator={isModerator} email={email} onLogout={() => void logout()} onReportBug={() => setShowBugReport(true)} />
+      <AppNav layout={menuLayout} isModerator={isModerator} email={email} onLogout={handleLogout} onReportBug={handleReportBug} />
       <div className="min-w-0 flex-1 overflow-y-auto">
         <Outlet context={context} />
       </div>
-      {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} defaultEmail={email ?? undefined} />}
+      {showBugReport && <BugReportModal onClose={handleCloseBugReport} defaultEmail={email ?? undefined} />}
     </div>
   );
 }

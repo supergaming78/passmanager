@@ -11,15 +11,23 @@ export type MenuLayout = "top" | "sidebar" | "compact";
 const STORAGE_KEY = "passmanager.menuLayout";
 const VALID_LAYOUTS: readonly MenuLayout[] = ["top", "sidebar", "compact"];
 
+// CORRECTIF PERF (retour utilisateur, 2026-09-02) : même petit cache mémoire que
+// lib/theme.ts::cachedTheme/lib/listLayout.ts::cachedListLayout, pour la même raison — évite de
+// retaper `localStorage` à chaque montage de AppShell.tsx. Aucune implication sécurité.
+let cachedMenuLayout: MenuLayout | null = null;
+
 /** Lit la préférence brute — utilisée par le sélecteur dans Réglages (voir
  * components/MenuLayoutSettings.tsx). Ne tient PAS compte de la plateforme : voir
  * getEffectiveMenuLayout() ci-dessous pour la valeur RÉELLEMENT appliquée au rendu. */
 export function getMenuLayout(): MenuLayout {
+  if (cachedMenuLayout) return cachedMenuLayout;
   const stored = localStorage.getItem(STORAGE_KEY);
-  return (VALID_LAYOUTS as readonly string[]).includes(stored ?? "") ? (stored as MenuLayout) : "top";
+  cachedMenuLayout = (VALID_LAYOUTS as readonly string[]).includes(stored ?? "") ? (stored as MenuLayout) : "top";
+  return cachedMenuLayout;
 }
 
 export function setMenuLayout(layout: MenuLayout): void {
+  cachedMenuLayout = layout;
   localStorage.setItem(STORAGE_KEY, layout);
 }
 
