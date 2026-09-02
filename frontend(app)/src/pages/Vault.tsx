@@ -878,18 +878,26 @@ export default function Vault() {
    * lieu de `sm:`/`lg:` — avec un menu latéral/compact, l'espace réel dispo pour le Coffre est plus
    * étroit que la fenêtre entière, ce que `sm:`/`lg:` ignorait, comprimant les cartes. */
   const entryListContainerClass =
-    listLayout === "cards" ? "grid grid-cols-2 gap-3 @sm:grid-cols-3 @lg:grid-cols-4" : "flex flex-col gap-2";
+    listLayout === "cards"
+      ? "grid grid-cols-2 gap-3 @sm:grid-cols-3 @lg:grid-cols-4 @4xl:grid-cols-5 @6xl:grid-cols-6"
+      : "flex flex-col gap-2";
   const EntryListContainer = listLayout === "cards" ? "div" : "ul";
 
   return (
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
-      {/* CORRECTIF (retour utilisateur, 2026-09-01) : max-w-2xl (672px) restait fixe quelle que
-       * soit la largeur de fenêtre — sur tablette (Android/iPad) ou desktop, cette limite était
-       * atteinte bien avant le bord de l'écran, laissant de grandes marges vides des deux côtés au
-       * lieu d'exploiter l'espace disponible. md/lg élargissent progressivement le contenu à partir
-       * de la largeur d'une tablette portrait (768px) puis paysage/desktop (1024px) — CSS pur, donc
-       * un même comportement sur Android tablette et iPad (pas de détection de plateforme). */}
-      <div className="mx-auto max-w-2xl md:max-w-3xl lg:max-w-4xl">
+      {/* CORRECTIF (retour utilisateur, 2026-09-01, puis ÉLARGI le 2026-09-02 — captures d'écran
+       * plein écran sur un moniteur 1440p, beaucoup d'espace vide des deux côtés) : max-w-2xl
+       * (672px) restait fixe quelle que soit la largeur de fenêtre — sur tablette (Android/iPad) ou
+       * desktop, cette limite était atteinte bien avant le bord de l'écran. md/lg/xl/2xl élargissent
+       * PROGRESSIVEMENT le contenu à partir de la largeur d'une tablette portrait (768px) jusqu'à un
+       * très grand écran (2xl, ≥1536px de fenêtre) — CSS pur, un même comportement sur Android
+       * tablette/iPad et desktop (pas de détection de plateforme). Le Coffre va plus loin que les
+       * autres pages (2xl:max-w-[110rem] au lieu de 100rem, voir plus bas) : c'est l'écran le plus
+       * consulté, celui où profiter de tout l'espace dispo (plus de colonnes de cartes) apporte le
+       * plus — voir entryListContainerClass ci-dessus, dont les paliers @4xl/@6xl suivent cet
+       * élargissement (plus de colonnes uniquement si le conteneur est vraiment assez large pour les
+       * accueillir sans comprimer les cartes, jamais juste parce que la fenêtre l'est). */}
+      <div className="mx-auto max-w-2xl md:max-w-3xl lg:max-w-4xl xl:max-w-6xl 2xl:max-w-[110rem]">
         {/* CORRECTIF (retour utilisateur, 2026-09-02) : la navigation (Administration/Partagé avec
          * moi/Coffres partagés/Réglages/Signaler un bug/Déconnexion) vit maintenant dans
          * components/AppShell.tsx, commune à TOUTES les pages authentifiées — cet en-tête ne garde

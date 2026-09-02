@@ -32,8 +32,12 @@ export default function Settings() {
 
   return (
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
-      {/* Largeur progressive tablette/desktop — voir le commentaire équivalent dans Vault.tsx. */}
-      <div className="mx-auto flex max-w-2xl flex-col gap-4 md:max-w-3xl lg:max-w-4xl">
+      {/* Largeur progressive tablette/desktop — voir le commentaire équivalent dans Vault.tsx.
+       * Élargissement PLUS MODÉRÉ que les autres pages (2xl:max-w-5xl, pas 100rem) : cette page est
+       * un simple formulaire à UNE colonne (des `<select>` pleine largeur, pas une grille de
+       * cartes) — la laisser s'étirer autant que le Coffre donnerait des menus déroulants
+       * absurdement larges plutôt que d'exploiter utilement l'espace. */}
+      <div className="mx-auto flex max-w-2xl flex-col gap-4 md:max-w-3xl lg:max-w-4xl 2xl:max-w-5xl">
         {/* Plus de lien "← Retour au coffre" ici (retour utilisateur, 2026-09-02) : redondant
          * maintenant que la navigation vit dans components/AppShell.tsx, commune à toutes les
          * pages authentifiées — "Coffre" y est toujours accessible d'un clic. */}

@@ -98,7 +98,7 @@ export default function SharedVaultsPage() {
   return (
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
       {/* Largeur progressive tablette/desktop — voir le commentaire équivalent dans Vault.tsx. */}
-      <div className="mx-auto max-w-2xl md:max-w-3xl lg:max-w-4xl">
+      <div className="mx-auto max-w-2xl md:max-w-3xl lg:max-w-4xl xl:max-w-6xl 2xl:max-w-[100rem]">
         {/* Plus de lien "← Retour au coffre" ici (retour utilisateur, 2026-09-02) : redondant
          * maintenant que la navigation vit dans components/AppShell.tsx. */}
         <header className="mb-6">
@@ -160,7 +160,7 @@ export default function SharedVaultsPage() {
           // réellement disponible, pas à celle de la fenêtre entière — indispensable avec un menu
           // latéral.
           <div className="@container">
-          <ul className={listContainerClass("cards", "grid-cols-1 @sm:grid-cols-2 @lg:grid-cols-3")}>
+          <ul className={listContainerClass("cards", "grid-cols-1 @sm:grid-cols-2 @lg:grid-cols-3 @4xl:grid-cols-4 @6xl:grid-cols-5")}>
             {vaults.map((v) => (
               <li key={v.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
                 {renderVaultLink(v, "cards")}

@@ -155,7 +155,11 @@ function AppNav({ layout, isModerator, email, onLogout, onReportBug, onSuggestFe
   // l'écran lors de la conception).
   return (
     <header className="shrink-0 border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
-      <div className="mx-auto flex max-w-4xl flex-col gap-3">
+      {/* xl:max-w-6xl 2xl:max-w-[110rem] : suit le même élargissement que le contenu en dessous
+       * (voir Vault.tsx, la page la plus large) — sans ça, ce bandeau resterait plafonné à 896px
+       * pendant que le contenu s'étire jusqu'à 110rem sur un grand écran, ce qui le ferait
+       * paraître trop étroit par rapport à ce qu'il surplombe. */}
+      <div className="mx-auto flex max-w-4xl flex-col gap-3 xl:max-w-6xl 2xl:max-w-[110rem]">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <Link to="/vault" className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">

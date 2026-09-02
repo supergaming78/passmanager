@@ -308,7 +308,7 @@ function UsersSection() {
         // un menu latéral/compact (voir lib/menuLayout.ts), qui réduit cet espace sans que la
         // fenêtre elle-même rétrécisse.
         <div className="@container">
-        <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2 @lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2 @lg:grid-cols-3 @4xl:grid-cols-4 @6xl:grid-cols-5">
           {users.map((user) => {
             const isSelf = user.email === myEmail;
             const isBusy = busyEmail === user.email;
@@ -656,7 +656,7 @@ export default function Admin() {
       {/* Largeur progressive tablette/desktop — voir le commentaire équivalent dans Vault.tsx.
        * Déjà max-w-3xl en base (le tableau des comptes a besoin de plus de place qu'un formulaire
        * simple) — même logique, juste décalée d'un cran. */}
-      <div className="mx-auto flex max-w-3xl flex-col gap-4 lg:max-w-5xl">
+      <div className="mx-auto flex max-w-3xl flex-col gap-4 lg:max-w-5xl xl:max-w-6xl 2xl:max-w-[100rem]">
         {/* Plus de lien "← Retour au coffre" ici (retour utilisateur, 2026-09-02) : redondant
          * maintenant que la navigation vit dans components/AppShell.tsx. */}
         <header className="mb-2">

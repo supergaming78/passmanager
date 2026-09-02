@@ -104,7 +104,7 @@ export default function BlindSharesReceivedSettings() {
         // @container (voir lib/listLayout.ts::listContainerClass) : réagit à la largeur réellement
         // disponible ici, pas à celle de la fenêtre entière — indispensable avec un menu latéral.
         <div className="@container">
-        <ul className={listContainerClass(listLayout, "grid-cols-1 @sm:grid-cols-2")}>
+        <ul className={listContainerClass(listLayout, "grid-cols-1 @sm:grid-cols-2 @4xl:grid-cols-3 @6xl:grid-cols-4")}>
           {shares.map((share) => {
             // CORRECTIF (retour utilisateur, 2026-09-02) : "compact" ne changeait auparavant QUE le
             // padding vertical (p-3 -> px-3 py-2) — trop proche visuellement de "list". Fusionne
