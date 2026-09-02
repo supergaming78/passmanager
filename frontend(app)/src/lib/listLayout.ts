@@ -1,9 +1,14 @@
 // Disposition d'affichage des listes (coffre, comptes dans Administration...) — retour utilisateur
-// (2026-09-02), suite directe du choix de disposition du menu principal (voir lib/menuLayout.ts),
-// mais PAS réservé au desktop cette fois : une disposition plus dense a du sens aussi sur mobile
-// (voir Réglages, où les deux réglages vivent l'un sous l'autre). "list" (actuelle, DÉFAUT) /
-// "cards" (grille de cartes, avatars/logos plus visibles) / "compact" (lignes plus serrées, plus
-// d'éléments visibles à l'écran sans faire défiler).
+// (2026-09-02), suite directe du choix de disposition du menu principal (voir lib/menuLayout.ts).
+// CORRECTIF (retour utilisateur, même jour, suite) : réservée au DESKTOP depuis ce correctif —
+// "pas réservé au desktop, a du sens aussi sur mobile" était le choix D'ORIGINE, revenu dessus
+// après coup ("sur téléphone il y a beaucoup moins d'espace") — voir getEffectiveListLayout()
+// ci-dessous, même mécanisme que lib/menuLayout.ts::getEffectiveMenuLayout(). "list" (actuelle,
+// DÉFAUT, la SEULE utilisée sur mobile désormais) / "cards" (grille de cartes, avatars/logos plus
+// visibles) / "compact" (lignes plus serrées, plus d'éléments visibles à l'écran sans faire
+// défiler).
+import { isMobilePlatform } from "./platform";
+
 export type ListLayout = "list" | "cards" | "compact";
 
 const STORAGE_KEY = "passmanager.listLayout";
@@ -16,6 +21,9 @@ const VALID_LAYOUTS: readonly ListLayout[] = ["list", "cards", "compact"];
 // montage. Aucune implication sécurité : préférence d'affichage, pas une donnée sensible.
 let cachedListLayout: ListLayout | null = null;
 
+/** Lit la préférence brute — utilisée par le sélecteur dans Réglages (voir
+ * components/ListLayoutSettings.tsx, masqué sur mobile). Ne tient PAS compte de la plateforme :
+ * voir getEffectiveListLayout() ci-dessous pour la valeur RÉELLEMENT appliquée au rendu. */
 export function getListLayout(): ListLayout {
   if (cachedListLayout) return cachedListLayout;
   const stored = localStorage.getItem(STORAGE_KEY);
@@ -26,6 +34,17 @@ export function getListLayout(): ListLayout {
 export function setListLayout(layout: ListLayout): void {
   cachedListLayout = layout;
   localStorage.setItem(STORAGE_KEY, layout);
+}
+
+/** Valeur RÉELLEMENT appliquée au rendu (voir les 6 écrans concernés) — force "list" sur mobile
+ * quelle que soit la valeur en localStorage (défensif : un ancien réglage resté en local après un
+ * changement de plateforme, par exemple, ne doit jamais se retrouver appliqué sur téléphone), même
+ * mécanisme que lib/menuLayout.ts::getEffectiveMenuLayout(). Le sélecteur lui-même reste de toute
+ * façon masqué sur mobile (voir components/ListLayoutSettings.tsx et pages/Settings.tsx), cette
+ * fonction est la seconde ligne de défense côté rendu. */
+export function getEffectiveListLayout(): ListLayout {
+  if (isMobilePlatform()) return "list";
+  return getListLayout();
 }
 
 /** Classe de conteneur à utiliser pour une liste d'éléments — un seul endroit pour cette règle

@@ -81,7 +81,14 @@ export default function Settings() {
              * une barre latérale/compacte pensée pour un grand écran avec souris n'a pas vraiment
              * de sens sur téléphone/tablette, voir son propre commentaire pour le détail. */}
             {!isMobilePlatform() && <MenuLayoutSettings />}
-            <ListLayoutSettings />
+            {/* CORRECTIF (retour utilisateur, 2026-09-02) : disposition des listes, DESKTOP
+             * uniquement aussi désormais — revenu sur le choix d'origine ("a du sens aussi sur
+             * mobile") : un téléphone a "beaucoup moins d'espace" pour qu'une grille de cartes ou
+             * un mode compact apportent un vrai gain, voir lib/listLayout.ts::getEffectiveListLayout
+             * (même mécanisme que la disposition du menu ci-dessus) pour la seconde ligne de
+             * défense côté rendu, au cas où ce réglage serait resté en localStorage depuis un
+             * changement de plateforme. */}
+            {!isMobilePlatform() && <ListLayoutSettings />}
           </div>
         </Section>
 

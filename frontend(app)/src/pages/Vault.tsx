@@ -21,7 +21,7 @@ import BlindShareModal from "../components/BlindShareModal";
 import BulkShareModal from "../components/BulkShareModal";
 import { reseedEntryShares } from "../lib/entrySharing";
 import { recordEntryUse } from "../lib/vaultUsage";
-import { getListLayout } from "../lib/listLayout";
+import { getEffectiveListLayout } from "../lib/listLayout";
 import EntryActionsMenu from "../components/EntryActionsMenu";
 import KeyboardShortcutsModal from "../components/KeyboardShortcutsModal";
 import SiteAvatar from "../components/SiteAvatar";
@@ -81,7 +81,7 @@ export default function Vault() {
   // Réglée dans Réglages (voir components/ListLayoutSettings.tsx) — lue une fois au montage, se
   // met à jour naturellement en revenant sur cette page (React Router démonte/remonte Vault en
   // changeant de route, voir App.tsx) sans avoir besoin d'un contexte partagé pour ça.
-  const [listLayout] = useState(() => getListLayout());
+  const [listLayout] = useState(() => getEffectiveListLayout());
   const [modal, setModal] = useState<ModalState>(null);
   const [showTrash, setShowTrash] = useState(false);
   const [showHealth, setShowHealth] = useState(false);

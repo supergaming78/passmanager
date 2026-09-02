@@ -9,7 +9,7 @@ import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { openEntryUrl } from "../lib/openExternalUrl";
 import { getErrorMessage } from "../lib/errors";
 import { getPreferredIdentifier } from "../lib/entryIdentifier";
-import { getListLayout, listContainerClass } from "../lib/listLayout";
+import { getEffectiveListLayout, listContainerClass } from "../lib/listLayout";
 
 const EMPTY_FORM = { siteName: "", username: "", loginEmail: "", password: "", preferredLoginType: "username" as "username" | "email", notes: "", url: "" };
 
@@ -37,7 +37,7 @@ export default function SharedVaultDetailPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [isInviting, setIsInviting] = useState(false);
   // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
-  const [listLayout] = useState(() => getListLayout());
+  const [listLayout] = useState(() => getEffectiveListLayout());
 
   const load = useCallback(async () => {
     if (!id) return;

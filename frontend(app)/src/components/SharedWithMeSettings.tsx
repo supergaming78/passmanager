@@ -4,7 +4,7 @@ import { useAuth } from "../state/AuthContext";
 import { ensureEmergencyKeys } from "../lib/emergencyAccess";
 import { listSharedWithMe, revokeShare } from "../lib/entrySharing";
 import { getErrorMessage } from "../lib/errors";
-import { getListLayout, listContainerClass } from "../lib/listLayout";
+import { getEffectiveListLayout, listContainerClass } from "../lib/listLayout";
 import type { SharedWithMeEntry } from "../api/types";
 
 /** Ce qui a été partagé avec l'utilisateur courant (voir lib/entrySharing.ts, GET
@@ -20,7 +20,7 @@ export default function SharedWithMeSettings() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
-  const [listLayout] = useState(() => getListLayout());
+  const [listLayout] = useState(() => getEffectiveListLayout());
 
   async function loadAll() {
     setIsLoading(true);

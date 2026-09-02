@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
-import { getListLayout } from "../lib/listLayout";
+import { getEffectiveListLayout } from "../lib/listLayout";
 import type { AdminUserView, AuditLog, BugReportView, FeatureSuggestionView } from "../api/types";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -24,7 +24,7 @@ function UsersSection() {
   const [error, setError] = useState<string | null>(null);
   const [busyEmail, setBusyEmail] = useState<string | null>(null);
   // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
-  const [listLayout] = useState(() => getListLayout());
+  const [listLayout] = useState(() => getEffectiveListLayout());
 
   const load = useCallback(async () => {
     setIsLoading(true);

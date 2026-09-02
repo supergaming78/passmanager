@@ -4,7 +4,7 @@ import { useAuth } from "../state/AuthContext";
 import * as sharedVault from "../lib/sharedVault";
 import type { UnlockedSharedVault } from "../lib/sharedVault";
 import { getErrorMessage } from "../lib/errors";
-import { getListLayout, listContainerClass } from "../lib/listLayout";
+import { getEffectiveListLayout, listContainerClass } from "../lib/listLayout";
 
 /** Liste des coffres partagés dont l'utilisateur est membre, + création d'un nouveau. Voir
  * lib/sharedVault.ts pour l'orchestration complète (déverrouillage de chaque coffre listé). */
@@ -18,7 +18,7 @@ export default function SharedVaultsPage() {
   const [newName, setNewName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
-  const [listLayout] = useState(() => getListLayout());
+  const [listLayout] = useState(() => getEffectiveListLayout());
 
   const load = useCallback(async () => {
     setError(null);

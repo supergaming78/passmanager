@@ -10,8 +10,11 @@ const LAYOUT_OPTIONS: { value: ListLayout; label: string }[] = [
 /** Réglage de la disposition des listes (coffre, comptes dans Administration...) — retour
  * utilisateur (2026-09-02). Purement local à cet appareil (localStorage, voir lib/listLayout.ts),
  * comme le thème/la disposition du menu — pas de raison de suivre le compte, c'est un choix
- * d'affichage propre à l'écran utilisé. Contrairement à MenuLayoutSettings.tsx, disponible sur
- * TOUTES les plateformes (une disposition plus dense a du sens aussi sur mobile). */
+ * d'affichage propre à l'écran utilisé. CORRECTIF (même jour, suite) : DESKTOP uniquement
+ * désormais, comme MenuLayoutSettings.tsx (voir pages/Settings.tsx, qui ne rend ce composant que
+ * si !isMobilePlatform()) — un téléphone a trop peu d'espace pour qu'une grille de cartes ou un
+ * mode compact apportent un vrai gain ("disponible sur toutes les plateformes" était le choix
+ * D'ORIGINE, revenu dessus après coup). */
 export default function ListLayoutSettings() {
   const [layout, setLayoutState] = useState<ListLayout>(() => getListLayout());
 

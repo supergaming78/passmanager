@@ -3,7 +3,7 @@ import { useAuth } from "../state/AuthContext";
 import { listReceivedBlindShares, revokeBlindShare, unlockForOneTimeUse } from "../lib/blindShare";
 import type { ReceivedBlindShare } from "../lib/blindShare";
 import { getErrorMessage } from "../lib/errors";
-import { getListLayout, listContainerClass } from "../lib/listLayout";
+import { getEffectiveListLayout, listContainerClass } from "../lib/listLayout";
 
 /** Copie déjà disponible pour un partage à usage limité DÉJÀ déverrouillé (un "Utiliser" a déjà
  * consommé l'usage) — voir lib/blindShare.ts::unlockForOneTimeUse pour pourquoi ce sont des
@@ -28,7 +28,7 @@ export default function BlindSharesReceivedSettings() {
   const [unlocked, setUnlocked] = useState<Record<string, UnlockedHandle>>({});
   const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
   // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
-  const [listLayout] = useState(() => getListLayout());
+  const [listLayout] = useState(() => getEffectiveListLayout());
 
   async function loadAll() {
     setIsLoading(true);
