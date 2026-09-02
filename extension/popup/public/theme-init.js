@@ -27,7 +27,7 @@
 
     if (theme === "custom") {
       var cfg = {
-        backgroundHue: 0, backgroundLightness: 12,
+        backgroundHue: 0, backgroundLightness: 14.5, backgroundNeutral: true,
         accentHue: 277, accentLightness: 59,
         dangerHue: 27, dangerLightness: 64,
         successHue: 163, successLightness: 70,
@@ -70,14 +70,16 @@
       for (var t2 = 0; t2 < tintLight.length; t2++) html.style.removeProperty(tintLight[t2]);
 
       var isDarkCustom = cfg.backgroundLightness < 50;
+      var bgC1 = cfg.backgroundNeutral ? "0" : ".006", bgC2 = cfg.backgroundNeutral ? "0" : ".008", bgC3 = cfg.backgroundNeutral ? "0" : ".01";
+      var bgLc1 = cfg.backgroundNeutral ? "0" : ".008", bgLc2 = cfg.backgroundNeutral ? "0" : ".01", bgLc3 = cfg.backgroundNeutral ? "0" : ".015";
       if (isDarkCustom) {
-        html.style.setProperty("--color-neutral-950", "oklch(" + clampL(cfg.backgroundLightness).toFixed(1) + "% .006 " + cfg.backgroundHue + ")");
-        html.style.setProperty("--color-neutral-900", "oklch(" + clampL(cfg.backgroundLightness + 6).toFixed(1) + "% .008 " + cfg.backgroundHue + ")");
-        html.style.setProperty("--color-neutral-800", "oklch(" + clampL(cfg.backgroundLightness + 12.4).toFixed(1) + "% .01 " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-950", "oklch(" + clampL(cfg.backgroundLightness).toFixed(1) + "% " + bgC1 + " " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-900", "oklch(" + clampL(cfg.backgroundLightness + 6).toFixed(1) + "% " + bgC2 + " " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-800", "oklch(" + clampL(cfg.backgroundLightness + 12.4).toFixed(1) + "% " + bgC3 + " " + cfg.backgroundHue + ")");
       } else {
-        html.style.setProperty("--color-neutral-50", "oklch(" + clampL(cfg.backgroundLightness).toFixed(1) + "% .008 " + cfg.backgroundHue + ")");
-        html.style.setProperty("--color-neutral-100", "oklch(" + clampL(cfg.backgroundLightness - 1.5).toFixed(1) + "% .01 " + cfg.backgroundHue + ")");
-        html.style.setProperty("--color-neutral-200", "oklch(" + clampL(cfg.backgroundLightness - 6.3).toFixed(1) + "% .015 " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-50", "oklch(" + clampL(cfg.backgroundLightness).toFixed(1) + "% " + bgLc1 + " " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-100", "oklch(" + clampL(cfg.backgroundLightness - 1.5).toFixed(1) + "% " + bgLc2 + " " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-200", "oklch(" + clampL(cfg.backgroundLightness - 6.3).toFixed(1) + "% " + bgLc3 + " " + cfg.backgroundHue + ")");
       }
 
       html.classList.toggle("dark", isDarkCustom);

@@ -1415,7 +1415,7 @@ récent.
   {
     "id": "b6b5...",
     "name": "Mon thème",
-    "background_hue": 220, "background_lightness": 12,
+    "background_hue": 220, "background_lightness": 12, "background_neutral": false,
     "accent_hue": 180, "accent_lightness": 55,
     "danger_hue": 20, "danger_lightness": 60,
     "success_hue": 150, "success_lightness": 65,
@@ -1437,6 +1437,7 @@ caractères), sans `id`/`is_active`.
 | `name` | string | 1-60 caractères |
 | `background_hue`, `accent_hue`, `danger_hue`, `success_hue`, `favorite_hue` | entier | 0-359 |
 | `background_lightness`, `accent_lightness`, `danger_lightness`, `success_lightness`, `favorite_lightness` | entier | 0-100 |
+| `background_neutral` | booléen | si vrai, `background_hue` est ignoré côté client (fond gris pur, sans teinte) |
 
 **Réponse** : `201 Created`, le profil créé (même forme que GET, `is_active: false`).
 **Erreurs** : `400` validation (nom/teinte/luminosité hors plage, OU plafond de 3 profils atteint

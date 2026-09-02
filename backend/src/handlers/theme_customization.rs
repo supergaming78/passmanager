@@ -151,6 +151,7 @@ mod tests {
             name: name.to_string(),
             background_hue: 220,
             background_lightness: 12,
+            background_neutral: false,
             accent_hue: 180,
             accent_lightness: 55,
             danger_hue: 20,
@@ -185,6 +186,7 @@ mod tests {
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0]["name"], "Mon profil");
         assert_eq!(profiles[0]["accent_hue"], 180);
+        assert_eq!(profiles[0]["background_neutral"], false);
         assert_eq!(profiles[0]["is_active"], false);
     }
 

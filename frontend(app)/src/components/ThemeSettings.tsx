@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
+import { DEFAULT_CUSTOM_THEME } from "../lib/customTheme";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import type { ThemeProfileView } from "../api/types";
@@ -22,9 +23,10 @@ const THEME_OPTIONS: { value: Theme; label: string }[] = [
 
 const MAX_PROFILES = 3;
 
-/** Aperçu teinte+luminosité — chroma fixe assez saturée pour bien distinguer les réglages. */
-function swatchStyle(hue: number, lightness: number): React.CSSProperties {
-  return { backgroundColor: `oklch(${lightness}% .18 ${hue})` };
+/** Aperçu teinte+luminosité — chroma fixe assez saturée pour bien distinguer les réglages
+ * (`neutral` : aperçu gris pur, chroma 0, pour le fond quand "Fond neutre" est coché). */
+function swatchStyle(hue: number, lightness: number, neutral?: boolean): React.CSSProperties {
+  return { backgroundColor: `oklch(${lightness}% ${neutral ? 0 : ".18"} ${hue})` };
 }
 
 function ColorRow({
@@ -32,21 +34,35 @@ function ColorRow({
   hue,
   lightness,
   onChange,
+  hueDisabled,
 }: {
   label: string;
   hue: number;
   lightness: number;
   onChange: (patch: { hue?: number; lightness?: number }) => void;
+  /** Fond "neutre" (voir la case à cocher juste en dessous) : la teinte n'a alors aucun effet
+   * visuel (chroma forcée à 0, voir lib/customTheme.ts) — le curseur reste visible mais grisé
+   * plutôt que caché, pour ne pas perdre la valeur choisie si l'utilisateur redécoche ensuite. */
+  hueDisabled?: boolean;
 }) {
   return (
     <div>
       <div className="mb-1 flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-400">
         <span>{label}</span>
-        <span className="h-4 w-4 rounded-full border border-neutral-300 dark:border-neutral-700" style={swatchStyle(hue, lightness)} aria-hidden="true" />
+        <span className="h-4 w-4 rounded-full border border-neutral-300 dark:border-neutral-700" style={swatchStyle(hueDisabled ? 0 : hue, lightness, hueDisabled)} aria-hidden="true" />
       </div>
       <div className="flex items-center gap-2">
         <span className="w-16 shrink-0 text-[11px] text-neutral-500">Teinte</span>
-        <input type="range" min={0} max={359} value={hue} onChange={(e) => onChange({ hue: Number(e.target.value) })} className="w-full accent-indigo-600" aria-label={`${label} — teinte`} />
+        <input
+          type="range"
+          min={0}
+          max={359}
+          value={hue}
+          disabled={hueDisabled}
+          onChange={(e) => onChange({ hue: Number(e.target.value) })}
+          className="w-full accent-indigo-600 disabled:opacity-40"
+          aria-label={`${label} — teinte`}
+        />
       </div>
       <div className="mt-0.5 flex items-center gap-2">
         <span className="w-16 shrink-0 text-[11px] text-neutral-500">Luminosité</span>
@@ -68,6 +84,7 @@ function profileToConfig(p: ThemeProfileView): CustomThemeConfig {
   return {
     backgroundHue: p.background_hue,
     backgroundLightness: p.background_lightness,
+    backgroundNeutral: p.background_neutral,
     accentHue: p.accent_hue,
     accentLightness: p.accent_lightness,
     dangerHue: p.danger_hue,
@@ -84,6 +101,7 @@ function configToPayload(name: string, c: CustomThemeConfig) {
     name,
     background_hue: c.backgroundHue,
     background_lightness: c.backgroundLightness,
+    background_neutral: c.backgroundNeutral,
     accent_hue: c.accentHue,
     accent_lightness: c.accentLightness,
     danger_hue: c.dangerHue,
@@ -163,6 +181,14 @@ export default function ThemeSettings() {
     if (editingActiveProfile) setCachedCustomTheme(next);
   }
 
+  /** Réinitialise les curseurs du profil en cours d'édition sur les valeurs par défaut — IDENTIQUES
+   * au thème preset "Sombre" (voir customTheme.ts::DEFAULT_CUSTOM_THEME), retour utilisateur :
+   * "ajoute un bouton pour réinitialiser les curseurs par défaut, les mêmes que le mode sombre". Ne
+   * touche pas au nom du profil. */
+  function handleResetDraft() {
+    updateDraft(DEFAULT_CUSTOM_THEME);
+  }
+
   async function handleSaveProfile() {
     setSaveState("saving");
     setActionError(null);
@@ -170,8 +196,16 @@ export default function ThemeSettings() {
       const payload = configToPayload(draftName.trim() || "Sans nom", draft);
       if (editingId === "new") {
         const created = await authorizedRequest((token) => api.createThemeProfile(token, payload));
-        setProfiles((prev) => [...(prev ?? []), created]);
+        // Un compte qui crée son PREMIER profil s'attend à ce qu'il s'applique tout de suite —
+        // demander un second clic "Activer" séparé n'était pas clair (retour utilisateur : "je ne
+        // peux pas activer le profil"). On l'active automatiquement à la création, plutôt que de
+        // ne réserver "activer" qu'aux profils EXISTANTS déjà écartés (voir handleActivate).
+        await authorizedRequest((token) => api.activateThemeProfile(token, created.id));
+        const createdActive = { ...created, is_active: true };
+        setProfiles((prev) => [...(prev ?? []).map((p) => ({ ...p, is_active: false })), createdActive]);
         setEditingId(created.id);
+        setCachedCustomTheme(draft);
+        setTheme("custom");
       } else if (editingId) {
         await authorizedRequest((token) => api.updateThemeProfile(token, editingId, payload));
         setProfiles((prev) => (prev ?? []).map((p) => (p.id === editingId ? { ...p, ...payload } : p)));
@@ -290,7 +324,23 @@ export default function ThemeSettings() {
                 className="w-full rounded-lg border border-neutral-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
               />
 
-              <ColorRow label="Fond de l'app" hue={draft.backgroundHue} lightness={draft.backgroundLightness} onChange={(p) => updateDraft({ backgroundHue: p.hue ?? draft.backgroundHue, backgroundLightness: p.lightness ?? draft.backgroundLightness })} />
+              <ColorRow
+                label="Fond de l'app"
+                hue={draft.backgroundHue}
+                lightness={draft.backgroundLightness}
+                hueDisabled={draft.backgroundNeutral}
+                onChange={(p) => updateDraft({ backgroundHue: p.hue ?? draft.backgroundHue, backgroundLightness: p.lightness ?? draft.backgroundLightness })}
+              />
+              <label className="-mt-2 flex items-center gap-2 text-xs text-neutral-700 dark:text-neutral-300">
+                <input
+                  type="checkbox"
+                  checked={draft.backgroundNeutral}
+                  onChange={(e) => updateDraft({ backgroundNeutral: e.target.checked })}
+                  className="h-3.5 w-3.5 rounded border-neutral-300 text-indigo-600 dark:border-neutral-700"
+                />
+                Fond neutre (gris pur, sans aucune teinte)
+              </label>
+
               <ColorRow label="Accent (boutons, liens)" hue={draft.accentHue} lightness={draft.accentLightness} onChange={(p) => updateDraft({ accentHue: p.hue ?? draft.accentHue, accentLightness: p.lightness ?? draft.accentLightness })} />
               <ColorRow label="Danger (supprimer, erreurs)" hue={draft.dangerHue} lightness={draft.dangerLightness} onChange={(p) => updateDraft({ dangerHue: p.hue ?? draft.dangerHue, dangerLightness: p.lightness ?? draft.dangerLightness })} />
               <ColorRow label="Succès (confirmations)" hue={draft.successHue} lightness={draft.successLightness} onChange={(p) => updateDraft({ successHue: p.hue ?? draft.successHue, successLightness: p.lightness ?? draft.successLightness })} />
@@ -306,6 +356,9 @@ export default function ThemeSettings() {
                   className="rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
                 >
                   {saveState === "saving" ? "Enregistrement…" : editingId === "new" ? "Créer le profil" : "Enregistrer"}
+                </button>
+                <button type="button" onClick={handleResetDraft} className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-300">
+                  Réinitialiser
                 </button>
                 {saveState === "saved" && <span className="text-xs text-emerald-600 dark:text-emerald-400">Enregistré — synchronisé sur tous tes appareils.</span>}
               </div>

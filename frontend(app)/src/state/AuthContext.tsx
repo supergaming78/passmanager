@@ -243,6 +243,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // sur CET appareil reste inchangé dans ce cas, voir setTheme()/getTheme() dans lib/theme.ts.
           setCachedCustomTheme({
             backgroundHue: active.background_hue,
+            backgroundNeutral: active.background_neutral,
             backgroundLightness: active.background_lightness,
             accentHue: active.accent_hue,
             accentLightness: active.accent_lightness,

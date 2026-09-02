@@ -52,6 +52,7 @@ async function syncThemeCustomization(accessToken: string): Promise<void> {
       setCachedCustomTheme({
         backgroundHue: active.background_hue,
         backgroundLightness: active.background_lightness,
+        backgroundNeutral: active.background_neutral,
         accentHue: active.accent_hue,
         accentLightness: active.accent_lightness,
         dangerHue: active.danger_hue,

@@ -472,6 +472,9 @@ export interface ThemeProfileView {
   name: string;
   background_hue: number;
   background_lightness: number;
+  /** Si vrai, `background_hue` est ignoré (fond gris pur, sans aucune teinte) — voir
+   * lib/customTheme.ts::applyBackground. */
+  background_neutral: boolean;
   accent_hue: number;
   accent_lightness: number;
   danger_hue: number;

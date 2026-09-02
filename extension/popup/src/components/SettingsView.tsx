@@ -20,6 +20,7 @@ import {
   type WindowMode,
 } from "../lib/settings";
 import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
+import { DEFAULT_CUSTOM_THEME } from "../lib/customTheme";
 import type { TrustedDevice, ThemeProfileView } from "../api/types";
 import { getErrorMessage } from "../lib/errors";
 
@@ -148,6 +149,7 @@ export default function SettingsView({
     return {
       backgroundHue: p.background_hue,
       backgroundLightness: p.background_lightness,
+      backgroundNeutral: p.background_neutral,
       accentHue: p.accent_hue,
       accentLightness: p.accent_lightness,
       dangerHue: p.danger_hue,
@@ -164,6 +166,7 @@ export default function SettingsView({
       name,
       background_hue: c.backgroundHue,
       background_lightness: c.backgroundLightness,
+      background_neutral: c.backgroundNeutral,
       accent_hue: c.accentHue,
       accent_lightness: c.accentLightness,
       danger_hue: c.dangerHue,
@@ -199,6 +202,13 @@ export default function SettingsView({
     if (editingActiveProfile) setCachedCustomTheme(next);
   }
 
+  /** Voir ThemeSettings.tsx côté desktop pour le même raisonnement : identique au thème preset
+   * "Sombre" (retour utilisateur : "ajoute un bouton pour réinitialiser les curseurs par défaut,
+   * les mêmes que le mode sombre"). Ne touche pas au nom du profil. */
+  function handleResetThemeDraft() {
+    updateDraftProfile(DEFAULT_CUSTOM_THEME);
+  }
+
   async function handleSaveThemeProfile() {
     setProfileSaveState("saving");
     setProfileActionError(null);
@@ -206,8 +216,14 @@ export default function SettingsView({
       const payload = configToProfilePayload(draftProfileName.trim() || "Sans nom", draftProfile);
       if (editingProfileId === "new") {
         const created = await session.authorizedRequest((token) => api.createThemeProfile(token, payload));
-        setProfiles((prev) => [...(prev ?? []), created]);
+        // Voir ThemeSettings.tsx côté desktop pour le même raisonnement : activer automatiquement
+        // le premier profil créé (retour utilisateur : "je ne peux pas activer le profil").
+        await session.authorizedRequest((token) => api.activateThemeProfile(token, created.id));
+        const createdActive = { ...created, is_active: true };
+        setProfiles((prev) => [...(prev ?? []).map((p) => ({ ...p, is_active: false })), createdActive]);
         setEditingProfileId(created.id);
+        setCachedCustomTheme(draftProfile);
+        setTheme("custom");
       } else if (editingProfileId) {
         await session.authorizedRequest((token) => api.updateThemeProfile(token, editingProfileId, payload));
         setProfiles((prev) => (prev ?? []).map((p) => (p.id === editingProfileId ? { ...p, ...payload } : p)));
@@ -397,38 +413,56 @@ export default function SettingsView({
                     ["Succès (confirmations)", "successHue", "successLightness"],
                     ["Favoris (★)", "favoriteHue", "favoriteLightness"],
                   ] as const
-                ).map(([label, hueKey, lightnessKey]) => (
-                  <div key={hueKey}>
-                    <div className="mb-0.5 flex items-center justify-between text-[11px] text-neutral-600 dark:text-neutral-400">
-                      <span>{label}</span>
-                      <span
-                        className="h-3.5 w-3.5 rounded-full border border-neutral-300 dark:border-neutral-700"
-                        style={{ backgroundColor: `oklch(${draftProfile[lightnessKey]}% .18 ${draftProfile[hueKey]})` }}
-                        aria-hidden="true"
+                ).map(([label, hueKey, lightnessKey]) => {
+                  const hueDisabled = hueKey === "backgroundHue" && draftProfile.backgroundNeutral;
+                  return (
+                    <div key={hueKey}>
+                      <div className="mb-0.5 flex items-center justify-between text-[11px] text-neutral-600 dark:text-neutral-400">
+                        <span>{label}</span>
+                        <span
+                          className="h-3.5 w-3.5 rounded-full border border-neutral-300 dark:border-neutral-700"
+                          style={{ backgroundColor: `oklch(${draftProfile[lightnessKey]}% ${hueDisabled ? 0 : ".18"} ${draftProfile[hueKey]})` }}
+                          aria-hidden="true"
+                        />
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={359}
+                        value={draftProfile[hueKey]}
+                        disabled={hueDisabled}
+                        onChange={(e) => updateDraftProfile({ [hueKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
+                        className="w-full accent-indigo-600 disabled:opacity-40"
+                        aria-label={`${label} — teinte`}
                       />
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={draftProfile[lightnessKey]}
+                        onChange={(e) => updateDraftProfile({ [lightnessKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
+                        className="w-full accent-indigo-600"
+                        aria-label={`${label} — luminosité`}
+                      />
+                      {hueKey === "backgroundHue" && (
+                        <label className="mt-0.5 flex items-center gap-1.5 text-[11px] text-neutral-700 dark:text-neutral-300">
+                          <input
+                            type="checkbox"
+                            checked={draftProfile.backgroundNeutral}
+                            onChange={(e) => updateDraftProfile({ backgroundNeutral: e.target.checked })}
+                            className="h-3 w-3 rounded border-neutral-300 text-indigo-600 dark:border-neutral-700"
+                          />
+                          Fond neutre (sans teinte)
+                        </label>
+                      )}
                     </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={359}
-                      value={draftProfile[hueKey]}
-                      onChange={(e) => updateDraftProfile({ [hueKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
-                      className="w-full accent-indigo-600"
-                      aria-label={`${label} — teinte`}
-                    />
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={draftProfile[lightnessKey]}
-                      onChange={(e) => updateDraftProfile({ [lightnessKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
-                      className="w-full accent-indigo-600"
-                      aria-label={`${label} — luminosité`}
-                    />
-                  </div>
-                ))}
+                  );
+                })}
 
                 <div className="flex items-center gap-2">
+                  <button type="button" onClick={handleResetThemeDraft} className="rounded-lg border border-neutral-300 px-2 py-1 text-[11px] text-neutral-700 dark:border-neutral-700 dark:text-neutral-300">
+                    Réinitialiser
+                  </button>
                   <button
                     type="button"
                     onClick={() => void handleSaveThemeProfile()}

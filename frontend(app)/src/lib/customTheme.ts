@@ -92,9 +92,15 @@ const GREEN_STEPS: Record<string, Step> = {
 };
 
 export interface CustomThemeConfig {
-  backgroundHue: number; // 0-359
+  backgroundHue: number; // 0-359 — IGNORÉ si backgroundNeutral est vrai (voir applyBackground).
   backgroundLightness: number; // 0-100 — luminosité du fond PRINCIPAL (page) ; < 50 = régime
   // sombre (fond très luminosité basse, texte clair), >= 50 = régime clair — voir applyBackground.
+  /** Fond parfaitement gris (chroma nulle), retour utilisateur : "je ne veux pas que le fond soit
+   * soit clair soit sombre je veux aussi pouvoir choisir la couleur pour le fond" avait fait
+   * disparaître l'option d'un fond NEUTRE (sans aucune teinte) qui existait dans la toute première
+   * version de cette fonctionnalité (case "teinté ou pas") — restaurée ici comme un choix
+   * indépendant plutôt qu'une bascule liée au clair/sombre. */
+  backgroundNeutral: boolean;
   accentHue: number;
   accentLightness: number; // 0-100 — luminosité voulue pour le palier "500" de l'accent
   dangerHue: number;
@@ -105,12 +111,16 @@ export interface CustomThemeConfig {
   favoriteLightness: number;
 }
 
-/** Repose exactement sur celle du serveur (voir models.rs::ThemeProfilePayload côté backend).
- * Luminosités par défaut = valeurs natives Tailwind (delta nul) pour accent/danger/succès/favoris ;
- * fond en régime sombre par défaut, à la luminosité déjà utilisée par les thèmes preset (12%). */
+/** Reproduit EXACTEMENT le thème preset "Sombre" (aucune classe `.theme-X`, palette Tailwind
+ * native) — c'est la cible du bouton "Réinitialiser" de l'éditeur de profil (retour utilisateur :
+ * "ajoute un bouton pour réinitialiser les curseurs par défaut, les mêmes que le mode sombre") ET
+ * la valeur de départ d'un tout nouveau profil. Luminosités = valeurs natives Tailwind (delta nul)
+ * pour accent/danger/succès/favoris ; fond neutre (chroma nulle) à la luminosité native de
+ * neutral-950 (14.5%), IDENTIQUE au thème "Sombre". */
 export const DEFAULT_CUSTOM_THEME: CustomThemeConfig = {
   backgroundHue: 0,
-  backgroundLightness: 12,
+  backgroundLightness: 14.5,
+  backgroundNeutral: true,
   accentHue: 277, // teinte "native" de l'indigo Tailwind.
   accentLightness: Math.round(INDIGO_ANCHOR_L),
   dangerHue: 27,
@@ -137,21 +147,27 @@ function applyFamily(el: HTMLElement, family: string, steps: Record<string, Step
  * une bascule binaire : le régime clair/sombre se déduit simplement d'où se trouve la luminosité
  * choisie (< 50% = plutôt sombre, le fond `page` prend directement cette valeur et les 2 fonds
  * "secondaires" (cartes/bordures) sont dérivés avec les MÊMES écarts que la palette Tailwind native
- * neutral-950/900/800 ; >= 50% = plutôt clair, dérivés comme neutral-50/100/200). Chroma faible et
- * fixe (indépendante du choix utilisateur, pour ne jamais nuire au contraste du texte par-dessus),
- * seule la teinte suit le choix. */
-function applyBackground(el: HTMLElement, hue: number, lightness: number): boolean {
+ * neutral-950/900/800 ; >= 50% = plutôt clair, dérivés comme neutral-50/100/200).
+ *
+ * `neutral` (retour utilisateur, 2026-09-03 : "tu as enlevé une fonctionnalité, le fondu" — un fond
+ * parfaitement gris, sans AUCUNE teinte, existait dans la toute première version de cette
+ * fonctionnalité et avait disparu) : force la chroma à 0 (donc `hue` sans aucun effet visuel) ;
+ * sinon, chroma faible et fixe (indépendante du choix utilisateur, pour ne jamais nuire au
+ * contraste du texte par-dessus), seule la teinte suit le choix. */
+function applyBackground(el: HTMLElement, hue: number, lightness: number, neutral: boolean): boolean {
   const isDark = lightness < 50;
+  const [c1, c2, c3] = neutral ? ["0", "0", "0"] : [".006", ".008", ".01"];
+  const [lc1, lc2, lc3] = neutral ? ["0", "0", "0"] : [".008", ".01", ".015"];
   if (isDark) {
     // Écarts natifs Tailwind neutral 950->900->800 : 14.5 -> 20.5 (+6) -> 26.9 (+12.4).
-    el.style.setProperty("--color-neutral-950", `oklch(${clampL(lightness).toFixed(1)}% .006 ${hue})`);
-    el.style.setProperty("--color-neutral-900", `oklch(${clampL(lightness + 6).toFixed(1)}% .008 ${hue})`);
-    el.style.setProperty("--color-neutral-800", `oklch(${clampL(lightness + 12.4).toFixed(1)}% .01 ${hue})`);
+    el.style.setProperty("--color-neutral-950", `oklch(${clampL(lightness).toFixed(1)}% ${c1} ${hue})`);
+    el.style.setProperty("--color-neutral-900", `oklch(${clampL(lightness + 6).toFixed(1)}% ${c2} ${hue})`);
+    el.style.setProperty("--color-neutral-800", `oklch(${clampL(lightness + 12.4).toFixed(1)}% ${c3} ${hue})`);
   } else {
     // Écarts natifs Tailwind neutral 50->100->200 : 98.5 -> 97 (-1.5) -> 92.2 (-6.3).
-    el.style.setProperty("--color-neutral-50", `oklch(${clampL(lightness).toFixed(1)}% .008 ${hue})`);
-    el.style.setProperty("--color-neutral-100", `oklch(${clampL(lightness - 1.5).toFixed(1)}% .01 ${hue})`);
-    el.style.setProperty("--color-neutral-200", `oklch(${clampL(lightness - 6.3).toFixed(1)}% .015 ${hue})`);
+    el.style.setProperty("--color-neutral-50", `oklch(${clampL(lightness).toFixed(1)}% ${lc1} ${hue})`);
+    el.style.setProperty("--color-neutral-100", `oklch(${clampL(lightness - 1.5).toFixed(1)}% ${lc2} ${hue})`);
+    el.style.setProperty("--color-neutral-200", `oklch(${clampL(lightness - 6.3).toFixed(1)}% ${lc3} ${hue})`);
   }
   return isDark;
 }
@@ -181,7 +197,7 @@ export function applyCustomTheme(config: CustomThemeConfig): boolean {
   // Retire l'éventuel jeu de propriétés de fond de l'AUTRE régime (ex: on vient de passer d'un
   // fond sombre à un fond clair) avant d'appliquer celui du régime courant.
   for (const prop of [...TINT_PROPERTIES_DARK, ...TINT_PROPERTIES_LIGHT]) el.style.removeProperty(prop);
-  return applyBackground(el, config.backgroundHue, config.backgroundLightness);
+  return applyBackground(el, config.backgroundHue, config.backgroundLightness, config.backgroundNeutral);
 }
 
 /** Retire toute personnalisation inline posée par applyCustomTheme() — appelée en quittant
