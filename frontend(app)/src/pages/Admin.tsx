@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
+import { getListLayout } from "../lib/listLayout";
 import type { AdminUserView, AuditLog, BugReportView } from "../api/types";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -22,6 +23,8 @@ function UsersSection() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyEmail, setBusyEmail] = useState<string | null>(null);
+  // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
+  const [listLayout] = useState(() => getListLayout());
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -155,6 +158,99 @@ function UsersSection() {
 
   if (isLoading) return <p className="text-sm text-neutral-500">Chargement…</p>;
 
+  /** Actions communes aux deux dispositions (voir listLayout ci-dessus, retour utilisateur
+   * 2026-09-02, "disposition des listes") — extrait pour n'écrire les vérifications de permission
+   * qu'UNE SEULE fois, réutilisé tel quel par la vue tableau ET la vue cartes, plutôt que risquer
+   * une divergence entre les deux si l'une était modifiée sans l'autre. */
+  function renderUserActions(user: AdminUserView, isSelf: boolean, isBusy: boolean, canActOnTarget: boolean) {
+    return (
+      <div className="flex flex-wrap gap-1.5">
+        {canActOnTarget && (
+          <button
+            type="button"
+            disabled={isSelf || isBusy}
+            onClick={() => void handleChangeEmail(user)}
+            title={isSelf ? "Impossible de changer son propre email ici — utilise Réglages" : "Changer l'email de ce compte (jamais le mot de passe maître)"}
+            className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            Changer l'email
+          </button>
+        )}
+        {isAdmin && (
+          <button
+            type="button"
+            disabled={isSelf || isBusy}
+            onClick={() => void handleToggleRole(user)}
+            title={isSelf ? "Impossible de modifier son propre rôle" : undefined}
+            className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            {user.is_moderator ? "Retirer modérateur" : "Promouvoir modérateur"}
+          </button>
+        )}
+        {canActOnTarget && (
+          <button
+            type="button"
+            disabled={isSelf || isBusy}
+            onClick={() => void handleToggleExtensionEmailChange(user)}
+            title={isSelf ? "Impossible de modifier ce réglage sur son propre compte ici" : "Autoriser/interdire le changement d'email depuis l'extension navigateur pour ce compte"}
+            className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            {user.can_change_email_via_extension ? "Retirer email/ext." : "Autoriser email/ext."}
+          </button>
+        )}
+        {isAdmin && (
+          <button
+            type="button"
+            disabled={isSelf || isBusy}
+            onClick={() => void handleToggleServerChoiceInSettings(user)}
+            title={isSelf ? "Tu as déjà toujours accès à ce choix, indépendamment de ce réglage" : "Autoriser/interdire le choix du serveur dans les Réglages pour ce compte"}
+            className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            {user.can_choose_server_in_settings ? "Retirer choix serveur" : "Autoriser choix serveur"}
+          </button>
+        )}
+        {canActOnTarget && (
+          <button
+            type="button"
+            disabled={isSelf || isBusy}
+            onClick={() => void handleRevokeSessions(user.email)}
+            title={isSelf ? "Impossible de déconnecter son propre compte ici" : undefined}
+            className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            Déconnecter
+          </button>
+        )}
+        {canActOnTarget && (
+          <button
+            type="button"
+            disabled={isSelf || isBusy}
+            onClick={() => void handleDelete(user.email)}
+            title={isSelf ? "Impossible de supprimer son propre compte ici" : undefined}
+            className="rounded-lg border border-red-300 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+          >
+            Supprimer
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  /** Badges "Admin"/"Modérateur"/"(toi)" — communs aux deux dispositions, même raisonnement que
+   * renderUserActions ci-dessus. */
+  function renderUserBadges(user: AdminUserView, isSelf: boolean) {
+    return (
+      <>
+        {user.is_admin && (
+          <span className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-xs text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">Admin</span>
+        )}
+        {user.is_moderator && !user.is_admin && (
+          <span className="ml-2 rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">Modérateur</span>
+        )}
+        {isSelf && <span className="ml-2 text-xs text-neutral-400">(toi)</span>}
+      </>
+    );
+  }
+
   return (
     <div>
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
@@ -206,119 +302,66 @@ function UsersSection() {
         gérer les comptes non-admin, mais pas les autres modérateurs.
       </p>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="border-b border-neutral-200 text-xs text-neutral-500 dark:border-neutral-800">
-              <th className="py-2 pr-3 font-medium">Compte</th>
-              <th className="py-2 pr-3 font-medium">Vérifié</th>
-              <th className="py-2 pr-3 font-medium">Créé le</th>
-              <th className="py-2 pr-3 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((user) => {
-              const isSelf = user.email === myEmail;
-              const isBusy = busyEmail === user.email;
-              // Voir handlers/admin.rs::check_can_act_on_target() : un modérateur normal (pas
-              // ADMIN_EMAIL) ne peut agir (déconnecter/supprimer/régler l'extension) que sur des
-              // comptes non-modérateur — cible un autre modérateur (l'Admin y compris) reste
-              // réservé à l'Admin.
-              const canActOnTarget = isAdmin || !user.is_moderator;
-              return (
-                <tr key={user.email} className="border-b border-neutral-100 dark:border-neutral-900">
-                  <td className="py-2 pr-3">
-                    <span className="text-neutral-800 dark:text-neutral-200">{user.email}</span>
-                    {user.is_admin && (
-                      <span className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-xs text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
-                        Admin
-                      </span>
-                    )}
-                    {user.is_moderator && !user.is_admin && (
-                      <span className="ml-2 rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
-                        Modérateur
-                      </span>
-                    )}
-                    {isSelf && <span className="ml-2 text-xs text-neutral-400">(toi)</span>}
-                  </td>
-                  <td className="py-2 pr-3 text-neutral-600 dark:text-neutral-400">{user.email_verified ? "Oui" : "Non"}</td>
-                  <td className="py-2 pr-3 text-neutral-600 dark:text-neutral-400">{new Date(user.created_at).toLocaleDateString()}</td>
-                  <td className="py-2 pr-3">
-                    <div className="flex flex-wrap gap-1.5">
-                      {canActOnTarget && (
-                        <button
-                          type="button"
-                          disabled={isSelf || isBusy}
-                          onClick={() => void handleChangeEmail(user)}
-                          title={isSelf ? "Impossible de changer son propre email ici — utilise Réglages" : "Changer l'email de ce compte (jamais le mot de passe maître)"}
-                          className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                        >
-                          Changer l'email
-                        </button>
-                      )}
-                      {isAdmin && (
-                        <button
-                          type="button"
-                          disabled={isSelf || isBusy}
-                          onClick={() => void handleToggleRole(user)}
-                          title={isSelf ? "Impossible de modifier son propre rôle" : undefined}
-                          className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                        >
-                          {user.is_moderator ? "Retirer modérateur" : "Promouvoir modérateur"}
-                        </button>
-                      )}
-                      {canActOnTarget && (
-                        <button
-                          type="button"
-                          disabled={isSelf || isBusy}
-                          onClick={() => void handleToggleExtensionEmailChange(user)}
-                          title={isSelf ? "Impossible de modifier ce réglage sur son propre compte ici" : "Autoriser/interdire le changement d'email depuis l'extension navigateur pour ce compte"}
-                          className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                        >
-                          {user.can_change_email_via_extension ? "Retirer email/ext." : "Autoriser email/ext."}
-                        </button>
-                      )}
-                      {isAdmin && (
-                        <button
-                          type="button"
-                          disabled={isSelf || isBusy}
-                          onClick={() => void handleToggleServerChoiceInSettings(user)}
-                          title={isSelf ? "Tu as déjà toujours accès à ce choix, indépendamment de ce réglage" : "Autoriser/interdire le choix du serveur dans les Réglages pour ce compte"}
-                          className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                        >
-                          {user.can_choose_server_in_settings ? "Retirer choix serveur" : "Autoriser choix serveur"}
-                        </button>
-                      )}
-                      {canActOnTarget && (
-                        <button
-                          type="button"
-                          disabled={isSelf || isBusy}
-                          onClick={() => void handleRevokeSessions(user.email)}
-                          title={isSelf ? "Impossible de déconnecter son propre compte ici" : undefined}
-                          className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                        >
-                          Déconnecter
-                        </button>
-                      )}
-                      {canActOnTarget && (
-                        <button
-                          type="button"
-                          disabled={isSelf || isBusy}
-                          onClick={() => void handleDelete(user.email)}
-                          title={isSelf ? "Impossible de supprimer son propre compte ici" : undefined}
-                          className="rounded-lg border border-red-300 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-                        >
-                          Supprimer
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {listLayout === "cards" ? (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {users.map((user) => {
+            const isSelf = user.email === myEmail;
+            const isBusy = busyEmail === user.email;
+            const canActOnTarget = isAdmin || !user.is_moderator;
+            return (
+              <div key={user.email} className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+                <p className="truncate text-neutral-800 dark:text-neutral-200">
+                  {user.email}
+                  {renderUserBadges(user, isSelf)}
+                </p>
+                <p className="mt-1 text-xs text-neutral-500">
+                  Vérifié : {user.email_verified ? "Oui" : "Non"} · Créé le {new Date(user.created_at).toLocaleDateString()}
+                </p>
+                <div className="mt-3">{renderUserActions(user, isSelf, isBusy, canActOnTarget)}</div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        // "compact" : mêmes lignes, juste un padding vertical réduit (py-1 au lieu de py-2) — pas
+        // besoin d'une structure différente pour un tableau, contrairement à la grille de cartes
+        // ci-dessus (retour utilisateur, 2026-09-02, "disposition des listes").
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="border-b border-neutral-200 text-xs text-neutral-500 dark:border-neutral-800">
+                <th className={`${listLayout === "compact" ? "py-1" : "py-2"} pr-3 font-medium`}>Compte</th>
+                <th className={`${listLayout === "compact" ? "py-1" : "py-2"} pr-3 font-medium`}>Vérifié</th>
+                <th className={`${listLayout === "compact" ? "py-1" : "py-2"} pr-3 font-medium`}>Créé le</th>
+                <th className={`${listLayout === "compact" ? "py-1" : "py-2"} pr-3 font-medium`}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((user) => {
+                const isSelf = user.email === myEmail;
+                const isBusy = busyEmail === user.email;
+                // Voir handlers/admin.rs::check_can_act_on_target() : un modérateur normal (pas
+                // ADMIN_EMAIL) ne peut agir (déconnecter/supprimer/régler l'extension) que sur des
+                // comptes non-modérateur — cible un autre modérateur (l'Admin y compris) reste
+                // réservé à l'Admin.
+                const canActOnTarget = isAdmin || !user.is_moderator;
+                const cellPad = listLayout === "compact" ? "py-1" : "py-2";
+                return (
+                  <tr key={user.email} className="border-b border-neutral-100 dark:border-neutral-900">
+                    <td className={`${cellPad} pr-3`}>
+                      <span className="text-neutral-800 dark:text-neutral-200">{user.email}</span>
+                      {renderUserBadges(user, isSelf)}
+                    </td>
+                    <td className={`${cellPad} pr-3 text-neutral-600 dark:text-neutral-400`}>{user.email_verified ? "Oui" : "Non"}</td>
+                    <td className={`${cellPad} pr-3 text-neutral-600 dark:text-neutral-400`}>{new Date(user.created_at).toLocaleDateString()}</td>
+                    <td className={`${cellPad} pr-3`}>{renderUserActions(user, isSelf, isBusy, canActOnTarget)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

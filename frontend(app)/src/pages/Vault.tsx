@@ -20,6 +20,7 @@ import ShareEntryModal from "../components/ShareEntryModal";
 import BlindShareModal from "../components/BlindShareModal";
 import { reseedEntryShares } from "../lib/entrySharing";
 import { recordEntryUse } from "../lib/vaultUsage";
+import { getListLayout } from "../lib/listLayout";
 import EntryActionsMenu from "../components/EntryActionsMenu";
 import KeyboardShortcutsModal from "../components/KeyboardShortcutsModal";
 import SiteAvatar from "../components/SiteAvatar";
@@ -76,6 +77,10 @@ export default function Vault() {
   // ces entrées-là. Un seul actif à la fois, se combine avec la recherche/le dossier/le tri.
   const [quickFilter, setQuickFilter] = useState<"" | "weak" | "reused" | "old" | "favorite" | "attachment">("");
   const [sortBy, setSortBy] = useState<"name" | "updated" | "strength" | "usage">("name");
+  // Réglée dans Réglages (voir components/ListLayoutSettings.tsx) — lue une fois au montage, se
+  // met à jour naturellement en revenant sur cette page (React Router démonte/remonte Vault en
+  // changeant de route, voir App.tsx) sans avoir besoin d'un contexte partagé pour ça.
+  const [listLayout] = useState(() => getListLayout());
   const [modal, setModal] = useState<ModalState>(null);
   const [showTrash, setShowTrash] = useState(false);
   const [showHealth, setShowHealth] = useState(false);
@@ -691,6 +696,186 @@ export default function Vault() {
     );
   }
 
+  /** Actions secondaires communes à renderEntryCompact/renderEntryCard ci-dessous — TOUTES les
+   * actions de renderEntryRow (Ouvrir le site/Voir/Copier l'identifiant/Dupliquer/Historique/
+   * Pièces jointes/Partager/Partager limité/Supprimer) SAUF Copier (mot de passe) et Modifier, qui
+   * restent des boutons visibles à part (voir les deux fonctions ci-dessous) — rien n'est retiré,
+   * juste réorganisé pour tenir dans un espace plus restreint (retour utilisateur, 2026-09-02,
+   * "disposition des listes"). */
+  function secondaryActionItems(entry: PlainVaultEntry) {
+    return [
+      ...(entry.url ? [{ label: "Ouvrir le site", onClick: () => void openEntryUrl(entry.url) }] : []),
+      ...(entry.entryType !== "note"
+        ? [{ label: revealedId === entry.id ? "Cacher le mot de passe" : "Voir le mot de passe", onClick: () => setRevealedId((current) => (current === entry.id ? null : entry.id)) }]
+        : []),
+      ...(entry.entryType === "login" ? [{ label: "Copier l'identifiant", onClick: () => void handleCopyIdentifier(entry) }] : []),
+      { label: "Dupliquer", onClick: () => handleDuplicate(entry) },
+      { label: "Historique", onClick: () => setHistoryEntry(entry) },
+      { label: "Pièces jointes", onClick: () => setAttachmentsEntry(entry) },
+      { label: "Partager", onClick: () => setSharingEntry(entry) },
+      { label: "Partager (usage limité)", onClick: () => setBlindSharingEntry(entry) },
+      { label: "Supprimer", onClick: () => void handleDelete(entry.id), danger: true },
+    ];
+  }
+
+  /** Disposition "Compacte" — retour utilisateur (2026-09-02) : une seule ligne dense par entrée,
+   * plus d'entrées visibles à l'écran sans défiler. Mêmes actions que renderEntryRow, juste
+   * réorganisées (voir secondaryActionItems ci-dessus) : Copier/Modifier restent des icônes
+   * visibles, tout le reste passe dans "⋯". */
+  function renderEntryCompact(entry: PlainVaultEntry) {
+    return (
+      <li
+        key={entry.id}
+        onClick={() => isSelecting && toggleSelected(entry.id)}
+        className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 transition ${isSelecting ? "cursor-pointer" : ""} ${
+          isSelecting && selectedIds.has(entry.id)
+            ? "border-indigo-300 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950"
+            : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+        }`}
+      >
+        {isSelecting && (
+          <input
+            type="checkbox"
+            checked={selectedIds.has(entry.id)}
+            onChange={() => toggleSelected(entry.id)}
+            onClick={(e) => e.stopPropagation()}
+            className="shrink-0 rounded border-neutral-300 text-indigo-600 focus:ring-indigo-500"
+          />
+        )}
+        {!isSelecting && (
+          <button
+            type="button"
+            onClick={() => void handleToggleFavorite(entry)}
+            aria-label="Basculer favori"
+            className={`shrink-0 text-sm ${entry.isFavorite ? "text-amber-500" : "text-neutral-300 hover:text-amber-400 dark:text-neutral-700"}`}
+          >
+            ★
+          </button>
+        )}
+        {entry.entryType === "login" ? <SiteAvatar siteName={entry.siteName} url={entry.url} size={24} /> : <EntryTypeIcon entryType={entry.entryType} />}
+        <p className="min-w-0 shrink truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
+        {entry.entryType !== "note" && (
+          <p className="min-w-0 flex-1 truncate text-xs text-neutral-500">{entry.entryType === "login" ? getPreferredIdentifier(entry) || "—" : entry.username || "—"}</p>
+        )}
+        {!isSelecting && (
+          <div className="flex shrink-0 items-center gap-1">
+            {entry.entryType !== "note" && (
+              <button
+                type="button"
+                onClick={() => void handleCopyPassword(entry)}
+                title="Copier le mot de passe"
+                className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                {copiedId === entry.id ? "Copié !" : "Copier"}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setModal({ mode: "edit", entry })}
+              title="Modifier"
+              className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              Modifier
+            </button>
+            <EntryActionsMenu
+              isOpen={openMenuId === entry.id}
+              onToggle={() => setOpenMenuId((current) => (current === entry.id ? null : entry.id))}
+              onClose={() => setOpenMenuId((current) => (current === entry.id ? null : current))}
+              items={secondaryActionItems(entry)}
+            />
+          </div>
+        )}
+      </li>
+    );
+  }
+
+  /** Disposition "Grille de cartes" — retour utilisateur (2026-09-02) : avatar/logo bien plus
+   * visible que dans la liste, idéal pour repérer une entrée d'un coup d'œil. Mêmes actions que
+   * renderEntryRow, réorganisées comme pour renderEntryCompact ci-dessus (voir son commentaire). */
+  function renderEntryCard(entry: PlainVaultEntry) {
+    return (
+      <div
+        key={entry.id}
+        onClick={() => isSelecting && toggleSelected(entry.id)}
+        className={`flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition ${isSelecting ? "cursor-pointer" : ""} ${
+          isSelecting && selectedIds.has(entry.id)
+            ? "border-indigo-300 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950"
+            : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
+        }`}
+      >
+        <div className="flex w-full items-center justify-between">
+          {isSelecting ? (
+            <input
+              type="checkbox"
+              checked={selectedIds.has(entry.id)}
+              onChange={() => toggleSelected(entry.id)}
+              onClick={(e) => e.stopPropagation()}
+              className="rounded border-neutral-300 text-indigo-600 focus:ring-indigo-500"
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => void handleToggleFavorite(entry)}
+              aria-label="Basculer favori"
+              className={entry.isFavorite ? "text-amber-500" : "text-neutral-300 hover:text-amber-400 dark:text-neutral-700"}
+            >
+              ★
+            </button>
+          )}
+          {entry.entryType === "login" && <StrengthDot password={entry.password} />}
+        </div>
+        {entry.entryType === "login" ? <SiteAvatar siteName={entry.siteName} url={entry.url} size={48} /> : <EntryTypeIcon entryType={entry.entryType} />}
+        <p className="w-full truncate font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
+        {entry.entryType !== "note" && (
+          <p className="w-full truncate text-xs text-neutral-500">{entry.entryType === "login" ? getPreferredIdentifier(entry) || "—" : entry.username || "—"}</p>
+        )}
+        {!isSelecting && (
+          <div className="mt-1 flex items-center gap-1">
+            {entry.entryType !== "note" && (
+              <button
+                type="button"
+                onClick={() => void handleCopyPassword(entry)}
+                title="Copier le mot de passe"
+                className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                {copiedId === entry.id ? "Copié !" : "Copier"}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setModal({ mode: "edit", entry })}
+              title="Modifier"
+              className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              Modifier
+            </button>
+            <EntryActionsMenu
+              isOpen={openMenuId === entry.id}
+              onToggle={() => setOpenMenuId((current) => (current === entry.id ? null : entry.id))}
+              onClose={() => setOpenMenuId((current) => (current === entry.id ? null : current))}
+              items={secondaryActionItems(entry)}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /** Choisit le rendu selon la disposition réglée dans Réglages (voir lib/listLayout.ts) — un seul
+   * point d'appel pour les deux endroits qui affichent des entrées (groupé par dossier ou à plat,
+   * voir plus bas). */
+  function renderEntry(entry: PlainVaultEntry, options?: { hideFolderBadge?: boolean }) {
+    if (listLayout === "cards") return renderEntryCard(entry);
+    if (listLayout === "compact") return renderEntryCompact(entry);
+    return renderEntryRow(entry, options);
+  }
+
+  /** Classes du conteneur — grille pour "cards" (avatars/logos en évidence, plusieurs colonnes
+   * selon la largeur), simple liste empilée pour "list"/"compact" (comportement inchangé). */
+  const entryListContainerClass =
+    listLayout === "cards" ? "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4" : "flex flex-col gap-2";
+  const EntryListContainer = listLayout === "cards" ? "div" : "ul";
+
   return (
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
       {/* CORRECTIF (retour utilisateur, 2026-09-01) : max-w-2xl (672px) restait fixe quelle que
@@ -1024,12 +1209,14 @@ export default function Vault() {
                       </button>
                     )}
                   </div>
-                  <ul className="flex flex-col gap-2">{section.entries.map((entry) => renderEntryRow(entry, { hideFolderBadge: true }))}</ul>
+                  <EntryListContainer className={entryListContainerClass}>
+                    {section.entries.map((entry) => renderEntry(entry, { hideFolderBadge: true }))}
+                  </EntryListContainer>
                 </div>
               ))}
             </div>
           ) : (
-            <ul className="flex flex-col gap-2">{filteredEntries.map((entry) => renderEntryRow(entry))}</ul>
+            <EntryListContainer className={entryListContainerClass}>{filteredEntries.map((entry) => renderEntry(entry))}</EntryListContainer>
           )
         )}
       </div>

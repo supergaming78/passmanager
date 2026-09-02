@@ -12,6 +12,7 @@ import AppUpdateSettings from "../components/AppUpdateSettings";
 import ServerUrlForm from "../components/ServerUrlForm";
 import ThemeSettings from "../components/ThemeSettings";
 import MenuLayoutSettings from "../components/MenuLayoutSettings";
+import ListLayoutSettings from "../components/ListLayoutSettings";
 import { isMobilePlatform } from "../lib/platform";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -76,6 +77,7 @@ export default function Settings() {
              * une barre latérale/compacte pensée pour un grand écran avec souris n'a pas vraiment
              * de sens sur téléphone/tablette, voir son propre commentaire pour le détail. */}
             {!isMobilePlatform() && <MenuLayoutSettings />}
+            <ListLayoutSettings />
           </div>
         </Section>
 
