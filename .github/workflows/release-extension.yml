@@ -36,6 +36,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # CORRECTIF (retour utilisateur, 2026-09-02) : `fetch-depth: 0` (historique COMPLET) au
+          # lieu du défaut `1` (clone superficiel) — nécessaire pour que `git rebase origin/main`
+          # dans l'étape "Mettre à jour extension/updates.json" plus bas puisse réussir en cas de
+          # retard sur `main` (voir son commentaire) : un rebase sur un clone superficiel manque
+          # l'ancêtre commun nécessaire, échec quasi garanti. Coût négligeable pour un dépôt de
+          # cette taille.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -223,4 +231,26 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add extension/updates.json
           git commit -m "chore(extension): mise à jour updates.json pour la version $version [skip ci]" || echo "Rien à committer (updates.json déjà à jour)"
-          git push origin HEAD:main
+          # CORRECTIF (retour utilisateur, 2026-09-02) : un simple `git push` a échoué en vrai sur
+          # ext-v0.1.6 ("! [rejected] HEAD -> main (fetch first)") — `main` avait avancé (un autre
+          # commit poussé) entre le checkout de ce job et cette étape, plusieurs minutes plus tard
+          # (le job entier prend le temps de builder/signer avant d'arriver ici). CONSÉQUENCE
+          # SÉRIEUSE de cet échec silencieux à l'époque : extension/updates.json n'a jamais été mis
+          # à jour pour 0.1.6 (Firefox restait bloqué sur l'annonce de 0.1.5), ET une deuxième
+          # tentative (relancer le job échoué) a échoué à SIGNER de nouveau — Mozilla/AMO refuse de
+          # resoumettre un numéro de version déjà signé une fois ("Version 0.1.6 already exists"),
+          # rendant tout nouvel essai sur CE numéro de version impossible. D'où cette boucle de
+          # réessai : rebase sur `main` à jour avant chaque nouvel essai de push, jusqu'à 5 fois.
+          for i in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              echo "Push réussi (tentative $i)."
+              break
+            fi
+            if [ "$i" = 5 ]; then
+              echo "::error::Échec du push après 5 tentatives — extension/updates.json n'a PAS été mis à jour, à corriger à la main."
+              exit 1
+            fi
+            echo "Push rejeté (tentative $i), rebase sur origin/main et nouvel essai..."
+            git fetch origin main
+            git rebase origin/main
+          done
