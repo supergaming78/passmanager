@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { avatarColorClass, avatarLetter, matchKnownLogo } from "../lib/siteAvatar";
+import { ensureKnownLogosLoaded } from "../lib/knownLogos";
 
 interface Props {
   siteName: string;
@@ -18,7 +20,23 @@ interface Props {
  * reste, retombe sur le rond couleur + initiale ci-dessous. Dans tous les cas, aucune requête
  * réseau. */
 export default function SiteAvatar({ siteName, url, size = 32 }: Props) {
-  const logo = matchKnownLogo(siteName, url);
+  // CORRECTIF PERF (voir lib/knownLogos.ts) : la bibliothèque de logos (~4,87 Mo) charge
+  // maintenant à la demande plutôt que d'être bundlée avec le reste de la page. Chaque instance de
+  // SiteAvatar déclenche ce chargement (mémoïsé — un SEUL vrai chargement réseau/disque, même avec
+  // des dizaines d'instances montées en même temps dans la liste du coffre) puis se re-rend une
+  // fois prêt, pour passer de l'avatar générique (lettre/couleur) au vrai logo si reconnu.
+  const [logosReady, setLogosReady] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void ensureKnownLogosLoaded().then(() => {
+      if (!cancelled) setLogosReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const logo = logosReady ? matchKnownLogo(siteName, url) : undefined;
 
   if (logo?.kind === "color") {
     return (

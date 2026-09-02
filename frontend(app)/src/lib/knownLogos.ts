@@ -49,30 +49,56 @@
 // Icons) — Crytek elle-même n'a pas de logo propre dans les bibliothèques utilisées ici, mais
 // CryEngine reste un logo reconnaissable et directement associé à la marque.
 
-import rawLogos from "./knownLogos.json";
-import rawMonoLogos from "./knownLogosMono.json";
-import rawMultiLogos from "./knownLogosMulti.json";
-
 export type KnownLogo =
   | { kind: "color"; hex: string; path: string }
   | { kind: "mono"; viewBox: string; path: string }
   | { kind: "multicolor"; viewBox: string; layers: [string, string][] };
 
+type RawColorLogos = Record<string, [string, string]>;
+type RawMonoLogos = Record<string, [string, string]>;
+type RawMultiLogos = Record<string, [string, [string, string][]]>;
+
+// CORRECTIF PERF (retour utilisateur, 2026-09-02) : ces trois fichiers JSON pèsent ~4,87 Mo à eux
+// trois (knownLogos.json seul : 4,85 Mo) — importés STATIQUEMENT auparavant, ils étaient donc
+// bundlés EAGERLY avec le reste de la page Coffre (voir App.tsx), chargés et parsés dès le tout
+// premier rendu, même avant qu'une seule icône n'ait besoin d'être affichée. `import()` DYNAMIQUE
+// (au lieu d'un `import` statique en tête de fichier) : Vite les met dans leurs propres chunks
+// séparés, chargés à la demande — voir ensureKnownLogosLoaded() ci-dessous, appelée une seule fois
+// (mémoïsée) par SiteAvatar.tsx au premier montage. lookupKnownLogo() reste synchrone (renvoie
+// `undefined` tant que le chargement n'est pas terminé — l'appelant retombe alors sur l'avatar
+// générique le temps d'un court instant, avant de se re-rendre avec le vrai logo une fois chargé).
+let loaded: { color: RawColorLogos; mono: RawMonoLogos; multi: RawMultiLogos } | null = null;
+let loadingPromise: Promise<void> | null = null;
+
+export function ensureKnownLogosLoaded(): Promise<void> {
+  if (loadingPromise) return loadingPromise;
+  loadingPromise = Promise.all([
+    import("./knownLogos.json"),
+    import("./knownLogosMono.json"),
+    import("./knownLogosMulti.json"),
+  ]).then(([color, mono, multi]) => {
+    loaded = {
+      color: color.default as unknown as RawColorLogos,
+      mono: mono.default as unknown as RawMonoLogos,
+      multi: multi.default as unknown as RawMultiLogos,
+    };
+  });
+  return loadingPromise;
+}
+
 // Clé = forme normalisée (minuscules, sans accents/espaces/ponctuation, voir
 // normalizeForLogoMatch() dans siteAvatar.ts) du nom de marque OU d'un alias courant (ex:
 // "twitter" pour X) OU du domaine racine (ex: "netflix" pour netflix.com).
-const RAW_LOGOS = rawLogos as unknown as Record<string, [string, string]>;
-const RAW_MONO_LOGOS = rawMonoLogos as unknown as Record<string, [string, string]>;
-const RAW_MULTI_LOGOS = rawMultiLogos as unknown as Record<string, [string, [string, string][]]>;
-
 export function lookupKnownLogo(normalizedKey: string): KnownLogo | undefined {
-  const color = RAW_LOGOS[normalizedKey];
+  if (!loaded) return undefined;
+
+  const color = loaded.color[normalizedKey];
   if (color) return { kind: "color", hex: color[0], path: color[1] };
 
-  const mono = RAW_MONO_LOGOS[normalizedKey];
+  const mono = loaded.mono[normalizedKey];
   if (mono) return { kind: "mono", viewBox: mono[0], path: mono[1] };
 
-  const multi = RAW_MULTI_LOGOS[normalizedKey];
+  const multi = loaded.multi[normalizedKey];
   if (multi) return { kind: "multicolor", viewBox: multi[0], layers: multi[1] };
 
   return undefined;
