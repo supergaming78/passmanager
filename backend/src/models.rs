@@ -1010,8 +1010,19 @@ impl PaginationParams {
     /// Limite plafonnée à MAX_LIMIT, quoi que le client demande (ex: `?limit=999999999`),
     /// pour éviter qu'une requête mal formée ou malveillante ne fasse remonter toute la table.
     /// Valeur par défaut de 50 si le client ne précise rien.
+    ///
+    /// CORRECTIF PERF (retour utilisateur, 2026-09-02) : 100 -> 500. `api/client.ts::getFullVault()`
+    /// pagine de façon SÉQUENTIELLE (chaque page dépend de savoir si la précédente était la
+    /// dernière, impossible à paralléliser sans changer la forme de la réponse) — pour un coffre
+    /// de plusieurs centaines/milliers d'entrées (plafond MAX_VAULT_ENTRIES_PER_USER = 5000, voir
+    /// handlers/vault.rs), ça pouvait représenter des dizaines d'allers-retours réseau l'un après
+    /// l'autre. Le volume TOTAL de données transféré ne change pas avec la taille de page (mêmes
+    /// entrées, juste groupées différemment) — augmenter cette limite réduit donc uniquement le
+    /// nombre d'allers-retours, sans changement client. 500 reste raisonnable en pire cas de taille
+    /// de réponse (500 entrées × 5 champs chiffrés × 8192 caractères max ≈ 19,5 Mo, très généreux
+    /// par rapport à un usage réel — voir le calcul équivalent pour /auth/password dans main.rs).
     pub fn effective_limit(&self) -> i64 {
-        const MAX_LIMIT: u32 = 100;
+        const MAX_LIMIT: u32 = 500;
         self.limit.unwrap_or(50).min(MAX_LIMIT) as i64
     }
 }
@@ -1045,9 +1056,10 @@ mod tests {
 
     #[test]
     fn test_effective_limit_clamps_excessive_client_value() {
-        // Un client demandant un limit absurde ne doit jamais dépasser 100
+        // Un client demandant un limit absurde ne doit jamais dépasser MAX_LIMIT (500, voir
+        // effective_limit() — relevé à 500 le 2026-09-02, anciennement 100)
         let p = PaginationParams { limit: Some(999_999_999), offset: None };
-        assert_eq!(p.effective_limit(), 100);
+        assert_eq!(p.effective_limit(), 500);
     }
 
     #[test]

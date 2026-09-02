@@ -205,12 +205,16 @@ export function getVault(accessToken: string, limit = 100, offset = 0): Promise<
   });
 }
 
-// Le serveur plafonne TOUJOURS `limit` à 100 par page, quoi que le client demande (voir
+// Le serveur plafonne TOUJOURS `limit` à 500 par page, quoi que le client demande (voir
 // PaginationParams::effective_limit côté backend) — un simple appel getVault() sans boucle
-// tronque donc silencieusement tout coffre de plus de 100 entrées (recherche, remplissage
-// automatique, copie, édition tous limités aux 100 premières entrées, sans aucune indication).
+// tronque donc silencieusement tout coffre de plus de 500 entrées (recherche, remplissage
+// automatique, copie, édition tous limités aux 500 premières entrées, sans aucune indication).
 export async function getFullVault(accessToken: string): Promise<VaultEntry[]> {
-  const pageSize = 100;
+  // CORRECTIF PERF (retour utilisateur, 2026-09-02) : 100 -> 500, aligné sur le nouveau plafond
+  // serveur (même correctif que frontend(app)/src/api/client.ts) — réduit le nombre d'allers-
+  // retours réseau nécessaires pour charger un gros coffre (boucle séquentielle par nature,
+  // chaque page dépend de savoir si la précédente était la dernière).
+  const pageSize = 500;
   const all: VaultEntry[] = [];
   let offset = 0;
   for (;;) {

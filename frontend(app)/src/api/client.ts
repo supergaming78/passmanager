@@ -224,7 +224,12 @@ export function getVault(accessToken: string, limit = 100, offset = 0): Promise<
 // contrairement à exportVault() ci-dessous, ceci ne redemande pas le mot de passe maître, donc
 // ne convient PAS pour un export explicite à froid (voir ExportVaultPayload).
 export async function getFullVault(accessToken: string): Promise<VaultEntry[]> {
-  const pageSize = 100;
+  // CORRECTIF PERF (retour utilisateur, 2026-09-02) : 100 -> 500, aligné sur le nouveau plafond
+  // serveur (voir backend/src/models.rs::PaginationParams::effective_limit) — cette boucle reste
+  // SÉQUENTIELLE (chaque page dépend de savoir si la précédente était la dernière), donc pour un
+  // gros coffre, une page plus large réduit directement le nombre d'allers-retours réseau
+  // nécessaires (jusqu'à 5x moins pour un coffre proche du plafond de 5000 entrées).
+  const pageSize = 500;
   const all: VaultEntry[] = [];
   let offset = 0;
   for (;;) {
