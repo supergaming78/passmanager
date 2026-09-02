@@ -45,6 +45,19 @@ export function decryptField(ciphertext: string): Promise<string> {
   return invoke<string>("decrypt_vault_field", { ciphertext });
 }
 
+/** Version GROUPÉE de encryptField() ci-dessus — CORRECTIF PERF (retour utilisateur, 2026-09-02) :
+ * un seul appel IPC pour plusieurs champs au lieu d'un aller-retour séparé par champ (voir
+ * lib/vaultCrypto.ts::batchedCryptoOp, qui appelle cette fonction). La clé n'est lue/effacée
+ * qu'UNE FOIS côté Rust pour tout le lot. Échoue entièrement si UN SEUL champ échoue. */
+export function encryptFields(plaintexts: string[]): Promise<string[]> {
+  return invoke<string[]>("encrypt_vault_fields", { plaintexts });
+}
+
+/** Version GROUPÉE de decryptField() ci-dessus — même raisonnement que encryptFields() ci-dessus. */
+export function decryptFields(ciphertexts: string[]): Promise<string[]> {
+  return invoke<string[]>("decrypt_vault_fields", { ciphertexts });
+}
+
 export interface PasswordChangeResult {
   old_auth_hash: string;
   new_auth_hash: string;
@@ -161,6 +174,12 @@ export function decryptEmergencyField(ciphertext: string): Promise<string> {
   return invoke<string>("decrypt_emergency_field", { ciphertext });
 }
 
+/** Version GROUPÉE de decryptEmergencyField() ci-dessus — voir tauri.ts::decryptFields (même
+ * raisonnement, un seul appel IPC pour tous les champs d'une entrée). */
+export function decryptEmergencyFields(ciphertexts: string[]): Promise<string[]> {
+  return invoke<string[]>("decrypt_emergency_fields", { ciphertexts });
+}
+
 // --- Partage sécurisé d'une entrée — voir src-tauri/src/sharing.rs et lib/entrySharing.ts.
 // Réutilise le MÊME trousseau de clés X25519 par utilisateur que l'accès d'urgence ci-dessus
 // (généré/déverrouillé via les mêmes commandes), mais avec un contexte de dérivation différent
@@ -211,6 +230,17 @@ export function encryptSharedVaultField(plaintext: string, vaultKeyB64: string):
 /** Déchiffre un champ d'entrée de coffre partagé avec SA clé symétrique. */
 export function decryptSharedVaultField(ciphertext: string, vaultKeyB64: string): Promise<string> {
   return invoke<string>("decrypt_shared_vault_field", { ciphertext, vaultKeyB64 });
+}
+
+/** Version GROUPÉE de encryptSharedVaultField() ci-dessus — voir tauri.ts::encryptFields (même
+ * raisonnement, un seul appel IPC pour tous les champs d'une entrée). */
+export function encryptSharedVaultFields(plaintexts: string[], vaultKeyB64: string): Promise<string[]> {
+  return invoke<string[]>("encrypt_shared_vault_fields", { plaintexts, vaultKeyB64 });
+}
+
+/** Version GROUPÉE de decryptSharedVaultField() ci-dessus — même raisonnement. */
+export function decryptSharedVaultFields(ciphertexts: string[], vaultKeyB64: string): Promise<string[]> {
+  return invoke<string[]>("decrypt_shared_vault_fields", { ciphertexts, vaultKeyB64 });
 }
 
 // --- Partage à usage limité ("aveugle") — voir src-tauri/src/lib.rs et lib/blindShare.ts. Le

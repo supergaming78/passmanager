@@ -14,7 +14,7 @@
 import * as api from "../api/client";
 import * as tauri from "../api/tauri";
 import { ensureEmergencyKeys } from "./emergencyAccess";
-import { normalizeEntryType, coerceExtraFields, type EntryType } from "./vaultCrypto";
+import { batchedCryptoOp, normalizeEntryType, coerceExtraFields, type EntryType } from "./vaultCrypto";
 import type { SharedVaultMemberView, SharedVaultEntryInput } from "../api/types";
 
 type AuthorizedRequest = <T,>(fn: (accessToken: string) => Promise<T>) => Promise<T>;
@@ -134,6 +134,9 @@ async function encryptSharedEntry(
 ): Promise<SharedVaultEntryInput> {
   const hasExtraFields = Object.keys(plain.extraFields).length > 0;
 
+  // CORRECTIF PERF (retour utilisateur, 2026-09-02) : un seul appel IPC groupé pour les 8 champs
+  // (voir vaultCrypto.ts::batchedCryptoOp et tauri.ts::encryptSharedVaultFields) au lieu d'un par
+  // champ.
   const [
     encrypted_site_name,
     encrypted_username,
@@ -143,23 +146,29 @@ async function encryptSharedEntry(
     encrypted_notes,
     encrypted_url,
     encrypted_extra_fields,
-  ] = await Promise.all([
-    tauri.encryptSharedVaultField(plain.siteName, vaultKeyB64),
-    plain.username.trim() ? tauri.encryptSharedVaultField(plain.username, vaultKeyB64) : Promise.resolve(null),
-    plain.loginEmail.trim() ? tauri.encryptSharedVaultField(plain.loginEmail, vaultKeyB64) : Promise.resolve(null),
-    tauri.encryptSharedVaultField(plain.password, vaultKeyB64),
-    tauri.encryptSharedVaultField(plain.preferredLoginType, vaultKeyB64),
-    plain.notes.trim() ? tauri.encryptSharedVaultField(plain.notes, vaultKeyB64) : Promise.resolve(null),
-    plain.url.trim() ? tauri.encryptSharedVaultField(plain.url, vaultKeyB64) : Promise.resolve(null),
-    hasExtraFields ? tauri.encryptSharedVaultField(JSON.stringify(plain.extraFields), vaultKeyB64) : Promise.resolve(null),
-  ]);
+  ] = await batchedCryptoOp<string | null>(
+    [
+      plain.siteName,
+      plain.username.trim() ? plain.username : null,
+      plain.loginEmail.trim() ? plain.loginEmail : null,
+      plain.password,
+      plain.preferredLoginType,
+      plain.notes.trim() ? plain.notes : null,
+      plain.url.trim() ? plain.url : null,
+      hasExtraFields ? JSON.stringify(plain.extraFields) : null,
+    ],
+    null,
+    (nonEmpty) => tauri.encryptSharedVaultFields(nonEmpty, vaultKeyB64),
+  );
 
   return {
-    encrypted_site_name,
+    // siteName/password/preferredLoginType toujours fournis -> toujours présents dans le lot
+    // envoyé, jamais repliés sur `null` (voir vaultCrypto.ts::encryptEntry, même raisonnement).
+    encrypted_site_name: encrypted_site_name as string,
     encrypted_username,
     encrypted_login_email,
-    encrypted_password,
-    encrypted_preferred_login_type,
+    encrypted_password: encrypted_password as string,
+    encrypted_preferred_login_type: encrypted_preferred_login_type as string,
     encrypted_notes,
     encrypted_url,
     entry_type: plain.entryType,
@@ -168,18 +177,27 @@ async function encryptSharedEntry(
   };
 }
 
-/** Déchiffre les champs d'une entrée de coffre partagé en parallèle, avec sa clé symétrique. */
+/** Déchiffre les champs d'une entrée de coffre partagé, avec sa clé symétrique — un seul appel IPC
+ * groupé pour les 8 champs (voir vaultCrypto.ts::batchedCryptoOp), PAS aplati au-delà d'une entrée
+ * comme lib/emergencyAccess.ts::openEmergencyVault : listEntries() ci-dessous isole le
+ * déchiffrement de chaque entrée via Promise.allSettled (une entrée corrompue ne doit pas faire
+ * échouer les autres) — un aplatissement global casserait cette isolation (tout le lot échoue si
+ * UN SEUL champ échoue, voir decrypt_shared_vault_fields côté Rust). */
 async function decryptSharedEntry(entry: { id: string; encrypted_site_name: string; encrypted_username: string | null; encrypted_login_email: string | null; encrypted_password: string; encrypted_preferred_login_type: string; encrypted_notes: string | null; encrypted_url: string | null; entry_type: string; encrypted_extra_fields: string | null; created_by: string; updated_at: string; version: number }, vaultKeyB64: string): Promise<PlainSharedVaultEntry> {
-  const [siteName, username, loginEmail, password, preferredLoginType, notes, url, extraFieldsJson] = await Promise.all([
-    tauri.decryptSharedVaultField(entry.encrypted_site_name, vaultKeyB64),
-    entry.encrypted_username ? tauri.decryptSharedVaultField(entry.encrypted_username, vaultKeyB64) : Promise.resolve(""),
-    entry.encrypted_login_email ? tauri.decryptSharedVaultField(entry.encrypted_login_email, vaultKeyB64) : Promise.resolve(""),
-    tauri.decryptSharedVaultField(entry.encrypted_password, vaultKeyB64),
-    tauri.decryptSharedVaultField(entry.encrypted_preferred_login_type, vaultKeyB64),
-    entry.encrypted_notes ? tauri.decryptSharedVaultField(entry.encrypted_notes, vaultKeyB64) : Promise.resolve(""),
-    entry.encrypted_url ? tauri.decryptSharedVaultField(entry.encrypted_url, vaultKeyB64) : Promise.resolve(""),
-    entry.encrypted_extra_fields ? tauri.decryptSharedVaultField(entry.encrypted_extra_fields, vaultKeyB64) : Promise.resolve(""),
-  ]);
+  const [siteName, username, loginEmail, password, preferredLoginType, notes, url, extraFieldsJson] = await batchedCryptoOp(
+    [
+      entry.encrypted_site_name,
+      entry.encrypted_username,
+      entry.encrypted_login_email,
+      entry.encrypted_password,
+      entry.encrypted_preferred_login_type,
+      entry.encrypted_notes,
+      entry.encrypted_url,
+      entry.encrypted_extra_fields,
+    ],
+    "",
+    (nonEmpty) => tauri.decryptSharedVaultFields(nonEmpty, vaultKeyB64),
+  );
 
   let extraFields: Record<string, string> = {};
   if (extraFieldsJson) {

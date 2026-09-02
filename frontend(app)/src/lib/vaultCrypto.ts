@@ -74,20 +74,58 @@ export interface PlainTrashedEntry {
   folder: string;
 }
 
-/** Déchiffre les champs d'une entrée en parallèle (indépendants les uns des autres, pas de
- * raison de les attendre en série). */
+/** Regroupe plusieurs opérations de chiffrement/déchiffrement en UN SEUL appel IPC Tauri —
+ * CORRECTIF PERF (retour utilisateur, 2026-09-02). Chaque entrée du coffre a jusqu'à 9 champs
+ * chiffrés séparément (voir decryptEntry/encryptEntry ci-dessous) : avant ce correctif, les
+ * déchiffrer/chiffrer signifiait jusqu'à 9 appels IPC séparés (chacun avec son propre aller-retour
+ * de sérialisation à travers le pont Tauri, et sa propre lecture/effacement de la clé côté Rust —
+ * voir src-tauri/src/lib.rs::encrypt_vault_fields/decrypt_vault_fields). `values` porte un slot par
+ * champ, `null`/`undefined`/`""` pour un champ absent (repli direct sur `emptyValue`, jamais envoyé
+ * à `op`) — les slots présents sont regroupés dans UN SEUL appel à `op`, puis redistribués à leur
+ * position d'origine. Erreur sur un seul champ -> tout le lot échoue (même comportement "tout ou
+ * rien" que l'ancien `Promise.all()`, juste déplacé dans le seul appel `op`). Exportée : réutilisée
+ * par lib/emergencyAccess.ts et lib/sharedVault.ts, mêmes trousseaux de clés différents (voir
+ * tauri.decryptEmergencyFields/encryptSharedVaultFields/decryptSharedVaultFields). */
+export async function batchedCryptoOp<T>(
+  values: (string | null | undefined)[],
+  emptyValue: T,
+  op: (nonEmpty: string[]) => Promise<T[]>,
+): Promise<T[]> {
+  const indices: number[] = [];
+  const nonEmpty: string[] = [];
+  values.forEach((v, i) => {
+    if (v) {
+      indices.push(i);
+      nonEmpty.push(v);
+    }
+  });
+  const results = nonEmpty.length > 0 ? await op(nonEmpty) : [];
+  const output = new Array<T>(values.length).fill(emptyValue);
+  indices.forEach((originalIndex, resultIndex) => {
+    output[originalIndex] = results[resultIndex];
+  });
+  return output;
+}
+
+/** Déchiffre les champs d'une entrée — voir batchedCryptoOp() ci-dessus (un seul appel IPC pour
+ * les 9 champs plutôt qu'un par champ). */
 export async function decryptEntry(entry: VaultEntry): Promise<PlainVaultEntry> {
-  const [siteName, username, loginEmail, password, preferredLoginType, folder, notes, url, extraFieldsJson] = await Promise.all([
-    tauri.decryptField(entry.encrypted_site_name),
-    entry.encrypted_username ? tauri.decryptField(entry.encrypted_username) : Promise.resolve(""),
-    entry.encrypted_login_email ? tauri.decryptField(entry.encrypted_login_email) : Promise.resolve(""),
-    tauri.decryptField(entry.encrypted_password),
-    tauri.decryptField(entry.encrypted_preferred_login_type),
-    entry.encrypted_folder ? tauri.decryptField(entry.encrypted_folder) : Promise.resolve(""),
-    entry.encrypted_notes ? tauri.decryptField(entry.encrypted_notes) : Promise.resolve(""),
-    entry.encrypted_url ? tauri.decryptField(entry.encrypted_url) : Promise.resolve(""),
-    entry.encrypted_extra_fields ? tauri.decryptField(entry.encrypted_extra_fields) : Promise.resolve(""),
-  ]);
+  const [siteName, username, loginEmail, password, preferredLoginType, folder, notes, url, extraFieldsJson] =
+    await batchedCryptoOp(
+      [
+        entry.encrypted_site_name,
+        entry.encrypted_username,
+        entry.encrypted_login_email,
+        entry.encrypted_password,
+        entry.encrypted_preferred_login_type,
+        entry.encrypted_folder,
+        entry.encrypted_notes,
+        entry.encrypted_url,
+        entry.encrypted_extra_fields,
+      ],
+      "",
+      tauri.decryptFields,
+    );
 
   return {
     id: entry.id,
@@ -138,14 +176,14 @@ export function coerceExtraFields(parsed: unknown): Record<string, string> {
   return result;
 }
 
-/** Déchiffre une entrée de la corbeille (pas de mot de passe — voir PlainTrashedEntry). */
+/** Déchiffre une entrée de la corbeille (pas de mot de passe — voir PlainTrashedEntry). Voir
+ * batchedCryptoOp() ci-dessus (un seul appel IPC pour les 4 champs). */
 export async function decryptTrashedEntry(entry: TrashedVaultEntry): Promise<PlainTrashedEntry> {
-  const [siteName, username, loginEmail, folder] = await Promise.all([
-    tauri.decryptField(entry.encrypted_site_name),
-    entry.encrypted_username ? tauri.decryptField(entry.encrypted_username) : Promise.resolve(""),
-    entry.encrypted_login_email ? tauri.decryptField(entry.encrypted_login_email) : Promise.resolve(""),
-    entry.encrypted_folder ? tauri.decryptField(entry.encrypted_folder) : Promise.resolve(""),
-  ]);
+  const [siteName, username, loginEmail, folder] = await batchedCryptoOp(
+    [entry.encrypted_site_name, entry.encrypted_username, entry.encrypted_login_email, entry.encrypted_folder],
+    "",
+    tauri.decryptFields,
+  );
 
   return {
     id: entry.id,
@@ -174,6 +212,10 @@ export async function encryptEntry(
 ): Promise<VaultEntryInput> {
   const hasExtraFields = Object.keys(plain.extraFields).length > 0;
 
+  // Voir batchedCryptoOp() ci-dessus : un seul appel IPC pour les 9 champs plutôt qu'un par champ.
+  // siteName/password/preferredLoginType sont toujours fournis (jamais vides) -> toujours présents
+  // dans le lot envoyé à op, jamais repliés sur `null` ; d'où le `as string` ci-dessous plutôt qu'un
+  // second contrôle inutile (VaultEntryInput les déclare non-nullables, voir api/types.ts).
   const [
     encrypted_site_name,
     encrypted_username,
@@ -184,24 +226,28 @@ export async function encryptEntry(
     encrypted_notes,
     encrypted_url,
     encrypted_extra_fields,
-  ] = await Promise.all([
-    tauri.encryptField(plain.siteName),
-    plain.username.trim() ? tauri.encryptField(plain.username) : Promise.resolve(null),
-    plain.loginEmail.trim() ? tauri.encryptField(plain.loginEmail) : Promise.resolve(null),
-    tauri.encryptField(plain.password),
-    tauri.encryptField(plain.preferredLoginType),
-    plain.folder.trim() ? tauri.encryptField(plain.folder) : Promise.resolve(null),
-    plain.notes.trim() ? tauri.encryptField(plain.notes) : Promise.resolve(null),
-    plain.url.trim() ? tauri.encryptField(plain.url) : Promise.resolve(null),
-    hasExtraFields ? tauri.encryptField(JSON.stringify(plain.extraFields)) : Promise.resolve(null),
-  ]);
+  ] = await batchedCryptoOp<string | null>(
+    [
+      plain.siteName,
+      plain.username.trim() ? plain.username : null,
+      plain.loginEmail.trim() ? plain.loginEmail : null,
+      plain.password,
+      plain.preferredLoginType,
+      plain.folder.trim() ? plain.folder : null,
+      plain.notes.trim() ? plain.notes : null,
+      plain.url.trim() ? plain.url : null,
+      hasExtraFields ? JSON.stringify(plain.extraFields) : null,
+    ],
+    null,
+    tauri.encryptFields,
+  );
 
   return {
-    encrypted_site_name,
+    encrypted_site_name: encrypted_site_name as string,
     encrypted_username,
     encrypted_login_email,
-    encrypted_password,
-    encrypted_preferred_login_type,
+    encrypted_password: encrypted_password as string,
+    encrypted_preferred_login_type: encrypted_preferred_login_type as string,
     is_favorite: plain.isFavorite,
     encrypted_folder,
     encrypted_notes,

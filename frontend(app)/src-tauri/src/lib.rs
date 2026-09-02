@@ -76,6 +76,34 @@ fn decrypt_vault_field(ciphertext: String, vault_state: State<VaultKeyState>) ->
     result
 }
 
+/// Version GROUPÉE de encrypt_vault_field() ci-dessus — CORRECTIF PERF (retour utilisateur,
+/// 2026-09-02) : une seule entrée du coffre a jusqu'à 9 champs chiffrés séparément (site,
+/// identifiant, email, mot de passe, préférence, dossier, notes, URL, champs additionnels) —
+/// jusqu'ici, chiffrer/déchiffrer une entrée signifiait jusqu'à 9 appels IPC SÉPARÉS (chacun avec
+/// son propre aller-retour de sérialisation à travers le pont Tauri, et sa propre lecture/effacement
+/// de la clé), voir lib/vaultCrypto.ts. Pour N entrées visibles dans le coffre : jusqu'à 9×N appels.
+/// Un seul appel groupé ici : la clé n'est récupérée/effacée QU'UNE FOIS pour tout le lot, pas une
+/// fois par champ. Erreur sur UN SEUL champ -> toute la requête échoue (via `.collect()` sur un
+/// itérateur de `Result`, qui s'arrête à la première erreur) — même comportement "tout ou rien"
+/// que l'ancien `Promise.all()` côté JS, juste déplacé ici.
+#[tauri::command]
+fn encrypt_vault_fields(plaintexts: Vec<String>, vault_state: State<VaultKeyState>) -> Result<Vec<String>, String> {
+    let mut key = vault_state.get().ok_or_else(|| "Coffre verrouillé".to_string())?;
+    let result = plaintexts.iter().map(|p| crypto::encrypt_field(&key, p)).collect();
+    key.zeroize();
+    result
+}
+
+/// Version GROUPÉE de decrypt_vault_field() ci-dessus — même raisonnement que
+/// encrypt_vault_fields() juste au-dessus.
+#[tauri::command]
+fn decrypt_vault_fields(ciphertexts: Vec<String>, vault_state: State<VaultKeyState>) -> Result<Vec<String>, String> {
+    let mut key = vault_state.get().ok_or_else(|| "Coffre verrouillé".to_string())?;
+    let result = ciphertexts.iter().map(|c| crypto::decrypt_field(&key, c)).collect();
+    key.zeroize();
+    result
+}
+
 /// Résultat de prepare_password_change() : les DEUX hash d'authentification à envoyer au serveur
 /// (voir ChangeMasterPasswordPayload côté backend) et chaque blob re-chiffré, DANS LE MÊME ORDRE
 /// que les `ciphertexts` fournis en entrée — reconstruire les entrées avec ce mapping par index
@@ -327,6 +355,18 @@ fn decrypt_emergency_field(ciphertext: String, emergency_state: State<EmergencyV
     result
 }
 
+/// Version GROUPÉE de decrypt_emergency_field() ci-dessus — CORRECTIF PERF (retour utilisateur,
+/// 2026-09-02), même raisonnement que encrypt_vault_fields()/decrypt_vault_fields() plus haut
+/// (voir leur commentaire) : une entrée du coffre d'urgence a jusqu'à 9 champs chiffrés séparément
+/// (voir lib/emergencyAccess.ts), un seul appel groupé ici au lieu de jusqu'à 9 appels IPC.
+#[tauri::command]
+fn decrypt_emergency_fields(ciphertexts: Vec<String>, emergency_state: State<EmergencyVaultKeyState>) -> Result<Vec<String>, String> {
+    let mut key = emergency_state.get().ok_or_else(|| "Coffre d'urgence non déverrouillé".to_string())?;
+    let result = ciphertexts.iter().map(|c| crypto::decrypt_field(&key, c)).collect();
+    key.zeroize();
+    result
+}
+
 // =========================================================================
 // PARTAGE SÉCURISÉ D'UNE ENTRÉE (voir sharing.rs) — réutilise le MÊME trousseau de clés X25519 par
 // utilisateur que l'accès d'urgence ci-dessus (table `user_keys` côté backend), mais avec un
@@ -429,6 +469,33 @@ fn decrypt_shared_vault_field(ciphertext: String, vault_key_b64: String) -> Resu
     result
 }
 
+/// Version GROUPÉE de encrypt_shared_vault_field() ci-dessus — CORRECTIF PERF (retour utilisateur,
+/// 2026-09-02), même raisonnement que encrypt_vault_fields() plus haut (voir son commentaire) :
+/// une entrée de coffre partagé a jusqu'à 9 champs chiffrés séparément (voir lib/sharedVault.ts),
+/// un seul appel groupé ici — la clé n'est décodée/zeroizée qu'UNE FOIS pour tout le lot au lieu
+/// d'une fois par champ.
+#[tauri::command]
+fn encrypt_shared_vault_fields(plaintexts: Vec<String>, vault_key_b64: String) -> Result<Vec<String>, String> {
+    let mut key_bytes = BASE64.decode(&vault_key_b64).map_err(|_| "Clé de coffre partagé invalide (base64)".to_string())?;
+    let mut key: [u8; crypto::KEY_LEN] = key_bytes.as_slice().try_into().map_err(|_| "Clé de coffre partagé invalide (longueur)".to_string())?;
+    key_bytes.zeroize();
+    let result = plaintexts.iter().map(|p| crypto::encrypt_field(&key, p)).collect();
+    key.zeroize();
+    result
+}
+
+/// Version GROUPÉE de decrypt_shared_vault_field() ci-dessus — même raisonnement que
+/// encrypt_shared_vault_fields() juste au-dessus.
+#[tauri::command]
+fn decrypt_shared_vault_fields(ciphertexts: Vec<String>, vault_key_b64: String) -> Result<Vec<String>, String> {
+    let mut key_bytes = BASE64.decode(&vault_key_b64).map_err(|_| "Clé de coffre partagé invalide (base64)".to_string())?;
+    let mut key: [u8; crypto::KEY_LEN] = key_bytes.as_slice().try_into().map_err(|_| "Clé de coffre partagé invalide (longueur)".to_string())?;
+    key_bytes.zeroize();
+    let result = ciphertexts.iter().map(|c| crypto::decrypt_field(&key, c)).collect();
+    key.zeroize();
+    result
+}
+
 // =========================================================================
 // PARTAGE À USAGE LIMITÉ ("AVEUGLE", voir blind_share.rs) — même contexte HKDF de séparation que
 // les trois autres usages (INFO_BLIND_SHARE_SEAL). Le destinataire ne voit jamais l'identifiant ni
@@ -488,6 +555,8 @@ pub fn run() {
             is_vault_unlocked,
             encrypt_vault_field,
             decrypt_vault_field,
+            encrypt_vault_fields,
+            decrypt_vault_fields,
             prepare_password_change,
             encrypt_export_content,
             decrypt_export_content,
@@ -502,6 +571,7 @@ pub fn run() {
             lock_emergency_vault,
             is_emergency_vault_unlocked,
             decrypt_emergency_field,
+            decrypt_emergency_fields,
             seal_entry_for_recipient,
             unseal_shared_entry,
             generate_shared_vault_key,
@@ -509,6 +579,8 @@ pub fn run() {
             unseal_shared_vault_key,
             encrypt_shared_vault_field,
             decrypt_shared_vault_field,
+            encrypt_shared_vault_fields,
+            decrypt_shared_vault_fields,
             seal_for_blind_share,
             unseal_blind_share,
         ])

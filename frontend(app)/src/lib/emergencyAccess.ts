@@ -6,7 +6,10 @@
 import * as api from "../api/client";
 import * as tauri from "../api/tauri";
 import type { EmergencyContact } from "../api/types";
-import { normalizeEntryType, parseExtraFields, type PlainVaultEntry } from "./vaultCrypto";
+import { batchedCryptoOp, normalizeEntryType, parseExtraFields, type PlainVaultEntry } from "./vaultCrypto";
+
+/** Nombre de champs chiffrés par entrée — voir la liste dans openEmergencyVault() ci-dessous. */
+const FIELDS_PER_ENTRY = 9;
 
 type AuthorizedRequest = <T,>(fn: (accessToken: string) => Promise<T>) => Promise<T>;
 
@@ -67,38 +70,47 @@ export async function openEmergencyVault(authorizedRequest: AuthorizedRequest, c
 
   await tauri.unlockEmergencyVault(view.sealed_vault_key, ownKeys.encrypted_private_key);
 
-  return Promise.all(
-    view.entries.map(async (entry): Promise<PlainVaultEntry> => {
-      const [siteName, username, loginEmail, password, preferredLoginType, folder, notes, url, extraFieldsJson] = await Promise.all([
-        tauri.decryptEmergencyField(entry.encrypted_site_name),
-        entry.encrypted_username ? tauri.decryptEmergencyField(entry.encrypted_username) : Promise.resolve(""),
-        entry.encrypted_login_email ? tauri.decryptEmergencyField(entry.encrypted_login_email) : Promise.resolve(""),
-        tauri.decryptEmergencyField(entry.encrypted_password),
-        tauri.decryptEmergencyField(entry.encrypted_preferred_login_type),
-        entry.encrypted_folder ? tauri.decryptEmergencyField(entry.encrypted_folder) : Promise.resolve(""),
-        entry.encrypted_notes ? tauri.decryptEmergencyField(entry.encrypted_notes) : Promise.resolve(""),
-        entry.encrypted_url ? tauri.decryptEmergencyField(entry.encrypted_url) : Promise.resolve(""),
-        entry.encrypted_extra_fields ? tauri.decryptEmergencyField(entry.encrypted_extra_fields) : Promise.resolve(""),
-      ]);
-      return {
-        id: entry.id,
-        siteName,
-        username,
-        loginEmail,
-        password,
-        preferredLoginType: preferredLoginType === "email" ? "email" : "username",
-        entryType: normalizeEntryType(entry.entry_type),
-        extraFields: parseExtraFields(extraFieldsJson),
-        isFavorite: entry.is_favorite,
-        folder,
-        notes,
-        url,
-        updatedAt: entry.updated_at,
-        version: entry.version,
-        hasAttachments: entry.has_attachments,
-      };
-    }),
-  );
+  // CORRECTIF PERF (retour utilisateur, 2026-09-02) : auparavant, un Promise.all() PAR entrée (9
+  // appels IPC chacun) + un Promise.all() GLOBAL par-dessus — soit jusqu'à 9×N appels IPC pour
+  // afficher tout le coffre d'urgence d'un coup. Toutes les entrées sont déjà récupérées d'un coup
+  // (view.entries, pas paginé côté serveur pour cet écran) : on aplatit donc les ciphertexts de
+  // TOUTES les entrées en UN SEUL tableau, un SEUL appel IPC groupé pour tout l'écran, puis on
+  // redécoupe par tranche de FIELDS_PER_ENTRY pour reconstruire chaque entrée.
+  const flatCiphertexts = view.entries.flatMap((entry) => [
+    entry.encrypted_site_name,
+    entry.encrypted_username,
+    entry.encrypted_login_email,
+    entry.encrypted_password,
+    entry.encrypted_preferred_login_type,
+    entry.encrypted_folder,
+    entry.encrypted_notes,
+    entry.encrypted_url,
+    entry.encrypted_extra_fields,
+  ]);
+  const flatPlaintexts = await batchedCryptoOp(flatCiphertexts, "", tauri.decryptEmergencyFields);
+
+  return view.entries.map((entry, i): PlainVaultEntry => {
+    const base = i * FIELDS_PER_ENTRY;
+    const [siteName, username, loginEmail, password, preferredLoginType, folder, notes, url, extraFieldsJson] =
+      flatPlaintexts.slice(base, base + FIELDS_PER_ENTRY);
+    return {
+      id: entry.id,
+      siteName,
+      username,
+      loginEmail,
+      password,
+      preferredLoginType: preferredLoginType === "email" ? "email" : "username",
+      entryType: normalizeEntryType(entry.entry_type),
+      extraFields: parseExtraFields(extraFieldsJson),
+      isFavorite: entry.is_favorite,
+      folder,
+      notes,
+      url,
+      updatedAt: entry.updated_at,
+      version: entry.version,
+      hasAttachments: entry.has_attachments,
+    };
+  });
 }
 
 /** Referme la consultation d'urgence en cours — à appeler en quittant l'écran (voir
