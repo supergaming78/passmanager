@@ -37,25 +37,32 @@ export function setListLayout(layout: ListLayout): void {
  *
  * `gridCols` ("cards" uniquement) : CORRECTIF (retour utilisateur, 2026-09-02) — remplacé un
  * nombre de colonnes FIXE par palier de largeur (`grid-cols-2 @sm:grid-cols-3 @lg:grid-cols-4`...)
- * par `repeat(auto-fill, minmax(Npx, Npx))` : la TAILLE d'une carte ne change plus jamais (repéré
- * par l'utilisateur : passer de 4 à 5 colonnes à un palier de largeur changeait visiblement le
- * format des cartes) — c'est le NOMBRE de colonnes qui s'adapte tout seul à l'espace disponible, en
- * calculant combien de cartes de largeur FIXE tiennent sur une ligne. `minmax(Npx, Npx)` (même
- * valeur deux fois, pas `1fr`) : une carte garde EXACTEMENT sa largeur, ne s'étire jamais pour
- * combler l'espace restant en fin de ligne (ce vide est normal, pas un bug — l'alternative,
- * `minmax(Npx, 1fr)`, ferait à nouveau varier la largeur des cartes selon combien en tiennent par
- * ligne, exactement ce qui posait problème). Une liste avec peu de métadonnées par élément (ex:
- * partages reçus) peut se permettre une carte plus étroite qu'une carte de coffre avec logo/avatar
- * — ajustable par appelant.
+ * par `repeat(auto-fit, minmax(Npx, Mpx))` : la TAILLE d'une carte ne change plus BRUSQUEMENT
+ * (repéré par l'utilisateur : passer de 4 à 5 colonnes à un palier de largeur changeait visiblement
+ * le format des cartes) — c'est le NOMBRE de colonnes qui s'adapte à l'espace disponible, en
+ * calculant combien de cartes tiennent sur une ligne à leur largeur MINIMALE (`N`), une carte
+ * pouvant grandir un peu (jusqu'à `M`) pour combler le reste plutôt que de laisser un grand vide à
+ * droite (repéré par l'utilisateur, suite — une section avec peu d'entrées, ex. un dossier de 1-3
+ * entrées, laissait un vide disproportionné). `auto-fit` (pas `auto-fill`) : indispensable pour ce
+ * comblement — `auto-fill` réserverait quand même la largeur de TOUTES les colonnes possibles même
+ * sans carte à y mettre (le vide resterait identique), `auto-fit` EFFONDRE les colonnes vides,
+ * libérant leur place pour que les cartes réellement présentes grandissent jusqu'à `M`. Écart M-N
+ * volontairement MODESTE (~50px, jamais `1fr`/illimité) : une carte grandit un peu, jamais au point
+ * de ressembler à une disposition différente. LIMITE PHYSIQUE assumée : avec très peu de cartes
+ * (1-2) dans une ligne très large, même à `M`, un vide reste inévitable — aucune disposition ne
+ * peut à la fois garder un format quasi constant ET remplir une ligne bien plus large que son
+ * contenu réel. Une liste avec peu de métadonnées par élément (ex: partages reçus) peut se
+ * permettre une carte plus étroite qu'une carte de coffre avec logo/avatar — ajustable par
+ * appelant.
  *
  * Fonctionne SANS `@container` (contrairement aux paliers `@sm:`/`@lg:` encore utilisés pour
- * "list"/"compact" juste en dessous) : `repeat(auto-fill, ...)` calcule directement combien de
+ * "list"/"compact" juste en dessous) : `repeat(auto-fit, ...)` calcule directement combien de
  * colonnes de cette largeur tiennent dans l'espace RÉELLEMENT disponible pour la grille elle-même
  * (barre latérale déjà déduite, aucune requête de conteneur nécessaire) — le vrai motif CSS pour
- * "des cartes de taille constante, le nombre qui s'adapte", plus robuste que des paliers de
+ * "des cartes de taille quasi constante, le nombre qui s'adapte", plus robuste que des paliers de
  * largeur fixes qui font brusquement sauter le nombre de colonnes (et donc la taille des cartes
  * avec l'ancien `1fr`) à des seuils arbitraires. */
-export function listContainerClass(layout: ListLayout, gridCols = "grid-cols-[repeat(auto-fill,minmax(200px,200px))]"): string {
+export function listContainerClass(layout: ListLayout, gridCols = "grid-cols-[repeat(auto-fit,minmax(200px,240px))]"): string {
   if (layout === "cards") return `grid gap-3 ${gridCols}`;
   // "list"/"compact" : CORRECTIF (retour utilisateur, 2026-09-02, captures d'écran plein écran
   // 1440p) — une seule colonne quelle que soit la largeur du conteneur laissait chaque ligne

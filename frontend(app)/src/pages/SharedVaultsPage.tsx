@@ -160,7 +160,7 @@ export default function SharedVaultsPage() {
           // réellement disponible, pas à celle de la fenêtre entière — indispensable avec un menu
           // latéral.
           <div className="@container">
-          <ul className={listContainerClass("cards", "grid-cols-[repeat(auto-fill,minmax(200px,200px))]")}>
+          <ul className={listContainerClass("cards", "grid-cols-[repeat(auto-fit,minmax(200px,250px))]")}>
             {vaults.map((v) => (
               <li key={v.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
                 {renderVaultLink(v, "cards")}

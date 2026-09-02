@@ -303,13 +303,15 @@ function UsersSection() {
       </p>
 
       {listLayout === "cards" ? (
-        // CORRECTIF (retour utilisateur, 2026-09-02) : `repeat(auto-fill, minmax(260px, 260px))`
+        // CORRECTIF (retour utilisateur, 2026-09-02) : `repeat(auto-fit, minmax(260px, 320px))`
         // au lieu d'un nombre de colonnes fixe par palier de largeur — une carte garde une taille
-        // CONSTANTE (le format changeait visiblement en passant d'un palier à l'autre), c'est le
-        // nombre de colonnes qui s'adapte tout seul à l'espace disponible (voir
-        // lib/listLayout.ts::listContainerClass pour le raisonnement CSS complet — fonctionne SANS
-        // `@container`, plus besoin de ce wrapper pour "cards", contrairement à avant).
-        <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,260px))] gap-3">
+        // QUASI constante (le format changeait visiblement en passant d'un palier à l'autre),
+        // c'est le nombre de colonnes qui s'adapte tout seul à l'espace disponible ; `auto-fit` +
+        // un léger écart 260→320px comblent le vide qui restait à droite quand peu de comptes sont
+        // listés (voir lib/listLayout.ts::listContainerClass pour le raisonnement CSS complet —
+        // fonctionne SANS `@container`, plus besoin de ce wrapper pour "cards", contrairement à
+        // avant).
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(260px,320px))] gap-3">
           {users.map((user) => {
             const isSelf = user.email === myEmail;
             const isBusy = busyEmail === user.email;

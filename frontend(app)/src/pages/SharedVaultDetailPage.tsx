@@ -407,7 +407,7 @@ export default function SharedVaultDetailPage() {
           // @container (voir lib/listLayout.ts::listContainerClass) : réagit à la largeur réellement
           // disponible, pas à celle de la fenêtre entière — indispensable avec un menu latéral.
           <div className="@container">
-          <ul className={listContainerClass("cards", "grid-cols-[repeat(auto-fill,minmax(240px,240px))]")}>
+          <ul className={listContainerClass("cards", "grid-cols-[repeat(auto-fit,minmax(240px,290px))]")}>
             {entries.map((entry) => (
               <li key={entry.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
                 {renderEntryRow(entry, false)}
