@@ -15,8 +15,9 @@ import {
   setPopupLockMinutes,
   getClipboardClearSeconds,
   setClipboardClearSeconds,
-  getStandaloneOnTfa,
-  setStandaloneOnTfa,
+  getWindowMode,
+  setWindowMode,
+  type WindowMode,
 } from "../lib/settings";
 import type { TrustedDevice } from "../api/types";
 import { getErrorMessage } from "../lib/errors";
@@ -49,7 +50,7 @@ export default function SettingsView({
   const [backendUrl, setBackendUrlState] = useState(getBackendUrl());
   const [lockMinutes, setLockMinutes] = useState(getPopupLockMinutes());
   const [clipboardSeconds, setClipboardSeconds] = useState(getClipboardClearSeconds());
-  const [standaloneOnTfa, setStandaloneOnTfaState] = useState(getStandaloneOnTfa());
+  const [windowMode, setWindowModeState] = useState(getWindowMode());
 
   const [newEmail, setNewEmail] = useState("");
   const [emailPassword, setEmailPassword] = useState("");
@@ -105,9 +106,9 @@ export default function SettingsView({
     setClipboardClearSeconds(seconds);
   }
 
-  function handleToggleStandaloneOnTfa(enabled: boolean) {
-    setStandaloneOnTfaState(enabled);
-    setStandaloneOnTfa(enabled);
+  function handleSaveWindowMode(mode: WindowMode) {
+    setWindowModeState(mode);
+    setWindowMode(mode);
   }
 
   async function handleChangeEmail(e: FormEvent) {
@@ -200,19 +201,19 @@ export default function SettingsView({
             </option>
           ))}
         </select>
-        <label className="mt-3 flex items-center gap-2 text-sm text-neutral-700 dark:text-neutral-300">
-          <input
-            type="checkbox"
-            checked={standaloneOnTfa}
-            onChange={(e) => handleToggleStandaloneOnTfa(e.target.checked)}
-            className="rounded border-neutral-300 text-indigo-600 focus:ring-indigo-500"
-          />
-          Ouvrir une fenêtre séparée pour saisir le code de vérification
-        </label>
+        <label className="mb-1 mt-3 block text-xs text-neutral-500">Fenêtre séparée (ne se ferme pas si tu cliques ailleurs)</label>
+        <select value={windowMode} onChange={(e) => handleSaveWindowMode(e.target.value as WindowMode)} className={inputClass()}>
+          <option value="always">Toujours</option>
+          <option value="tfa">Seulement pour saisir le code de vérification</option>
+          <option value="never">Jamais (rester en popup classique)</option>
+        </select>
         <p className="mt-1 text-xs text-neutral-500">
-          {standaloneOnTfa
-            ? "Une petite fenêtre s'ouvre pour la saisie du code — elle ne se ferme pas si tu vas consulter tes emails ailleurs."
-            : "Reste en popup classique — se ferme si tu cliques ailleurs, y compris pour aller lire le code reçu par email."}
+          {windowMode === "always" &&
+            "L'extension s'ouvre toujours dans une vraie fenêtre — pratique à garder ouverte à côté, ne se ferme jamais en cliquant ailleurs."}
+          {windowMode === "tfa" &&
+            "Une petite fenêtre s'ouvre uniquement le temps de saisir le code — elle ne se ferme pas si tu vas consulter tes emails ailleurs, puis se referme une fois le code validé."}
+          {windowMode === "never" &&
+            "Reste toujours en popup classique — se ferme dès qu'on clique ailleurs, y compris pour aller lire le code reçu par email."}
         </p>
       </Section>
 

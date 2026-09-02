@@ -9,7 +9,7 @@ import * as session from "./lib/session";
 import { decryptEntry, encryptEntry, type PlainVaultEntry } from "./lib/vaultCrypto";
 import { getPreferredIdentifier } from "./lib/entryIdentifier";
 import { isStandaloneWindow, openStandaloneAndClose } from "./lib/popupWindow";
-import { getStandaloneOnTfa } from "./lib/settings";
+import { getWindowMode } from "./lib/settings";
 import { runAutofill, getActiveTabUrl, domainsLikelyMatch } from "./lib/autofill";
 import { getErrorMessage } from "./lib/errors";
 import { copyPasswordWithAutoClear } from "./lib/clipboard";
@@ -36,6 +36,18 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>({ kind: "loading" });
 
   useEffect(() => {
+    // Mode "always" (voir lib/settings.ts::getWindowMode) : bascule vers la fenêtre détachée dès
+    // le tout premier montage, avant même de savoir quel écran afficher — rien de significatif
+    // n'a encore pu être saisi à ce stade, donc rien à persister avant de basculer (contrairement
+    // au mode "tfa", voir onTfaRequired plus bas). Le petit popup ancré reste inévitablement
+    // visible une fraction de seconde (impossible d'empêcher le navigateur de l'ouvrir au clic sur
+    // l'icône), mais la vraie fenêtre prend le relais immédiatement. Ne PAS re-basculer si on est
+    // déjà dans la fenêtre détachée (sinon boucle : cette fenêtre se recréerait elle-même à l'infini).
+    if (getWindowMode() === "always" && !isStandaloneWindow()) {
+      void openStandaloneAndClose();
+      return;
+    }
+
     // Une 2FA en attente (voir lib/session.ts::savePendingTfa) a priorité sur la session active
     // normale : c'est précisément l'état qu'on vient de sauvegarder juste avant de fermer le
     // popup ancré et d'ouvrir cette fenêtre (détachée ou reouverte) — reprendre exactement là où
@@ -68,12 +80,12 @@ export default function App() {
           // CORRECTIF (voir lib/popupWindow.ts) : un popup ancré se ferme dès qu'on clique
           // ailleurs — systématique en pleine saisie 2FA, le temps d'aller lire le code dans un
           // email. Bascule vers une vraie fenêtre détachée, qui ne se ferme pas en perdant le
-          // focus. Réglable dans Réglages (getStandaloneOnTfa, voir SettingsView.tsx) — activé
-          // par défaut, mais certains préfèrent rester en popup malgré le risque. Ne rien faire
-          // si on est DÉJÀ dans une fenêtre détachée (pas de bascule en cascade). Fire-and-forget :
-          // l'écran 2FA local s'affiche immédiatement pendant que la nouvelle fenêtre s'ouvre en
-          // arrière-plan, avant que celle-ci ne se ferme.
-          if (getStandaloneOnTfa() && !isStandaloneWindow()) {
+          // focus. Uniquement en mode "tfa" (voir lib/settings.ts::getWindowMode) : le mode
+          // "always" a déjà basculé dès le montage (voir l'effet ci-dessus, !isStandaloneWindow()
+          // y est alors déjà faux) ; le mode "never" reste volontairement en popup malgré le
+          // risque. Fire-and-forget : l'écran 2FA local s'affiche immédiatement pendant que la
+          // nouvelle fenêtre s'ouvre en arrière-plan, avant que celle-ci ne se ferme.
+          if (getWindowMode() === "tfa" && !isStandaloneWindow()) {
             void session.savePendingTfa(email, authHashHex, vaultKey, rememberMe).then(openStandaloneAndClose);
           }
         }}
@@ -95,9 +107,10 @@ export default function App() {
           // que d'afficher le coffre dans la fenêtre détachée — celle-ci n'avait de raison d'être
           // qu'à cause de la saisie 2FA. Rouvrir l'extension depuis la barre d'outils retrouve
           // directement le coffre (session déjà persistée par verifyDeviceAndLogin), pas besoin
-          // de se reconnecter. Un popup ancré (2FA désactivée dans Réglages, ou déjà connecté sans
-          // 2FA) n'a lui rien de spécial à faire : juste afficher le coffre normalement.
-          if (isStandaloneWindow()) {
+          // de se reconnecter. UNIQUEMENT en mode "tfa" : en mode "always", la fenêtre détachée
+          // EST le mode d'usage normal du coffre, elle doit rester ouverte ; en mode "never", on
+          // n'est de toute façon jamais passé par une fenêtre détachée.
+          if (isStandaloneWindow() && getWindowMode() === "tfa") {
             window.close();
           } else {
             void goToVault();

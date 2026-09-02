@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PassManager",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Gestionnaire de mots de passe Zero-Knowledge — coffre auto-hébergé.",
   "action": {
     "default_popup": "popup/dist/index.html",
