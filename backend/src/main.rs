@@ -343,7 +343,13 @@ fn build_router(state: Arc<AppState>) -> Router {
     // PRÉCIS reste le verrou par compte (5 échecs, voir account_login_lockout) et le coût Argon2
     // lui-même — ce limiteur-ci protège surtout contre l'épuisement de RAM/CPU d'un abus massif,
     // pas la première ligne de défense anti-brute-force. burst=20/per_second=6 laisse largement
-    // plus de marge à un usage multi-appareils normal.
+    // plus de marge à un usage multi-appareils normal. INCHANGÉ lors du second passage de retours
+    // (même jour) sur les autres paliers ci-dessous : les routes protégées ICI (login, register,
+    // 2FA, reset de mot de passe...) ne sont normalement PAS sollicitées en usage courant après
+    // connexion (pas de re-login répété) — le signalement "trop de tentatives en usage normal"
+    // pointait donc vers auth_governor/global_governor (refresh, sync, chargement de pages), pas
+    // celui-ci. Le garder strict évite d'élargir sans raison la fenêtre d'un burst d'Argon2
+    // concurrents (~46 Mo chacun, voir crypto.rs::hash_password) qu'un burst plus large permettrait.
     let sensitive_governor = Arc::new(
         tower_governor::governor::GovernorConfigBuilder::default()
             .per_second(6)
@@ -358,7 +364,7 @@ fn build_router(state: Arc<AppState>) -> Router {
     // deviner un mot de passe, pas pour un usage familial normal. Plusieurs personnes derrière la
     // MÊME IP (box internet partagée) signalant un bug à quelques secondes d'écart pouvaient se
     // bloquer mutuellement. Deux fois plus permissif que sensitive_governor, mais toujours bien EN
-    // DEÇÀ de global_governor (40/s) — cette route reste publique/anonyme, un abus délibéré (voir
+    // DEÇÀ de global_governor (100/s) — cette route reste publique/anonyme, un abus délibéré (voir
     // aussi MAX_BUG_REPORTS_TOTAL et son insertion atomique, repository.rs) doit rester coûteux.
     let bug_report_governor = Arc::new(
         tower_governor::governor::GovernorConfigBuilder::default()
@@ -368,18 +374,31 @@ fn build_router(state: Arc<AppState>) -> Router {
             .finish()
             .unwrap()
     );
+    // CORRECTIF (retour utilisateur, 2026-09-02) : 15/s, burst 30 se vidait trop vite en usage
+    // multi-appareils normal — /auth/refresh (~toutes les 10 min PAR appareil connecté, voir
+    // AuthContext.tsx) et la reconnexion WebSocket (échange d'un ticket, voir sync.rs) partagent
+    // ce palier, sur le même budget IP que les autres appareils du foyer.
     let auth_governor = Arc::new(
         tower_governor::governor::GovernorConfigBuilder::default()
-            .per_second(15)
-            .burst_size(30)
+            .per_second(30)
+            .burst_size(60)
             .key_extractor(ip_key_extractor)
             .finish()
             .unwrap()
     );
+    // CORRECTIF (retour utilisateur, 2026-09-02) : 40/s, burst 80 se vidait trop vite en usage
+    // normal, encore pire à plusieurs appareils ouverts en même temps — une seule modification
+    // (édition, favori...) sur UN appareil rediffuse un événement de sync à TOUS les autres
+    // appareils connectés du même compte (voir sync.rs::broadcast_to_*), qui rechargent alors
+    // chacun plusieurs endpoints en parallèle (coffre, membres, entrées...) sur ce même palier —
+    // et ouvrir un écran avec plusieurs sections (ex: Réglages) déclenche déjà plusieurs requêtes
+    // parallèles à lui seul. Ce palier n'est PAS une défense anti-brute-force (voir sensitive_governor
+    // ci-dessus pour ça) : juste un garde-fou contre un abus massif/DoS, largement au-dessus de tout
+    // usage légitime même multi-appareils.
     let global_governor = Arc::new(
         tower_governor::governor::GovernorConfigBuilder::default()
-            .per_second(40)
-            .burst_size(80)
+            .per_second(100)
+            .burst_size(200)
             .key_extractor(ip_key_extractor)
             .finish()
             .unwrap()
@@ -1065,12 +1084,13 @@ mod tests {
         let state = build_test_state().await;
         let app = build_router(state);
 
-        // global_governor : 40/s, burst 80 (voir build_router()) — un lot de 90 requêtes rapides
-        // sur une route SANS gouverneur dédié (/health, en dehors de /auth) doit épuiser le burst
-        // et déclencher au moins un 429 avant que le token bucket n'ait le temps de se recharger
-        // (toutes ces requêtes s'exécutent en mémoire via oneshot(), sans latence réseau réelle).
+        // global_governor : 100/s, burst 200 (voir build_router()) — un lot de 220 requêtes
+        // rapides sur une route SANS gouverneur dédié (/health, en dehors de /auth) doit épuiser
+        // le burst et déclencher au moins un 429 avant que le token bucket n'ait le temps de se
+        // recharger (toutes ces requêtes s'exécutent en mémoire via oneshot(), sans latence réseau
+        // réelle).
         let mut saw_429_with_cors_header = false;
-        for _ in 0..90 {
+        for _ in 0..220 {
             let mut request = Request::builder()
                 .method("GET")
                 .uri("/health")
