@@ -1,5 +1,5 @@
 use axum::{extract::State, http::{StatusCode, header, HeaderMap}, response::IntoResponse, Json};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use crate::AppState;
 use serde_json::json;
 
@@ -40,6 +40,45 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
     }
 }
 
+// CORRECTIF PERF (retour utilisateur, 2026-09-02) : /public-config (juste en dessous) est appelée
+// à CHAQUE ouverture de l'app/l'extension, AVANT toute authentification — l'une des routes les
+// plus fréquemment invoquées de toute l'API. La valeur qu'elle lit ne change quasiment jamais (un
+// réglage Admin, voir update_server_choice_at_login() dans admin.rs, qui appelle
+// set_server_choice_at_login_cache() juste après chaque modification pour garder ce cache à jour).
+// Singleton process-global plutôt qu'un champ dans AppState : AppState est construit "en dur",
+// champ par champ, dans une VINGTAINE d'endroits différents (surtout des helpers de test) — y
+// ajouter un champ aurait forcé à modifier chacun d'eux pour un gain qui ne concerne qu'une seule
+// route. Sûr ici PRÉCISÉMENT parce que la donnée est un simple booléen de config PUBLIQUE par
+// nature (voir le commentaire de get_public_config ci-dessous) — jamais rien de sensible/
+// spécifique à un utilisateur, qui ne devrait, lui, jamais vivre dans un singleton partagé.
+//
+// `Mutex<Option<bool>>` plutôt qu'un `OnceLock` (qui semblait plus simple au premier abord) :
+// `cargo test` exécute TOUS les tests dans le MÊME process, souvent en parallèle — un `OnceLock`,
+// une fois rempli par le PREMIER test à appeler get_public_config(), resterait figé sur CETTE
+// valeur pour TOUS les tests suivants, même ceux utilisant leur propre base de données isolée
+// avec une valeur différente (voir test_get_public_config_reflects_server_choice_at_login_default
+// vs ..._once_enabled plus bas : le second échouerait en lisant la valeur mise en cache par le
+// premier, un faux négatif introduit PAR ce correctif). `Mutex<Option<bool>>` reste réinitialisable
+// via reset_server_choice_at_login_cache_for_tests() (uniquement compilée en `#[cfg(test)]`),
+// appelée en tout début de chaque test concerné pour restaurer l'isolation entre eux.
+static SERVER_CHOICE_AT_LOGIN_CACHE: Mutex<Option<bool>> = Mutex::new(None);
+
+/// Met à jour (ou initialise) le cache ci-dessus. Appelée par get_public_config() elle-même (pour
+/// se remplir au tout premier appel après démarrage) ET par
+/// handlers/admin.rs::update_server_choice_at_login() (pour rester à jour immédiatement après une
+/// modification, sans attendre une quelconque expiration — ce cache n'expire jamais tout seul,
+/// aucun intérêt vu la fréquence de modification quasi nulle de ce réglage).
+pub(crate) fn set_server_choice_at_login_cache(value: bool) {
+    *SERVER_CHOICE_AT_LOGIN_CACHE.lock().expect("le mutex du cache ne devrait jamais être empoisonné") = Some(value);
+}
+
+/// UNIQUEMENT pour les tests (voir le commentaire du cache ci-dessus) : restaure l'isolation entre
+/// deux tests qui s'attendent chacun à une valeur différente, dans le même process de test partagé.
+#[cfg(test)]
+pub(crate) fn reset_server_choice_at_login_cache_for_tests() {
+    *SERVER_CHOICE_AT_LOGIN_CACHE.lock().expect("le mutex du cache ne devrait jamais être empoisonné") = None;
+}
+
 /// Petits réglages GLOBAUX lisibles SANS AUTHENTIFICATION, PAR NATURE (l'écran de connexion
 /// n'a encore identifié aucun compte) — voir handlers/admin.rs::update_server_choice_at_login()
 /// pour qui peut modifier ce réglage (Admin seul), et pages/Login.tsx côté app pour son usage :
@@ -47,11 +86,19 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoRespon
 /// de /health (rôles différents : orchestrateur/load balancer d'un côté, config produit de
 /// l'autre) plutôt que d'y ajouter ce champ.
 pub async fn get_public_config(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, crate::error::AppError> {
-    let server_choice_at_login_enabled: bool = sqlx::query_scalar(
-        "SELECT server_choice_at_login_enabled FROM app_settings WHERE id = 1"
-    )
-        .fetch_one(&state.db)
-        .await?;
+    let cached = *SERVER_CHOICE_AT_LOGIN_CACHE.lock().expect("le mutex du cache ne devrait jamais être empoisonné");
+    let server_choice_at_login_enabled = match cached {
+        Some(value) => value,
+        None => {
+            let value: bool = sqlx::query_scalar(
+                "SELECT server_choice_at_login_enabled FROM app_settings WHERE id = 1"
+            )
+                .fetch_one(&state.db)
+                .await?;
+            set_server_choice_at_login_cache(value);
+            value
+        }
+    };
 
     Ok(Json(json!({ "server_choice_at_login_enabled": server_choice_at_login_enabled })))
 }
@@ -149,33 +196,45 @@ mod tests {
 
     /// get_public_config() : accessible SANS le moindre AuthUser en paramètre (contrairement à
     /// tout le reste du fichier admin.rs) — c'est tout le sens de ce endpoint (voir
-    /// pages/Login.tsx côté app, appelé AVANT toute connexion). Doit refléter server_choice_at_login_enabled
-    /// à false par défaut (voir la migration).
+    /// pages/Login.tsx côté app, appelé AVANT toute connexion). Doit refléter
+    /// server_choice_at_login_enabled à false par défaut (voir la migration), PUIS true une fois
+    /// modifié — voir handlers/admin.rs::update_server_choice_at_login().
+    ///
+    /// CORRECTIF (voir le commentaire du cache dans get_public_config()) : les deux scénarios
+    /// (par défaut / une fois activé) vivaient auparavant dans deux tests `#[tokio::test]`
+    /// SÉPARÉS — `cargo test` les exécute potentiellement EN PARALLÈLE, dans des THREADS
+    /// différents du MÊME process : rien n'empêchait le second de démarrer avant que le premier
+    /// n'ait fini de lire le cache (partagé, process-global), l'un pouvant alors lire la valeur
+    /// tout juste posée par l'autre — un test intermittent (flaky), qui n'aurait rien eu à voir
+    /// avec un vrai bug. Fusionnés en un seul test séquentiel : aucune interaction entre threads
+    /// possible, le cache est réinitialisé UNE SEULE FOIS en tout début, jamais entre les deux
+    /// vérifications (exactement comme en production, où set_server_choice_at_login_cache() —
+    /// appelée par le handler d'admin après chaque modification — le garde à jour sans jamais
+    /// avoir besoin d'être vidé entre deux lectures).
     #[tokio::test]
-    async fn test_get_public_config_reflects_server_choice_at_login_default() {
+    async fn test_get_public_config_reflects_server_choice_at_login() {
+        reset_server_choice_at_login_cache_for_tests();
         let state = build_test_state().await;
-        let response = get_public_config(State(state)).await.unwrap().into_response();
-        assert_eq!(response.status(), StatusCode::OK);
 
+        let response = get_public_config(State(state.clone())).await.unwrap().into_response();
+        assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["server_choice_at_login_enabled"], false, "désactivé par défaut (voir la migration)");
-    }
 
-    /// Une fois le réglage activé (voir handlers/admin.rs::update_server_choice_at_login()), ce
-    /// endpoint public doit refléter le changement — sans lui, l'écran de connexion ne pourrait
-    /// jamais savoir qu'afficher le lien "Configurer le serveur".
-    #[tokio::test]
-    async fn test_get_public_config_reflects_server_choice_at_login_once_enabled() {
-        let state = build_test_state().await;
+        // Simule ce que fait réellement handlers/admin.rs::update_server_choice_at_login() : une
+        // modification en base SUIVIE d'une mise à jour explicite du cache (jamais une expiration
+        // automatique, voir le commentaire du cache) — sans cet appel, get_public_config()
+        // continuerait de refléter l'ANCIENNE valeur déjà en cache, comme en production.
         sqlx::query("UPDATE app_settings SET server_choice_at_login_enabled = 1 WHERE id = 1")
             .execute(&state.db)
             .await
             .unwrap();
+        set_server_choice_at_login_cache(true);
 
         let response = get_public_config(State(state)).await.unwrap().into_response();
         let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["server_choice_at_login_enabled"], true);
+        assert_eq!(json["server_choice_at_login_enabled"], true, "doit refléter le changement une fois le cache mis à jour");
     }
 }

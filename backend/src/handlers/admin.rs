@@ -8,7 +8,7 @@ use std::{sync::Arc, net::SocketAddr};
 use crate::{AppState, mailer, error::AppError, middleware::AuthUser, models::*};
 use tracing::{warn, info};
 use validator::Validate;
-use super::common::get_user_agent;
+use super::common::{get_user_agent, set_server_choice_at_login_cache};
 
 // --- ADMINISTRATION & LOGS ---
 
@@ -412,6 +412,11 @@ pub async fn update_server_choice_at_login(
         .bind(payload.enabled)
         .execute(&state.db)
         .await?;
+    // CORRECTIF PERF (voir handlers/common.rs::get_public_config) : garde le cache en mémoire à
+    // jour immédiatement, sans quoi /public-config continuerait de refléter l'ANCIENNE valeur
+    // jusqu'au redémarrage du serveur (le cache, une fois rempli, ne se revalide jamais tout seul
+    // contre la base — c'est justement tout l'intérêt en termes de performance).
+    set_server_choice_at_login_cache(payload.enabled);
 
     let action = if payload.enabled { "SERVER_CHOICE_AT_LOGIN_ENABLED" } else { "SERVER_CHOICE_AT_LOGIN_DISABLED" };
     let agent = get_user_agent(&headers);
