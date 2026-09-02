@@ -647,6 +647,15 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/admin/feature-suggestions", get(handlers::list_feature_suggestions))
         .route("/admin/feature-suggestions/{id}", delete(handlers::delete_feature_suggestion))
 
+        // Personnalisation de thème SYNCHRONISÉE PAR COMPTE (voir handlers/theme_customization.rs)
+        // — retour utilisateur (2026-09-03), "en profil" : contrairement au thème preset/aux
+        // dispositions (locaux à chaque appareil, jamais envoyés au serveur), celle-ci suit le
+        // compte. Chaque route agit UNIQUEMENT sur la personnalisation du compte APPELANT (email
+        // tiré de AuthUser, jamais d'un paramètre) — aucune restriction de rôle au-delà d'être
+        // connecté, ce n'est pas une ressource administrée. Sur global_governor, comme le reste de
+        // l'API authentifiée.
+        .route("/theme-customization", get(handlers::get_theme_customization).put(handlers::update_theme_customization).delete(handlers::delete_theme_customization))
+
         // Application des middlewares globaux de Tower
         // CORRECTIF SÉCURITÉ (voir rewrite_client_ip_from_proxy_headers ci-dessus) : ajoutée EN
         // PREMIER (donc la couche la plus INTERNE, la plus proche des routes/handlers) pour que

@@ -1027,6 +1027,45 @@ pub struct FeatureSuggestionView {
 }
 
 // =========================================================================
+// 5sexies. PERSONNALISATION DE THÈME (SYNCHRONISÉE PAR COMPTE) — voir migration
+// 20260903000000_user_theme_customization.sql et handlers/theme_customization.rs. Retour
+// utilisateur (2026-09-03) : contrairement à TOUS les autres réglages d'apparence (thème preset
+// choisi dans le client, dispositions de menu/listes...), volontairement locaux à chaque appareil
+// jusqu'ici, celle-ci suit explicitement le compte sur tous les appareils, à la demande explicite
+// de l'utilisateur ("en profil"). Teintes en degrés OKLCH (0-359) — le calcul de la palette
+// complète (luminosité/chroma sûrs, déjà éprouvés) reste entièrement CÔTÉ CLIENT, le serveur ne
+// fait que stocker/valider des entiers.
+// =========================================================================
+
+#[derive(Deserialize, Validate)]
+pub struct UpdateThemeCustomizationPayload {
+    /// "dark" ou "light" — validé À LA MAIN dans le handler (juste deux valeurs possibles, pas la
+    /// peine d'un validateur `custom` pour ça, voir handlers/theme_customization.rs).
+    pub mode: String,
+    #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
+    pub accent_hue: i64,
+    pub background_tinted: bool,
+    #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
+    pub danger_hue: i64,
+    #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
+    pub success_hue: i64,
+    #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
+    pub favorite_hue: i64,
+}
+
+/// Vue renvoyée par GET /theme-customization — `None` (pas cette structure, voir le handler)
+/// signifie "aucune personnalisation enregistrée, thème preset actif", pas une erreur.
+#[derive(Serialize, sqlx::FromRow)]
+pub struct ThemeCustomizationView {
+    pub mode: String,
+    pub accent_hue: i64,
+    pub background_tinted: bool,
+    pub danger_hue: i64,
+    pub success_hue: i64,
+    pub favorite_hue: i64,
+}
+
+// =========================================================================
 // 6. STRUCTURES DIVERSES (PAGINATION & RÉPONSES API)
 // =========================================================================
 

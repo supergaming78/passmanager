@@ -1,5 +1,6 @@
 use sqlx::SqlitePool;
-use crate::{models::{VaultEntry, VaultEntryInput, TrashedVaultEntry, PasswordHistoryEntry, ReencryptedHistoryEntry, VaultAttachment, VaultAttachmentInput, VaultAttachmentMeta, UserKeysInput, UserPublicKey, EmergencyContact, VaultShare, SharedWithMeEntry, SharedEntryView, SharedVaultView, SharedVaultMemberView, SharedVaultEntry, SharedVaultEntryInput, VaultBlindShare, BlindShareReceivedView, BlindShareCredentialsView, CreateBugReportPayload, BugReportView, CreateFeatureSuggestionPayload, FeatureSuggestionView}, error::AppError};
+use crate::{models::{VaultEntry, VaultEntryInput, TrashedVaultEntry, PasswordHistoryEntry, ReencryptedHistoryEntry, VaultAttachment, VaultAttachmentInput, VaultAttachmentMeta, UserKeysInput, UserPublicKey, EmergencyContact, VaultShare, SharedWithMeEntry, SharedEntryView, SharedVaultView, SharedVaultMemberView, SharedVaultEntry, SharedVaultEntryInput, VaultBlindShare, BlindShareReceivedView, BlindShareCredentialsView, CreateBugReportPayload, BugReportView, CreateFeatureSuggestionPayload, FeatureSuggestionView,
+UpdateThemeCustomizationPayload, ThemeCustomizationView}, error::AppError};
 
 /// Historique des mots de passe : garde au plus ce nombre de versions PAR ENTRÉE — au-delà, les
 /// plus anciennes sont purgées automatiquement (voir VaultRepository::archive_password_history).
@@ -1771,4 +1772,67 @@ impl FeatureSuggestionRepository {
 pub struct DeletedFeatureSuggestion {
     pub author_email: String,
     pub description: String,
+}
+
+// =========================================================================
+// PERSONNALISATION DE THÈME — voir migration 20260903000000_user_theme_customization.sql et
+// models.rs pour le détail du modèle. Une ligne par compte au maximum (clé primaire = user_email),
+// `set()` fait donc un UPSERT (INSERT ... ON CONFLICT ... DO UPDATE) plutôt qu'un INSERT simple —
+// une personnalisation existante se remplace, elle ne s'accumule jamais en plusieurs lignes.
+// =========================================================================
+
+pub struct ThemeCustomizationRepository;
+
+impl ThemeCustomizationRepository {
+    /// `None` si le compte n'a jamais enregistré de personnalisation (thème preset actif côté
+    /// client) — PAS une erreur, voir handlers/theme_customization.rs.
+    pub async fn get(db: &SqlitePool, email: &str) -> Result<Option<ThemeCustomizationView>, AppError> {
+        sqlx::query_as::<_, ThemeCustomizationView>(
+            "SELECT mode, accent_hue, background_tinted, danger_hue, success_hue, favorite_hue
+             FROM user_theme_customization WHERE user_email = ?",
+        )
+        .bind(email)
+        .fetch_optional(db)
+        .await
+        .map_err(AppError::from)
+    }
+
+    pub async fn set(db: &SqlitePool, email: &str, payload: &UpdateThemeCustomizationPayload) -> Result<(), AppError> {
+        sqlx::query(
+            "INSERT INTO user_theme_customization
+                (user_email, mode, accent_hue, background_tinted, danger_hue, success_hue, favorite_hue, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, DATETIME('now'))
+             ON CONFLICT(user_email) DO UPDATE SET
+                mode = excluded.mode,
+                accent_hue = excluded.accent_hue,
+                background_tinted = excluded.background_tinted,
+                danger_hue = excluded.danger_hue,
+                success_hue = excluded.success_hue,
+                favorite_hue = excluded.favorite_hue,
+                updated_at = excluded.updated_at",
+        )
+        .bind(email)
+        .bind(&payload.mode)
+        .bind(payload.accent_hue)
+        .bind(payload.background_tinted)
+        .bind(payload.danger_hue)
+        .bind(payload.success_hue)
+        .bind(payload.favorite_hue)
+        .execute(db)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Revient au thème preset — supprime la personnalisation enregistrée (voir DELETE
+    /// /theme-customization). Ne pas confondre avec `set()` : ici, plus AUCUNE ligne pour ce
+    /// compte, contrairement à un simple retour à des valeurs par défaut qui laisserait une ligne
+    /// "personnalisation active" trompeuse.
+    pub async fn delete(db: &SqlitePool, email: &str) -> Result<(), AppError> {
+        sqlx::query("DELETE FROM user_theme_customization WHERE user_email = ?")
+            .bind(email)
+            .execute(db)
+            .await?;
+        Ok(())
+    }
 }

@@ -15,6 +15,7 @@ mod shared_vault;
 mod blind_share;
 mod bug_report;
 mod feature_suggestion;
+mod theme_customization;
 
 pub use common::{health_check, get_public_config};
 pub use auth::*;
@@ -28,3 +29,4 @@ pub use shared_vault::*;
 pub use blind_share::*;
 pub use bug_report::*;
 pub use feature_suggestion::*;
+pub use theme_customization::*;

@@ -1388,6 +1388,57 @@ Contrairement aux signalements de bug, cet email part TOUJOURS (`author_email` n
 **Erreurs** : `403` si l'appelant n'est pas l'Admin (même un modérateur reçoit `403`). `404`
 suggestion inconnue.
 
+## Endpoints — Personnalisation de thème
+
+Retour utilisateur (2026-09-03), "en profil" : contrairement au thème preset choisi côté client et
+aux dispositions de menu/listes (tous locaux à chaque appareil, jamais envoyés au serveur), cette
+personnalisation SUIT LE COMPTE sur tous les appareils. Jamais chiffrée Zero-Knowledge — une
+préférence d'affichage n'a rien à protéger. Chaque route agit UNIQUEMENT sur la personnalisation du
+compte APPELANT (email tiré du token, jamais d'un paramètre) — aucune restriction de rôle au-delà
+d'être connecté.
+
+### `GET /theme-customization`
+
+*Authentification requise.* Renvoie la personnalisation du compte connecté.
+
+**Réponse** : `200 OK`, soit `null` (aucune personnalisation enregistrée — le client applique un
+thème preset), soit :
+```json
+{
+  "mode": "dark",
+  "accent_hue": 277,
+  "background_tinted": false,
+  "danger_hue": 27,
+  "success_hue": 163,
+  "favorite_hue": 75
+}
+```
+(Teintes en degrés OKLCH, 0-359 — le calcul de la palette complète reste côté client.)
+
+### `PUT /theme-customization`
+
+*Authentification requise.* Enregistre/remplace la personnalisation du compte connecté (une seule
+ligne par compte, un second appel REMPLACE le premier plutôt que de s'accumuler).
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `mode` | string | `"dark"` ou `"light"` uniquement |
+| `accent_hue` | entier | 0-359 |
+| `background_tinted` | booléen | — |
+| `danger_hue` | entier | 0-359 |
+| `success_hue` | entier | 0-359 |
+| `favorite_hue` | entier | 0-359 |
+
+**Réponse** : `204 No Content`.
+**Erreurs** : `400` validation (mode invalide, teinte hors plage).
+
+### `DELETE /theme-customization`
+
+*Authentification requise.* Revient au thème preset — supprime la personnalisation enregistrée.
+Idempotent (aucune erreur si rien n'existait déjà).
+
+**Réponse** : `204 No Content`.
+
 ## Endpoints — Divers
 
 ### `GET /health`
