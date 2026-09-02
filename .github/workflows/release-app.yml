@@ -138,9 +138,32 @@ jobs:
       # tauri-action n'a pas d'option pour lire releaseBody depuis un fichier (juste une chaîne en
       # ligne, voir sa doc) : lu ici et passé en sortie multi-lignes (même technique que pour les
       # secrets ci-dessus) plutôt que codé en dur dans le YAML.
-      - name: Lire le guide utilisateur (pour le corps de la release)
+      #
+      # CORRECTIF (retour utilisateur, 2026-09-02) : voulait TOUS les changements par rapport à la
+      # version précédente, affichés SOUS le titre de version sur la page de release — mais PAS un
+      # fichier séparé dans le dépôt. Deux essais précédents écartés : (1) CHANGELOG.md maintenu à
+      # la main dans le dépôt — rejeté, c'est justement le "fichier" que l'utilisateur ne voulait
+      # pas. (2) `generateReleaseNotes: true` de tauri-action (délègue à l'API "Generate release
+      # notes" de GitHub) — écarté aussi : ne liste que les TITRES de commit, pas d'explication
+      # lisible, ET a publié la release immédiatement malgré `releaseDraft: true` juste en dessous
+      # (constaté sur le run réel de app-v0.2.5, republié en brouillon à la main après coup —
+      # comportement non documenté par tauri-action ni par l'API GitHub, mais reproduit).
+      #
+      # Solution retenue : le MESSAGE du tag annoté lui-même (`git tag -a app-vX.Y.Z -F fichier`,
+      # jamais commité au dépôt — pure métadonnée Git, lue ici via `git for-each-ref`) porte le
+      # changelog complet, écrit à la main à chaque nouvelle version au moment de taguer.
+      - name: Lire le changelog (message du tag annoté) + le guide utilisateur
         id: guide
-        run: printf 'content<<__EOF__\n%s\n__EOF__\n' "$(cat GUIDE_UTILISATEUR.md)" >> "$GITHUB_OUTPUT"
+        run: |
+          {
+            echo "content<<__EOF__"
+            git for-each-ref "refs/tags/${{ github.ref_name }}" --format='%(contents)'
+            echo ""
+            echo "---"
+            echo ""
+            cat GUIDE_UTILISATEUR.md
+            echo "__EOF__"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -163,16 +186,10 @@ jobs:
           tagName: app-v__VERSION__
           releaseName: "PassManager v__VERSION__"
           releaseBody: ${{ steps.guide.outputs.content }}
-          # CORRECTIF (retour utilisateur, 2026-09-02) : voulait un changelog affiché SOUS le titre
-          # de version sur la page de release GitHub — PAS un fichier séparé dans le dépôt (essayé
-          # d'abord via un CHANGELOG.md maintenu à la main, retiré ensuite). `generateReleaseNotes`
-          # délègue entièrement à la fonctionnalité NATIVE de GitHub (celle du bouton "Generate
-          # release notes") : à la création, GitHub liste automatiquement les commits/PR fusionnées
-          # depuis le tag `app-v*` précédent, sans aucun fichier ni entretien manuel de notre côté.
-          # Quand `releaseBody` est ALSO fourni (le guide, ci-dessus), GitHub le met AVANT ces notes
-          # générées plutôt que de choisir l'un ou l'autre (comportement documenté de l'API Releases
-          # de GitHub, repris tel quel par cette option de tauri-action).
-          generateReleaseNotes: true
+          # `generateReleaseNotes: true` (fonctionnalité "Generate release notes" de GitHub) a été
+          # essayé puis ABANDONNÉ ici — voir le commentaire de l'étape "Lire le changelog" ci-dessus
+          # pour le raisonnement complet (ne liste que des titres de commit, ET publie la release
+          # immédiatement malgré `releaseDraft: true` juste en dessous, constaté sur un run réel).
           releaseDraft: true
           prerelease: false
 
