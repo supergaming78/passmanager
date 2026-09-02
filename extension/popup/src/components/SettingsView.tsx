@@ -196,9 +196,15 @@ export default function SettingsView({
         <select value={theme} onChange={(e) => handleSaveTheme(e.target.value as Theme)} className={inputClass()}>
           <option value="dark">Sombre</option>
           <option value="light">Clair</option>
-          <option value="midnight">Minuit (noir OLED)</option>
-          <option value="ocean">Océan (accent bleu)</option>
           <option value="system">Suivre l'appareil</option>
+          <option value="midnight">Minuit (noir OLED)</option>
+          <option value="slate">Ardoise (gris froid)</option>
+          <option value="ocean">Océan (accent bleu)</option>
+          <option value="forest">Forêt (accent vert)</option>
+          <option value="sunset">Coucher de soleil (accent orange)</option>
+          <option value="rose">Rose (accent rose)</option>
+          <option value="violet">Violet (accent pourpre)</option>
+          <option value="amber">Ambre (accent doré, fond réchauffé)</option>
         </select>
       </Section>
 

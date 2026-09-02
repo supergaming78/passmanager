@@ -4,9 +4,15 @@ import { getTheme, setTheme, type Theme } from "../lib/theme";
 const THEME_OPTIONS: { value: Theme; label: string }[] = [
   { value: "dark", label: "Sombre" },
   { value: "light", label: "Clair" },
-  { value: "midnight", label: "Minuit (noir OLED)" },
-  { value: "ocean", label: "Océan (accent bleu)" },
   { value: "system", label: "Suivre l'appareil" },
+  { value: "midnight", label: "Minuit (noir OLED)" },
+  { value: "slate", label: "Ardoise (gris froid)" },
+  { value: "ocean", label: "Océan (accent bleu)" },
+  { value: "forest", label: "Forêt (accent vert)" },
+  { value: "sunset", label: "Coucher de soleil (accent orange)" },
+  { value: "rose", label: "Rose (accent rose)" },
+  { value: "violet", label: "Violet (accent pourpre)" },
+  { value: "amber", label: "Ambre (accent doré, fond réchauffé)" },
 ];
 
 /** Réglage du thème visuel — CORRECTIF (retour utilisateur, 2026-09-02) : jusqu'ici, aucun réglage
@@ -38,9 +44,9 @@ export default function ThemeSettings() {
       </select>
       <p className="mt-1 text-xs text-neutral-500">
         "Suivre l'appareil" utilise le thème clair/sombre configuré dans les réglages de ton
-        système d'exploitation. "Minuit" et "Océan" sont deux variantes sombres — noir plus
-        profond (pensé pour économiser la batterie sur un écran OLED de téléphone) ou accent bleu
-        plutôt qu'indigo.
+        système d'exploitation. Toutes les autres variantes (Minuit, Ardoise, Océan, Forêt,
+        Coucher de soleil, Rose, Violet, Ambre) sont des versions sombres — seuls le fond et/ou
+        la couleur d'accent changent.
       </p>
     </div>
   );

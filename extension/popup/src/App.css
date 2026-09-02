@@ -47,3 +47,84 @@ body {
   --color-indigo-900: oklch(35.9% 0.144 215);
   --color-indigo-950: oklch(25.7% 0.09 215);
 }
+
+/* RETOUR UTILISATEUR (2026-09-03) : "plein de thème différent" — voir frontend(app)/src/App.css
+ * pour le raisonnement détaillé de chaque bloc (identique ici, même recette OKLCH). */
+.theme-forest {
+  --color-indigo-50: oklch(96.2% 0.018 145);
+  --color-indigo-100: oklch(93% 0.034 145);
+  --color-indigo-200: oklch(87% 0.065 145);
+  --color-indigo-300: oklch(78.5% 0.115 145);
+  --color-indigo-400: oklch(67.3% 0.182 145);
+  --color-indigo-500: oklch(58.5% 0.233 145);
+  --color-indigo-600: oklch(51.1% 0.262 145);
+  --color-indigo-700: oklch(45.7% 0.24 145);
+  --color-indigo-800: oklch(39.8% 0.195 145);
+  --color-indigo-900: oklch(35.9% 0.144 145);
+  --color-indigo-950: oklch(25.7% 0.09 145);
+}
+
+.theme-sunset {
+  --color-indigo-50: oklch(96.2% 0.018 35);
+  --color-indigo-100: oklch(93% 0.034 35);
+  --color-indigo-200: oklch(87% 0.065 35);
+  --color-indigo-300: oklch(78.5% 0.115 35);
+  --color-indigo-400: oklch(67.3% 0.182 35);
+  --color-indigo-500: oklch(58.5% 0.233 35);
+  --color-indigo-600: oklch(51.1% 0.262 35);
+  --color-indigo-700: oklch(45.7% 0.24 35);
+  --color-indigo-800: oklch(39.8% 0.195 35);
+  --color-indigo-900: oklch(35.9% 0.144 35);
+  --color-indigo-950: oklch(25.7% 0.09 35);
+}
+
+.theme-rose {
+  --color-indigo-50: oklch(96.2% 0.018 0);
+  --color-indigo-100: oklch(93% 0.034 0);
+  --color-indigo-200: oklch(87% 0.065 0);
+  --color-indigo-300: oklch(78.5% 0.115 0);
+  --color-indigo-400: oklch(67.3% 0.182 0);
+  --color-indigo-500: oklch(58.5% 0.233 0);
+  --color-indigo-600: oklch(51.1% 0.262 0);
+  --color-indigo-700: oklch(45.7% 0.24 0);
+  --color-indigo-800: oklch(39.8% 0.195 0);
+  --color-indigo-900: oklch(35.9% 0.144 0);
+  --color-indigo-950: oklch(25.7% 0.09 0);
+}
+
+.theme-violet {
+  --color-indigo-50: oklch(96.2% 0.018 300);
+  --color-indigo-100: oklch(93% 0.034 300);
+  --color-indigo-200: oklch(87% 0.065 300);
+  --color-indigo-300: oklch(78.5% 0.115 300);
+  --color-indigo-400: oklch(67.3% 0.182 300);
+  --color-indigo-500: oklch(58.5% 0.233 300);
+  --color-indigo-600: oklch(51.1% 0.262 300);
+  --color-indigo-700: oklch(45.7% 0.24 300);
+  --color-indigo-800: oklch(39.8% 0.195 300);
+  --color-indigo-900: oklch(35.9% 0.144 300);
+  --color-indigo-950: oklch(25.7% 0.09 300);
+}
+
+.theme-slate {
+  --color-neutral-950: oklch(13% 0.014 255);
+  --color-neutral-900: oklch(19% 0.016 255);
+  --color-neutral-800: oklch(30% 0.02 255);
+}
+
+.theme-amber {
+  --color-indigo-50: oklch(96.2% 0.018 75);
+  --color-indigo-100: oklch(93% 0.034 75);
+  --color-indigo-200: oklch(87% 0.065 75);
+  --color-indigo-300: oklch(78.5% 0.115 75);
+  --color-indigo-400: oklch(67.3% 0.182 75);
+  --color-indigo-500: oklch(58.5% 0.233 75);
+  --color-indigo-600: oklch(51.1% 0.262 75);
+  --color-indigo-700: oklch(45.7% 0.24 75);
+  --color-indigo-800: oklch(39.8% 0.195 75);
+  --color-indigo-900: oklch(35.9% 0.144 75);
+  --color-indigo-950: oklch(25.7% 0.09 75);
+  --color-neutral-950: oklch(12% 0.006 75);
+  --color-neutral-900: oklch(19% 0.008 75);
+  --color-neutral-800: oklch(29% 0.01 75);
+}

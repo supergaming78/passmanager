@@ -4,30 +4,36 @@
 // sur mobile (Android/iOS souvent configurés en clair par défaut) — pas un bug, juste l'absence de
 // contrôle. `getTheme()` défaut maintenant sur "dark" explicitement.
 //
-// ÉTENDU (retour utilisateur, 2026-09-02, suite) : "plusieurs thèmes au choix" — deux variantes
-// sombres supplémentaires ("midnight"/"ocean" ci-dessous), sans toucher un seul composant. Le
-// truc : Tailwind v4 génère ses utilitaires (`bg-neutral-950`, `text-indigo-600`...) sous forme de
+// ÉTENDU (retour utilisateur, 2026-09-02, suite) : "plusieurs thèmes au choix" — variantes sombres
+// supplémentaires ("midnight"/"ocean" au départ, puis "forest"/"sunset"/"rose"/"violet"/"amber"/
+// "slate" ajoutés ensuite, voir App.css), sans toucher un seul composant. Le truc : Tailwind v4
+// génère ses utilitaires (`bg-neutral-950`, `text-indigo-600`...) sous forme de
 // `background-color: var(--color-neutral-950)`, PAS une valeur codée en dur — voir App.css, qui
-// redéfinit ces variables sous `.theme-midnight`/`.theme-ocean`. Toute la palette `neutral`/
-// `indigo` déjà utilisée PARTOUT dans l'app suit donc automatiquement, sans rien modifier ailleurs
-// — zéro risque de régression visuelle sur un écran qu'on aurait oublié de mettre à jour.
+// redéfinit ces variables sous `.theme-X`. Toute la palette `neutral`/`indigo` déjà utilisée
+// PARTOUT dans l'app suit donc automatiquement, sans rien modifier ailleurs — zéro risque de
+// régression visuelle sur un écran qu'on aurait oublié de mettre à jour.
 //
 // Tailwind v4 : le variant `dark:` suit par défaut `prefers-color-scheme` seul (stratégie
 // "media") — voir `@custom-variant dark (&:where(.dark, .dark *));` dans App.css, qui bascule sur
 // une stratégie "class" (présence de `.dark` sur `<html>`, gérée ici) pour pouvoir le forcer.
-export type Theme = "dark" | "light" | "system" | "midnight" | "ocean";
+export type Theme = "dark" | "light" | "system" | "midnight" | "ocean" | "forest" | "sunset" | "rose" | "violet" | "amber" | "slate";
 
 const STORAGE_KEY = "passmanager.theme";
-const VALID_THEMES: readonly Theme[] = ["dark", "light", "system", "midnight", "ocean"];
-const PALETTE_CLASSES = ["theme-midnight", "theme-ocean"] as const;
+const VALID_THEMES: readonly Theme[] = ["dark", "light", "system", "midnight", "ocean", "forest", "sunset", "rose", "violet", "amber", "slate"];
+const PALETTE_CLASSES = ["theme-midnight", "theme-ocean", "theme-forest", "theme-sunset", "theme-rose", "theme-violet", "theme-amber", "theme-slate"] as const;
 
 /** Classe de palette supplémentaire (voir App.css) pour les thèmes qui vont plus loin qu'un
- * simple `dark`/pas `dark` — "midnight" (noir plus profond, pensé écrans OLED) et "ocean" (même
- * contraste que l'accent par défaut, teinte bleue plutôt que indigo). `dark`/`light`/`system`
- * n'en ont pas besoin : ils utilisent déjà la palette Tailwind par défaut telle quelle. */
+ * simple `dark`/pas `dark` — "midnight" (noir plus profond, pensé écrans OLED), "slate" (gris
+ * ardoise plus doux, teinte froide plutôt que noir pur) recolorent le FOND ; "ocean" (bleu),
+ * "forest" (vert), "sunset" (orange), "rose" (rose), "violet" recolorent l'ACCENT (même
+ * contraste que l'indigo par défaut, seule la teinte tourne — voir le commentaire détaillé de
+ * chaque bloc dans App.css) ; "amber" fait les deux à la fois (accent doré ET fond légèrement
+ * réchauffé). `dark`/`light`/`system` n'en ont pas besoin : ils utilisent déjà la palette
+ * Tailwind par défaut telle quelle. */
 function paletteClassFor(theme: Theme): string | null {
-  if (theme === "midnight") return "theme-midnight";
-  if (theme === "ocean") return "theme-ocean";
+  if (theme === "midnight" || theme === "ocean" || theme === "forest" || theme === "sunset" || theme === "rose" || theme === "violet" || theme === "amber" || theme === "slate") {
+    return `theme-${theme}`;
+  }
   return null;
 }
 
@@ -52,8 +58,10 @@ function systemPrefersDark(): boolean {
 /** Applique un thème à la page (classe `dark` + classe de palette éventuelle sur `<html>`) sans le
  * persister — utilisé par setTheme() ci-dessous ET par le listener système (voir initTheme()), qui
  * ne doit jamais réécrire localStorage (le choix "system" doit rester "system", pas se figer sur
- * sa résolution du moment). "midnight"/"ocean" sont volontairement des variantes SOMBRES
- * uniquement (tout leur intérêt — noir plus profond, accent différent — s'exprime sur fond sombre). */
+ * sa résolution du moment). Toutes les variantes de palette (midnight/ocean/forest/sunset/rose/
+ * violet/amber/slate) sont volontairement des variantes SOMBRES uniquement (tout leur intérêt —
+ * noir plus profond, accent différent — s'exprime sur fond sombre) : `theme !== "light"` suffit à
+ * les forcer en sombre ci-dessous, quel que soit leur nombre. */
 function applyTheme(theme: Theme): void {
   const isDark = theme !== "light" && (theme !== "system" || systemPrefersDark());
   document.documentElement.classList.toggle("dark", isDark);

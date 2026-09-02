@@ -6,18 +6,21 @@
 // autonome, sans import, pour pouvoir s'exécuter avant même que le bundle JS ne soit chargé —
 // c'est précisément ce qui évite le flash (le thème est déjà posé sur <html> avant que la
 // feuille de style ne s'applique). Liste de thèmes tenue synchronisée à la main avec
-// lib/theme.ts::Theme — voir son commentaire pour "midnight"/"ocean" (classes de palette
-// supplémentaires, voir App.css).
+// lib/theme.ts::Theme — voir son commentaire pour la liste des classes de palette supplémentaires
+// (voir App.css).
 (function () {
   try {
     var stored = localStorage.getItem("passmanager.theme");
-    var valid = ["dark", "light", "system", "midnight", "ocean"];
+    var valid = ["dark", "light", "system", "midnight", "ocean", "forest", "sunset", "rose", "violet", "amber", "slate"];
+    var paletteThemes = ["midnight", "ocean", "forest", "sunset", "rose", "violet", "amber", "slate"];
     var theme = valid.indexOf(stored) !== -1 ? stored : "dark";
     var isDark = theme !== "light" && (theme !== "system" || window.matchMedia("(prefers-color-scheme: dark)").matches);
     document.documentElement.classList.toggle("dark", isDark);
     document.documentElement.style.colorScheme = isDark ? "dark" : "light";
-    document.documentElement.classList.remove("theme-midnight", "theme-ocean");
-    if (theme === "midnight" || theme === "ocean") {
+    for (var i = 0; i < paletteThemes.length; i++) {
+      document.documentElement.classList.remove("theme-" + paletteThemes[i]);
+    }
+    if (paletteThemes.indexOf(theme) !== -1) {
       document.documentElement.classList.add("theme-" + theme);
     }
   } catch (e) {}
