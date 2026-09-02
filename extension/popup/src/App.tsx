@@ -325,6 +325,9 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
   // sans "force" (nécessiterait de porter l'estimation d'entropie, absente ici — hors périmètre de
   // cette popup volontairement réduite, voir extension/README.md).
   const [sortBy, setSortBy] = useState<"name" | "updated" | "usage">("name");
+  // "" = tous les dossiers, "__none__" = sans dossier assigné, sinon le nom exact du dossier —
+  // même convention que pages/Vault.tsx côté app desktop.
+  const [folderFilter, setFolderFilter] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [filledId, setFilledId] = useState<string | null>(null);
   const [view, setView] = useState<VaultView>({ kind: "list" });
@@ -440,6 +443,11 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
       if (!q) return true;
       return e.siteName.toLowerCase().includes(q) || e.username.toLowerCase().includes(q) || e.loginEmail.toLowerCase().includes(q);
     })
+    .filter((e) => {
+      if (!folderFilter) return true;
+      if (folderFilter === "__none__") return !e.folder;
+      return e.folder === folderFilter;
+    })
     .sort((a, b) => {
       if (a.isFavorite !== b.isFavorite) return Number(b.isFavorite) - Number(a.isFavorite);
       switch (sortBy) {
@@ -452,6 +460,38 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
           return a.siteName.localeCompare(b.siteName);
       }
     });
+
+  // Dossiers distincts déjà utilisés dans le coffre — même principe que
+  // pages/Vault.tsx::existingFolders côté app desktop.
+  const existingFolders = Array.from(new Set((entries ?? []).map((e) => e.folder).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+
+  // Regroupe l'affichage par dossier — SEULEMENT si aucun filtre de dossier n'est déjà actif (le
+  // filtre réduit déjà à un seul dossier) et qu'il existe au moins un dossier. Même retour
+  // utilisateur que côté app desktop : quand le tri actif est "le plus utilisé", les DOSSIERS
+  // eux-mêmes remontent aussi par usage agrégé (somme des use_count de leurs entrées), pas
+  // seulement les entrées à l'intérieur d'un dossier resté à sa place alphabétique.
+  const groupedSections = (() => {
+    if (folderFilter || existingFolders.length === 0) return null;
+    const groups = new Map<string, PlainVaultEntry[]>();
+    for (const entry of filtered) {
+      const key = entry.folder;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(entry);
+    }
+    const named = Array.from(groups.keys())
+      .filter((k) => k !== "")
+      .sort((a, b) => {
+        if (sortBy === "usage") {
+          const usageA = groups.get(a)!.reduce((sum, e) => sum + e.useCount, 0);
+          const usageB = groups.get(b)!.reduce((sum, e) => sum + e.useCount, 0);
+          if (usageA !== usageB) return usageB - usageA;
+        }
+        return a.localeCompare(b);
+      })
+      .map((name) => ({ name, entries: groups.get(name)! }));
+    const withoutFolder = groups.get("");
+    return withoutFolder ? [...named, { name: "Sans dossier", entries: withoutFolder }] : named;
+  })();
 
   if (view.kind === "addEntry") {
     return (
@@ -607,15 +647,32 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
           placeholder="Rechercher…"
           className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
         />
-        <select
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as "name" | "updated" | "usage")}
-          className="w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-xs outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
-        >
-          <option value="name">Trier : nom</option>
-          <option value="updated">Trier : dernière modification</option>
-          <option value="usage">Trier : le plus utilisé</option>
-        </select>
+        <div className="flex gap-2">
+          {existingFolders.length > 0 && (
+            <select
+              value={folderFilter}
+              onChange={(e) => setFolderFilter(e.target.value)}
+              className="min-w-0 flex-1 rounded-lg border border-neutral-300 px-2 py-1.5 text-xs outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
+            >
+              <option value="">Tous les dossiers</option>
+              <option value="__none__">Sans dossier</option>
+              {existingFolders.map((folder) => (
+                <option key={folder} value={folder}>
+                  {folder}
+                </option>
+              ))}
+            </select>
+          )}
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as "name" | "updated" | "usage")}
+            className="min-w-0 flex-1 rounded-lg border border-neutral-300 px-2 py-1.5 text-xs outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
+          >
+            <option value="name">Trier : nom</option>
+            <option value="updated">Trier : dernière modification</option>
+            <option value="usage">Trier : le plus utilisé</option>
+          </select>
+        </div>
       </div>
 
       {error && <p className="px-4 pb-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
@@ -626,61 +683,80 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
         <p className="px-4 pb-4 text-sm text-neutral-500">Aucune entrée ne correspond.</p>
       )}
 
-      <ul className="flex flex-col divide-y divide-neutral-200 pb-2 dark:divide-neutral-800">
-        {filtered.map((entry) => (
-          <li key={entry.id} className="flex items-center justify-between gap-2 px-4 py-2">
-            <div className="flex min-w-0 items-center gap-2">
-              <button
-                onClick={() => void handleToggleFavorite(entry)}
-                title={entry.isFavorite ? "Retirer des favoris" : "Ajouter aux favoris"}
-                className="shrink-0 text-sm"
-              >
-                {entry.isFavorite ? "★" : "☆"}
-              </button>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
-                <p className="truncate text-xs text-neutral-500">
-                  {getPreferredIdentifier(entry)}
-                </p>
-              </div>
+      {groupedSections ? (
+        <div className="flex flex-col gap-3 pb-2">
+          {groupedSections.map((section) => (
+            <div key={section.name}>
+              <h2 className="px-4 pb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                {section.name} <span className="font-normal normal-case text-neutral-400">({section.entries.length})</span>
+              </h2>
+              <ul className="flex flex-col divide-y divide-neutral-200 dark:divide-neutral-800">
+                {section.entries.map((entry) => renderEntryRow(entry))}
+              </ul>
             </div>
-            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-              {entry.url && (
-                <button
-                  onClick={() => window.open(entry.url, "_blank", "noopener,noreferrer")}
-                  title="Ouvrir le site"
-                  className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-                >
-                  Ouvrir
-                </button>
-              )}
-              <button
-                onClick={() => void handleFill(entry)}
-                title="Remplir le formulaire de connexion de l'onglet actif"
-                className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700"
-              >
-                {filledId === entry.id ? "Rempli !" : "Remplir"}
-              </button>
-              <button
-                onClick={() => void handleCopy(entry)}
-                title="Copier le mot de passe"
-                className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-              >
-                {copiedId === entry.id ? "Copié !" : "Copier"}
-              </button>
-              <button
-                onClick={() => setView({ kind: "editEntry", entry })}
-                title="Modifier"
-                className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-              >
-                Modifier
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
+          ))}
+        </div>
+      ) : (
+        <ul className="flex flex-col divide-y divide-neutral-200 pb-2 dark:divide-neutral-800">{filtered.map((entry) => renderEntryRow(entry))}</ul>
+      )}
     </div>
   );
+
+  /** Ligne d'une entrée — factorisée pour être réutilisée à la fois par la liste plate et la vue
+   * groupée par dossier (voir groupedSections ci-dessus) sans dupliquer ce balisage. */
+  function renderEntryRow(entry: PlainVaultEntry) {
+    return (
+      <li key={entry.id} className="flex items-center justify-between gap-2 px-4 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <button
+            onClick={() => void handleToggleFavorite(entry)}
+            title={entry.isFavorite ? "Retirer des favoris" : "Ajouter aux favoris"}
+            className="shrink-0 text-sm"
+          >
+            {entry.isFavorite ? "★" : "☆"}
+          </button>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
+            <p className="truncate text-xs text-neutral-500">
+              {getPreferredIdentifier(entry)}
+            </p>
+          </div>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {entry.url && (
+            <button
+              onClick={() => window.open(entry.url, "_blank", "noopener,noreferrer")}
+              title="Ouvrir le site"
+              className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              Ouvrir
+            </button>
+          )}
+          <button
+            onClick={() => void handleFill(entry)}
+            title="Remplir le formulaire de connexion de l'onglet actif"
+            className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700"
+          >
+            {filledId === entry.id ? "Rempli !" : "Remplir"}
+          </button>
+          <button
+            onClick={() => void handleCopy(entry)}
+            title="Copier le mot de passe"
+            className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            {copiedId === entry.id ? "Copié !" : "Copier"}
+          </button>
+          <button
+            onClick={() => setView({ kind: "editEntry", entry })}
+            title="Modifier"
+            className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            Modifier
+          </button>
+        </div>
+      </li>
+    );
+  }
 }
 
 function ViewHeader({ title, onBack }: { title: string; onBack: () => void }) {
