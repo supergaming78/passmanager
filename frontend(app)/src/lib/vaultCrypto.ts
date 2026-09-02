@@ -107,43 +107,60 @@ export async function batchedCryptoOp<T>(
   return output;
 }
 
-/** Déchiffre les champs d'une entrée — voir batchedCryptoOp() ci-dessus (un seul appel IPC pour
- * les 9 champs plutôt qu'un par champ). */
-export async function decryptEntry(entry: VaultEntry): Promise<PlainVaultEntry> {
-  const [siteName, username, loginEmail, password, preferredLoginType, folder, notes, url, extraFieldsJson] =
-    await batchedCryptoOp(
-      [
-        entry.encrypted_site_name,
-        entry.encrypted_username,
-        entry.encrypted_login_email,
-        entry.encrypted_password,
-        entry.encrypted_preferred_login_type,
-        entry.encrypted_folder,
-        entry.encrypted_notes,
-        entry.encrypted_url,
-        entry.encrypted_extra_fields,
-      ],
-      "",
-      tauri.decryptFields,
-    );
+/** Nombre de champs chiffrés par entrée du coffre personnel — voir decryptEntries() ci-dessous. */
+const FIELDS_PER_ENTRY = 9;
 
-  return {
-    id: entry.id,
-    siteName,
-    username,
-    loginEmail,
-    password,
-    preferredLoginType: preferredLoginType === "email" ? "email" : "username",
-    isFavorite: entry.is_favorite,
-    folder,
-    notes,
-    url,
-    entryType: normalizeEntryType(entry.entry_type),
-    extraFields: parseExtraFields(extraFieldsJson),
-    updatedAt: entry.updated_at,
-    version: entry.version,
-    hasAttachments: entry.has_attachments,
-  };
+/** Déchiffre une LISTE d'entrées en UN SEUL appel IPC — CORRECTIF PERF (retour utilisateur,
+ * 2026-09-02). decryptEntry() ci-dessous groupe déjà les 9 champs D'UNE entrée en un appel, mais
+ * `Promise.all(entries.map(decryptEntry))` (voir Vault.tsx, AutoBackupSettings.tsx,
+ * ImportExportBar.tsx — les trois écrans qui chargent le coffre EN BLOC) restait N appels IPC
+ * lancés en parallèle pour N entrées. Ici, TOUS les champs de TOUTES les entrées sont aplatis dans
+ * un seul tableau, un seul appel IPC pour l'écran entier, puis redécoupés par tranche de
+ * FIELDS_PER_ENTRY pour reconstruire chaque entrée — même principe que
+ * lib/emergencyAccess.ts::openEmergencyVault. Mêmes semantics "tout ou rien" qu'avant : un
+ * `Promise.all` échouait déjà entièrement si UNE SEULE entrée était corrompue, inchangé ici. */
+export async function decryptEntries(entries: VaultEntry[]): Promise<PlainVaultEntry[]> {
+  const flatCiphertexts = entries.flatMap((entry) => [
+    entry.encrypted_site_name,
+    entry.encrypted_username,
+    entry.encrypted_login_email,
+    entry.encrypted_password,
+    entry.encrypted_preferred_login_type,
+    entry.encrypted_folder,
+    entry.encrypted_notes,
+    entry.encrypted_url,
+    entry.encrypted_extra_fields,
+  ]);
+  const flatPlaintexts = await batchedCryptoOp(flatCiphertexts, "", tauri.decryptFields);
+
+  return entries.map((entry, i) => {
+    const base = i * FIELDS_PER_ENTRY;
+    const [siteName, username, loginEmail, password, preferredLoginType, folder, notes, url, extraFieldsJson] =
+      flatPlaintexts.slice(base, base + FIELDS_PER_ENTRY);
+    return {
+      id: entry.id,
+      siteName,
+      username,
+      loginEmail,
+      password,
+      preferredLoginType: preferredLoginType === "email" ? "email" : "username",
+      isFavorite: entry.is_favorite,
+      folder,
+      notes,
+      url,
+      entryType: normalizeEntryType(entry.entry_type),
+      extraFields: parseExtraFields(extraFieldsJson),
+      updatedAt: entry.updated_at,
+      version: entry.version,
+      hasAttachments: entry.has_attachments,
+    };
+  });
+}
+
+/** Déchiffre UNE SEULE entrée — voir decryptEntries() ci-dessus pour le cas général (à préférer
+ * pour charger PLUSIEURS entrées d'un coup, un seul appel IPC au lieu d'un par entrée). */
+export async function decryptEntry(entry: VaultEntry): Promise<PlainVaultEntry> {
+  return (await decryptEntries([entry]))[0];
 }
 
 /** Parse le JSON déchiffré de `extraFields` — jamais d'exception sur un blob absent/corrompu
@@ -196,38 +213,23 @@ export async function decryptTrashedEntry(entry: TrashedVaultEntry): Promise<Pla
   };
 }
 
-/** Chiffre les champs d'un formulaire avant envoi au backend. `username`/`loginEmail`/`folder`/`notes`/`url`
- * vides -> `null` plutôt qu'une chaîne chiffrée vide, cohérent avec le fait que ces champs sont
- * optionnels côté backend (voir VaultEntryInput). `passwordChanged` doit être `true` UNIQUEMENT si
- * l'appelant sait que le mot de passe a RÉELLEMENT changé (voir VaultEntryInput::password_changed
- * côté backend, pour l'archivage dans l'historique) — laissé à `false` par défaut (ajout d'une
- * nouvelle entrée : rien à archiver, ou modification qui ne touche pas le mot de passe).
- * `expectedVersion` : à fournir UNIQUEMENT lors d'une modification (voir PlainVaultEntry.version)
- * pour activer la détection de conflit d'édition côté serveur — `undefined` (ajout d'une nouvelle
- * entrée, pas encore de version à comparer) désactive simplement le contrôle. */
-export async function encryptEntry(
-  plain: Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments">,
+/** Chiffre une LISTE d'entrées en UN SEUL appel IPC — CORRECTIF PERF (retour utilisateur,
+ * 2026-09-02), même principe que decryptEntries() ci-dessus. `passwordChanged`/`expectedVersion`
+ * s'appliquent alors à TOUTES les entrées du lot : ne convient QUE pour un cas où ces deux valeurs
+ * sont réellement les mêmes pour tout le lot — l'ajout en bloc à l'import (voir
+ * ImportExportBar.tsx::handleImportSelected, `toAdd`) : `passwordChanged` reste toujours à `false`
+ * (aucune de ces entrées n'a d'"ancien" mot de passe à archiver, ce sont de nouvelles entrées) et
+ * `expectedVersion` n'a jamais de sens à l'ajout. Pour une modification avec un `expectedVersion`
+ * PROPRE à CHAQUE entrée (voir reassignFolder() dans Vault.tsx, qui isole aussi l'échec de chaque
+ * appel réseau individuellement), garder encryptEntry() ci-dessous en boucle. */
+export async function encryptEntries(
+  plains: Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments">[],
   passwordChanged = false,
   expectedVersion?: number,
-): Promise<VaultEntryInput> {
-  const hasExtraFields = Object.keys(plain.extraFields).length > 0;
-
-  // Voir batchedCryptoOp() ci-dessus : un seul appel IPC pour les 9 champs plutôt qu'un par champ.
-  // siteName/password/preferredLoginType sont toujours fournis (jamais vides) -> toujours présents
-  // dans le lot envoyé à op, jamais repliés sur `null` ; d'où le `as string` ci-dessous plutôt qu'un
-  // second contrôle inutile (VaultEntryInput les déclare non-nullables, voir api/types.ts).
-  const [
-    encrypted_site_name,
-    encrypted_username,
-    encrypted_login_email,
-    encrypted_password,
-    encrypted_preferred_login_type,
-    encrypted_folder,
-    encrypted_notes,
-    encrypted_url,
-    encrypted_extra_fields,
-  ] = await batchedCryptoOp<string | null>(
-    [
+): Promise<VaultEntryInput[]> {
+  const flatPlaintexts: (string | null)[] = plains.flatMap((plain) => {
+    const hasExtraFields = Object.keys(plain.extraFields).length > 0;
+    return [
       plain.siteName,
       plain.username.trim() ? plain.username : null,
       plain.loginEmail.trim() ? plain.loginEmail : null,
@@ -237,24 +239,59 @@ export async function encryptEntry(
       plain.notes.trim() ? plain.notes : null,
       plain.url.trim() ? plain.url : null,
       hasExtraFields ? JSON.stringify(plain.extraFields) : null,
-    ],
-    null,
-    tauri.encryptFields,
-  );
+    ];
+  });
+  const flatCiphertexts = await batchedCryptoOp<string | null>(flatPlaintexts, null, tauri.encryptFields);
 
-  return {
-    encrypted_site_name: encrypted_site_name as string,
-    encrypted_username,
-    encrypted_login_email,
-    encrypted_password: encrypted_password as string,
-    encrypted_preferred_login_type: encrypted_preferred_login_type as string,
-    is_favorite: plain.isFavorite,
-    encrypted_folder,
-    encrypted_notes,
-    encrypted_url,
-    entry_type: plain.entryType,
-    encrypted_extra_fields,
-    password_changed: passwordChanged,
-    expected_version: expectedVersion ?? null,
-  };
+  return plains.map((plain, i) => {
+    const base = i * FIELDS_PER_ENTRY;
+    // siteName/password/preferredLoginType toujours fournis -> toujours présents dans le lot
+    // envoyé, jamais repliés sur `null` ; d'où le `as string` ci-dessous (VaultEntryInput les
+    // déclare non-nullables, voir api/types.ts).
+    const [
+      encrypted_site_name,
+      encrypted_username,
+      encrypted_login_email,
+      encrypted_password,
+      encrypted_preferred_login_type,
+      encrypted_folder,
+      encrypted_notes,
+      encrypted_url,
+      encrypted_extra_fields,
+    ] = flatCiphertexts.slice(base, base + FIELDS_PER_ENTRY);
+    return {
+      encrypted_site_name: encrypted_site_name as string,
+      encrypted_username,
+      encrypted_login_email,
+      encrypted_password: encrypted_password as string,
+      encrypted_preferred_login_type: encrypted_preferred_login_type as string,
+      is_favorite: plain.isFavorite,
+      encrypted_folder,
+      encrypted_notes,
+      encrypted_url,
+      entry_type: plain.entryType,
+      encrypted_extra_fields,
+      password_changed: passwordChanged,
+      expected_version: expectedVersion ?? null,
+    };
+  });
+}
+
+/** Chiffre UNE SEULE entrée — voir encryptEntries() ci-dessus pour le cas général (plusieurs
+ * entrées PARTAGEANT le même passwordChanged/expectedVersion, un seul appel IPC pour tout le lot).
+ * `username`/`loginEmail`/`folder`/`notes`/`url` vides -> `null` plutôt qu'une chaîne chiffrée vide,
+ * cohérent avec le fait que ces champs sont optionnels côté backend (voir VaultEntryInput).
+ * `passwordChanged` doit être `true` UNIQUEMENT si l'appelant sait que le mot de passe a RÉELLEMENT
+ * changé (voir VaultEntryInput::password_changed côté backend, pour l'archivage dans l'historique)
+ * — laissé à `false` par défaut (ajout d'une nouvelle entrée : rien à archiver, ou modification qui
+ * ne touche pas le mot de passe). `expectedVersion` : à fournir UNIQUEMENT lors d'une modification
+ * (voir PlainVaultEntry.version) pour activer la détection de conflit d'édition côté serveur —
+ * `undefined` (ajout d'une nouvelle entrée, pas encore de version à comparer) désactive simplement
+ * le contrôle. */
+export async function encryptEntry(
+  plain: Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments">,
+  passwordChanged = false,
+  expectedVersion?: number,
+): Promise<VaultEntryInput> {
+  return (await encryptEntries([plain], passwordChanged, expectedVersion))[0];
 }

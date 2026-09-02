@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
-import { decryptEntry, encryptEntry, type PlainVaultEntry } from "../lib/vaultCrypto";
+import { decryptEntries, encryptEntry, type PlainVaultEntry } from "../lib/vaultCrypto";
 import { maybeRunAutoBackup } from "../lib/autoBackup";
 import { fuzzyIncludes } from "../lib/fuzzyMatch";
 import { getErrorMessage } from "../lib/errors";
@@ -116,7 +116,7 @@ export default function Vault() {
       // getFullVault() (PAS getVault() seul) : le serveur plafonne toujours une page à 100
       // entrées, un simple appel tronquerait silencieusement tout coffre plus grand.
       const encrypted = await authorizedRequest((token) => api.getFullVault(token));
-      const decrypted = await Promise.all(encrypted.map(decryptEntry));
+      const decrypted = await decryptEntries(encrypted);
       setEntries(decrypted);
       // Best-effort, jamais bloquant ni remonté à l'utilisateur — voir lib/autoBackup.ts (ne fait
       // rien tant que la sauvegarde automatique n'est pas explicitement activée dans Réglages).

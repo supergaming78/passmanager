@@ -2,7 +2,7 @@ import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
-import { decryptEntry } from "../lib/vaultCrypto";
+import { decryptEntries } from "../lib/vaultCrypto";
 import { writeAutoBackup, pruneOldBackups, type ExportableEntry } from "../lib/vaultFile";
 import { getAutoBackupEnabled, getAutoBackupFolder, setAutoBackupEnabled, setAutoBackupFolder, setLastAutoBackupAt } from "../lib/settings";
 import { getErrorMessage } from "../lib/errors";
@@ -64,7 +64,7 @@ export default function AutoBackupSettings() {
       // entrées — sans boucler sur `offset`, une sauvegarde "réussie" omettrait silencieusement
       // tout ce qui dépasse les 100 premières entrées.
       const encrypted = await authorizedRequest((token) => api.getFullVault(token));
-      const decrypted = await Promise.all(encrypted.map(decryptEntry));
+      const decrypted = await decryptEntries(encrypted);
       const exportable: ExportableEntry[] = decrypted.map(
         ({ id: _id, updatedAt: _updatedAt, version: _version, hasAttachments: _hasAttachments, ...rest }) => rest,
       );

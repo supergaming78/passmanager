@@ -2,7 +2,7 @@ import { forwardRef, useImperativeHandle, useMemo, useState, type FormEvent, typ
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import * as tauri from "../api/tauri";
-import { decryptEntry, encryptEntry, type PlainVaultEntry } from "../lib/vaultCrypto";
+import { decryptEntries, encryptEntry, encryptEntries, type PlainVaultEntry } from "../lib/vaultCrypto";
 import { decryptAndParseImportFile, exportEntriesToFile, pickImportFile, type ExportableEntry, type FileFormat } from "../lib/vaultFile";
 import { detectDuplicateMatch, type DuplicateStatus } from "../lib/importDuplicates";
 import { CRACK_SCENARIOS, estimateCrackTimeSeconds, estimatePasswordEntropyBits, formatCrackTime, rateEntropy } from "../lib/passwordGenerator";
@@ -186,7 +186,7 @@ const ImportExportBar = forwardRef<ImportExportBarHandle, {
     try {
       const authHash = await tauri.deriveKeys(email!, exportPassword);
       const encrypted = await authorizedRequest((token) => api.exportVault(token, { master_password_hash: authHash }));
-      const decrypted = await Promise.all(encrypted.map(decryptEntry));
+      const decrypted = await decryptEntries(encrypted);
       setExportPassword("");
       setExportModal({ step: "select", entries: decrypted });
     } catch (err) {
@@ -260,10 +260,9 @@ const ImportExportBar = forwardRef<ImportExportBarHandle, {
       let addedCount = 0;
       if (toAdd.length > 0) {
         // Un import ne peut connaître un "ancien" mot de passe à archiver (ce sont de nouvelles
-        // entrées) : passwordChanged reste à sa valeur par défaut (false). `(e) => encryptEntry(e)`
-        // plutôt que `encryptEntry` directement : .map() passe aussi l'index en 2e argument, qui
-        // atterrirait sinon dans le paramètre passwordChanged (index tronqué en booléen).
-        const encrypted = await Promise.all(toAdd.map((e) => encryptEntry(e)));
+        // entrées) : passwordChanged reste à sa valeur par défaut (false), PARTAGÉE par tout le lot
+        // — voir encryptEntries() (un seul appel IPC pour tout l'import au lieu d'un par entrée).
+        const encrypted = await encryptEntries(toAdd);
         const result = await authorizedRequest((token) => api.importVault(token, { entries: encrypted }));
         addedCount = result.imported;
       }
