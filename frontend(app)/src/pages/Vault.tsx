@@ -704,7 +704,10 @@ export default function Vault() {
                   { label: "Partagé avec moi", onClick: () => navigate("/shared-with-me") },
                   { label: "Coffres partagés", onClick: () => navigate("/shared-vaults") },
                   { label: "Réglages", onClick: () => navigate("/settings") },
-                  { label: "Aide raccourcis", onClick: () => setShowShortcutsHelp(true) },
+                  // Pas d'entrée "Aide raccourcis" ici (contrairement à la barre desktop plus bas) :
+                  // demande explicite de l'utilisateur — les raccourcis clavier sont, par nature,
+                  // inutilisables sur téléphone/tablette (pas de clavier physique), inutile d'en
+                  // afficher l'aide sur ces appareils.
                   { label: isSelecting ? "Annuler la sélection" : "Sélectionner", onClick: () => (isSelecting ? exitSelection() : setIsSelecting(true)) },
                   { label: "Corbeille", onClick: () => setShowTrash(true) },
                   { label: "Santé du coffre", onClick: () => setShowHealth(true) },
