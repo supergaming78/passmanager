@@ -2,6 +2,8 @@
 // vraiment nécessaire ici (l'URL du backend auto-hébergé) est repris ; les autres réglages
 // (générateur, verrouillage automatique, sauvegarde...) n'ont pas encore d'écran dans la popup.
 
+import { isFirefox } from "./platform";
+
 const BACKEND_URL_KEY = "passmanager.backendUrl";
 
 /**
@@ -84,10 +86,6 @@ const WINDOW_MODE_KEY = "passmanager.windowMode";
  * sur ce défaut, quel que soit le navigateur (une valeur déjà stockée n'est jamais réinterprétée).
  */
 export type WindowMode = "always" | "tfa" | "never";
-
-function isFirefox(): boolean {
-  return navigator.userAgent.includes("Firefox");
-}
 
 function defaultWindowMode(): WindowMode {
   return isFirefox() ? "tfa" : "never";

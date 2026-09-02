@@ -25,6 +25,7 @@ import SharedVaultsListView from "./components/SharedVaultsListView";
 import SharedVaultDetailView from "./components/SharedVaultDetailView";
 import BlindShareView from "./components/BlindShareView";
 import SettingsView from "./components/SettingsView";
+import UpdateBanner from "./components/UpdateBanner";
 
 type Screen =
   | { kind: "loading" }
@@ -68,12 +69,15 @@ export default function App() {
     if (active) setScreen({ kind: "vault", email: active.email, vaultKey: active.vaultKey });
   }
 
-  if (screen.kind === "loading") {
-    return <Centered>Chargement…</Centered>;
-  }
+  // Bandeau de mise à jour (voir components/UpdateBanner.tsx — Chrome/Edge uniquement, ne fait
+  // rien sur Firefox) : au-dessus de TOUS les écrans plutôt que dupliqué dans chacun, monté une
+  // seule fois ici puis affiché quel que soit l'écran courant.
+  let content: React.ReactNode;
 
-  if (screen.kind === "login") {
-    return (
+  if (screen.kind === "loading") {
+    content = <Centered>Chargement…</Centered>;
+  } else if (screen.kind === "login") {
+    content = (
       <LoginScreen
         onTfaRequired={(email, authHashHex, vaultKey, rememberMe) => {
           setScreen({ kind: "tfa", email, authHashHex, vaultKey, rememberMe });
@@ -92,10 +96,8 @@ export default function App() {
         onLoggedIn={goToVault}
       />
     );
-  }
-
-  if (screen.kind === "tfa") {
-    return (
+  } else if (screen.kind === "tfa") {
+    content = (
       <TfaScreen
         email={screen.email}
         authHashHex={screen.authHashHex}
@@ -122,14 +124,21 @@ export default function App() {
         }}
       />
     );
+  } else {
+    content = (
+      <VaultScreen
+        email={screen.email}
+        vaultKey={screen.vaultKey}
+        onLoggedOut={() => setScreen({ kind: "login" })}
+      />
+    );
   }
 
   return (
-    <VaultScreen
-      email={screen.email}
-      vaultKey={screen.vaultKey}
-      onLoggedOut={() => setScreen({ kind: "login" })}
-    />
+    <>
+      <UpdateBanner />
+      {content}
+    </>
   );
 }
 
