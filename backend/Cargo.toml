@@ -43,8 +43,14 @@ tokio = { version = "1.53.1", features = ["full"] }
 # Tower-HTTP : Ensemble de middlewares pré-construits pour Axum.
 # "cors" gère les autorisations Cross-Origin, "trace" permet de suivre/enregistrer les requêtes HTTP,
 # "set-header" ajoute des en-têtes de sécurité (X-Content-Type-Options, etc.) sur chaque réponse,
-# et "compression-gzip" compresse les réponses JSON volumineuses (ex: listage du coffre).
-tower-http = { version = "0.7.0", features = ["cors", "trace", "set-header", "compression-gzip"] }
+# et "compression-gzip"/"compression-br" compressent les réponses JSON volumineuses (ex: listage du
+# coffre) — CompressionLayer (voir main.rs) négocie automatiquement le meilleur algorithme que le
+# client annonce supporter (Accept-Encoding), br étant préféré à gzip quand les deux sont proposés
+# (~15-20% plus compact sur du JSON/texte). LIMITE HONNÊTE : le contenu réellement chiffré des
+# entrées (encrypted_password, etc.) est par nature incompressible (texte chiffré = haute entropie,
+# proche du bruit aléatoire) — le gain porte surtout sur la structure JSON elle-même (noms de
+# champs répétés à chaque entrée), pas sur le contenu chiffré transporté.
+tower-http = { version = "0.7.0", features = ["cors", "trace", "set-header", "compression-gzip", "compression-br"] }
 
 # Tower Governor : Un middleware de "Rate Limiting" (limitation de débit).
 # Il protège l'API contre les attaques par force brute ou de déni de service (DoS) en limitant le nombre de requêtes par IP.
