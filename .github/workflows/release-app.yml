@@ -262,7 +262,13 @@ jobs:
           # sous-dossier `universal/` supplémentaire (`.../apk/universal/release/`), pas directement
           # sous `.../apk/release/` comme pour un build avec cibles séparées — vérifié contre le
           # comportement documenté de Tauri, pas juste deviné une seconde fois.
-          files: "frontend(app)/src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk"
+          # GUIDE_UTILISATEUR.md ajouté ici (demande explicite, 2026-09-02) : déjà affiché sur la
+          # page de release (voir releaseBody du job desktop plus haut), mais aussi disponible en
+          # fichier téléchargeable à côté des installeurs — pas de raison de le refaire dans le job
+          # ios (même release, un seul exemplaire suffit).
+          files: |
+            frontend(app)/src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
+            GUIDE_UTILISATEUR.md
           # IMPORTANT : `draft: true` est nécessaire ici pour PRÉSERVER le brouillon créé par le
           # job desktop — si ce champ est omis, cette action publie automatiquement la release en
           # l'ajoutant, ce qui la rendrait visible aux utilisateurs AVANT toute relecture manuelle.

@@ -150,10 +150,15 @@ jobs:
           # guide sur la page de release.
           body_path: extension/GUIDE_INSTALLATION.md
           # XPI_PATH reste vide (donc ignoré par cette action) si les secrets AMO n'étaient pas
-          # configurés — voir l'étape de signature ci-dessus.
+          # configurés — voir l'étape de signature ci-dessus. GUIDE_INSTALLATION.md ajouté ici en
+          # plus de body_path ci-dessus (demande explicite, 2026-09-02) : déjà affiché sur la page
+          # de release, mais aussi disponible en fichier téléchargeable à côté du zip/xpi — il est
+          # de toute façon déjà inclus DANS le zip (voir "Assembler le paquet" plus haut), ce n'est
+          # qu'une copie supplémentaire pour qui ne veut pas dézipper juste pour le lire.
           files: |
             ${{ env.PACKAGE_PATH }}
             ${{ env.XPI_PATH }}
+            extension/GUIDE_INSTALLATION.md
           # draft: relecture manuelle avant publication effective — même choix de prudence que
           # release-app.yml (voir son commentaire équivalent).
           draft: true
