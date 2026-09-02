@@ -69,7 +69,7 @@ export default function AppNav({ layout, isModerator, email, onLogout, onReportB
           : "text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-900"
       }`;
     return (
-      <nav className="flex min-h-screen w-56 shrink-0 flex-col gap-1 border-r border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-950">
+      <nav className="flex h-full w-56 shrink-0 flex-col gap-1 overflow-y-auto border-r border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-950">
         <p className="truncate px-3 pb-2 text-xs text-neutral-500">{email}</p>
         {items.map((item) =>
           item.kind === "link" ? (
@@ -103,7 +103,7 @@ export default function AppNav({ layout, isModerator, email, onLogout, onReportB
           : "text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-900"
       }`;
     return (
-      <nav className="flex min-h-screen w-14 shrink-0 flex-col items-center gap-1 border-r border-neutral-200 bg-white py-3 dark:border-neutral-800 dark:bg-neutral-950">
+      <nav className="flex h-full w-14 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-neutral-200 bg-white py-3 dark:border-neutral-800 dark:bg-neutral-950">
         {items.map((item) =>
           item.kind === "link" ? (
             <NavLink key={item.to} to={item.to} title={item.label} className={compactLinkClass}>
@@ -134,7 +134,7 @@ export default function AppNav({ layout, isModerator, email, onLogout, onReportB
   // retrouvait écrasé à largeur quasi nulle quand ils partageaient la même rangée, constaté à
   // l'écran lors de la conception).
   return (
-    <header className="border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
+    <header className="shrink-0 border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
       <div className="mx-auto flex max-w-4xl flex-col gap-3">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">

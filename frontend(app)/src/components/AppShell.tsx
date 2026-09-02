@@ -22,7 +22,18 @@ export interface AppShellContext {
  * bouton "Signaler un bug" disponible SEULEMENT depuis le Coffre). Voir App.tsx : englobe toutes
  * les routes protégées via une route de mise en page (`<Route element={<AppShell />}>`), chaque
  * page individuelle ne garde plus que son propre titre/contenu — la navigation, l'email du compte
- * et la déconnexion vivent ici, une seule fois. */
+ * et la déconnexion vivent ici, une seule fois.
+ *
+ * CORRECTIF (retour utilisateur, 2026-09-02) : le bandeau/la barre latérale défilaient AVEC le
+ * contenu de la page — sur une longue liste (le Coffre, typiquement), le menu disparaissait en
+ * scrollant, et pour la barre latérale, les icônes du haut/bas devenaient invisibles selon la
+ * position de défilement (la barre entière s'étirait à la hauteur du CONTENU, pas de la fenêtre).
+ * Cause : ni le conteneur racine ni le contenu n'avaient de hauteur/défilement propres — tout
+ * grandissait ensemble dans le flux normal de la page, `<html>`/`<body>` faisant le défilement.
+ * Fix : conteneur racine fixé à la hauteur de la fenêtre (`h-screen overflow-hidden`) — le menu
+ * (`AppNav`, `shrink-0` en bandeau, hauteur pleine en barre latérale/compacte) reste FIXE, seule la
+ * zone de contenu défile de façon INDÉPENDANTE (`flex-1 overflow-y-auto`) — le vrai motif "coquille
+ * d'app" (menu fixe, contenu qui défile seul), plutôt que compter sur `position: sticky`. */
 export default function AppShell() {
   const { email, isModerator, logout } = useAuth();
   const [menuLayout, setMenuLayout] = useState<MenuLayout>(() => getEffectiveMenuLayout());
@@ -36,10 +47,9 @@ export default function AppShell() {
   const isSideLayout = menuLayout === "sidebar" || menuLayout === "compact";
 
   return (
-    <div className={isSideLayout ? "flex min-h-screen bg-neutral-50 dark:bg-neutral-950" : "min-h-screen bg-neutral-50 dark:bg-neutral-950"}>
-      {isSideLayout && <AppNav layout={menuLayout} isModerator={isModerator} email={email} onLogout={() => void logout()} onReportBug={() => setShowBugReport(true)} />}
-      <div className="min-w-0 flex-1">
-        {!isSideLayout && <AppNav layout="top" isModerator={isModerator} email={email} onLogout={() => void logout()} onReportBug={() => setShowBugReport(true)} />}
+    <div className={`h-screen overflow-hidden bg-neutral-50 dark:bg-neutral-950 ${isSideLayout ? "flex" : "flex flex-col"}`}>
+      <AppNav layout={menuLayout} isModerator={isModerator} email={email} onLogout={() => void logout()} onReportBug={() => setShowBugReport(true)} />
+      <div className="min-w-0 flex-1 overflow-y-auto">
         <Outlet context={context} />
       </div>
       {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} defaultEmail={email ?? undefined} />}
