@@ -871,9 +871,14 @@ export default function Vault() {
   }
 
   /** Classes du conteneur — grille pour "cards" (avatars/logos en évidence, plusieurs colonnes
-   * selon la largeur), simple liste empilée pour "list"/"compact" (comportement inchangé). */
+   * selon la largeur), simple liste empilée pour "list"/"compact" (comportement inchangé).
+   * CORRECTIF (retour utilisateur, 2026-09-02) : `@sm:`/`@lg:` (container queries, voir
+   * lib/listLayout.ts::listContainerClass pour le raisonnement complet et pourquoi le `@container`
+   * qui les active est posé juste autour de la liste ci-dessous, jamais plus haut dans l'arbre) au
+   * lieu de `sm:`/`lg:` — avec un menu latéral/compact, l'espace réel dispo pour le Coffre est plus
+   * étroit que la fenêtre entière, ce que `sm:`/`lg:` ignorait, comprimant les cartes. */
   const entryListContainerClass =
-    listLayout === "cards" ? "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4" : "flex flex-col gap-2";
+    listLayout === "cards" ? "grid grid-cols-2 gap-3 @sm:grid-cols-3 @lg:grid-cols-4" : "flex flex-col gap-2";
   const EntryListContainer = listLayout === "cards" ? "div" : "ul";
 
   return (
@@ -1209,14 +1214,19 @@ export default function Vault() {
                       </button>
                     )}
                   </div>
-                  <EntryListContainer className={entryListContainerClass}>
-                    {section.entries.map((entry) => renderEntry(entry, { hideFolderBadge: true }))}
-                  </EntryListContainer>
+                  {/* @container : voir le commentaire de entryListContainerClass ci-dessus. */}
+                  <div className="@container">
+                    <EntryListContainer className={entryListContainerClass}>
+                      {section.entries.map((entry) => renderEntry(entry, { hideFolderBadge: true }))}
+                    </EntryListContainer>
+                  </div>
                 </div>
               ))}
             </div>
           ) : (
-            <EntryListContainer className={entryListContainerClass}>{filteredEntries.map((entry) => renderEntry(entry))}</EntryListContainer>
+            <div className="@container">
+              <EntryListContainer className={entryListContainerClass}>{filteredEntries.map((entry) => renderEntry(entry))}</EntryListContainer>
+            </div>
           )
         )}
       </div>

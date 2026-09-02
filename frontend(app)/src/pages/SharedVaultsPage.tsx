@@ -155,14 +155,19 @@ export default function SharedVaultsPage() {
           <p className="text-sm text-neutral-500">Aucun coffre partagé pour l'instant.</p>
         ) : listLayout === "cards" ? (
           // "cards" : une bordure PAR coffre (pas de séparateurs partagés `divide-y`, qui n'ont pas
-          // de sens sur une grille) — voir renderVaultLink ci-dessous, contenu identique au mode liste.
-          <ul className={listContainerClass("cards", "grid-cols-1 sm:grid-cols-2 lg:grid-cols-3")}>
+          // de sens sur une grille) — voir renderVaultLink ci-dessous, contenu identique au mode
+          // liste. @container (voir lib/listLayout.ts::listContainerClass) : réagit à la largeur
+          // réellement disponible, pas à celle de la fenêtre entière — indispensable avec un menu
+          // latéral.
+          <div className="@container">
+          <ul className={listContainerClass("cards", "grid-cols-1 @sm:grid-cols-2 @lg:grid-cols-3")}>
             {vaults.map((v) => (
               <li key={v.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
                 {renderVaultLink(v, "cards")}
               </li>
             ))}
           </ul>
+          </div>
         ) : (
           <ul className="flex flex-col divide-y divide-neutral-200 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
             {vaults.map((v) => (

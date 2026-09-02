@@ -303,7 +303,12 @@ function UsersSection() {
       </p>
 
       {listLayout === "cards" ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        // @container (voir lib/listLayout.ts::listContainerClass) : `@sm:`/`@lg:` réagissent à la
+        // largeur réellement disponible ici, pas à celle de la fenêtre entière — indispensable avec
+        // un menu latéral/compact (voir lib/menuLayout.ts), qui réduit cet espace sans que la
+        // fenêtre elle-même rétrécisse.
+        <div className="@container">
+        <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2 @lg:grid-cols-3">
           {users.map((user) => {
             const isSelf = user.email === myEmail;
             const isBusy = busyEmail === user.email;
@@ -321,6 +326,7 @@ function UsersSection() {
               </div>
             );
           })}
+        </div>
         </div>
       ) : (
         // "compact" : mêmes lignes, juste un padding vertical réduit (py-1 au lieu de py-2) — pas

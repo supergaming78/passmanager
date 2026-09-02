@@ -63,7 +63,10 @@ export default function SharedWithMeSettings() {
       {shares.length === 0 ? (
         <p className="text-sm text-neutral-500">Aucune entrée n'a été partagée avec vous.</p>
       ) : (
-        <ul className={listContainerClass(listLayout, "grid-cols-2 sm:grid-cols-3")}>
+        // @container (voir lib/listLayout.ts::listContainerClass) : réagit à la largeur réellement
+        // disponible ici, pas à celle de la fenêtre entière — indispensable avec un menu latéral.
+        <div className="@container">
+        <ul className={listContainerClass(listLayout, "grid-cols-2 @sm:grid-cols-3")}>
           {shares.map((share) => {
             // CORRECTIF (retour utilisateur, 2026-09-02) : "compact" ne changeait auparavant QUE le
             // padding vertical du conteneur (p-3 -> px-3 py-1.5) — une différence trop fine pour être
@@ -107,6 +110,7 @@ export default function SharedWithMeSettings() {
             );
           })}
         </ul>
+        </div>
       )}
     </div>
   );

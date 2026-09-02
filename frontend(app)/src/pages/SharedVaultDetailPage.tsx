@@ -404,13 +404,17 @@ export default function SharedVaultDetailPage() {
         ) : listLayout === "cards" ? (
           // "cards" : une bordure PAR entrée (pas de séparateurs partagés `divide-y`, qui n'ont pas
           // de sens sur une grille) — voir renderEntryRow ci-dessus, contenu identique au mode liste.
-          <ul className={listContainerClass("cards", "grid-cols-1 sm:grid-cols-2")}>
+          // @container (voir lib/listLayout.ts::listContainerClass) : réagit à la largeur réellement
+          // disponible, pas à celle de la fenêtre entière — indispensable avec un menu latéral.
+          <div className="@container">
+          <ul className={listContainerClass("cards", "grid-cols-1 @sm:grid-cols-2")}>
             {entries.map((entry) => (
               <li key={entry.id} className="overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
                 {renderEntryRow(entry, false)}
               </li>
             ))}
           </ul>
+          </div>
         ) : (
           <ul className="flex flex-col divide-y divide-neutral-200 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
             {entries.map((entry) => (

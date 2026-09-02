@@ -35,8 +35,26 @@ export function setListLayout(layout: ListLayout): void {
  * `<ul>` qu'un `<div>` — inutile de changer de balise juste pour "cards" et de risquer un `<li>`
  * mal imbriqué dans un `<div>` (HTML valide mais moins propre). `gridCols` : nombre de colonnes par
  * palier de largeur, ajustable par appelant — une liste avec peu de métadonnées par élément (ex:
- * partages reçus) tient plus de colonnes qu'une carte de coffre avec logo/avatar. */
-export function listContainerClass(layout: ListLayout, gridCols = "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4"): string {
+ * partages reçus) tient plus de colonnes qu'une carte de coffre avec logo/avatar.
+ *
+ * CORRECTIF (retour utilisateur, 2026-09-02) : paliers `@sm:`/`@lg:` (container queries CSS,
+ * réagissent à la largeur du PARENT le plus proche portant `@container`) plutôt que `sm:`/`lg:`
+ * (réagissent à la largeur de la FENÊTRE entière) — avec la disposition de menu "Barre latérale"/
+ * "Compacte" (voir lib/menuLayout.ts), l'espace réellement disponible pour cette liste est plus
+ * étroit que la fenêtre (le menu en prend une partie), ce que `sm:`/`lg:` ignorait complètement :
+ * une grille pouvait forcer 3-4 colonnes dans un espace en réalité bien plus restreint, comprimant
+ * les cartes. Nécessite que l'APPELANT enveloppe le `<ul>` (celui qui reçoit cette classe) d'un
+ * `<div className="@container">` — un élément ne peut pas réagir à sa PROPRE taille, seulement à
+ * celle d'un ancêtre portant `@container` (voir les appelants : Vault.tsx, Admin.tsx,
+ * SharedWithMeSettings.tsx, BlindSharesReceivedSettings.tsx, SharedVaultsPage.tsx,
+ * SharedVaultDetailPage.tsx). Volontairement PAS posé plus haut dans l'arbre (ex: le conteneur de
+ * contenu de AppShell.tsx, qui engloberait toute la page) : `container-type` fait de son élément un
+ * point d'ancrage pour tout descendant en `position: fixed` (comme un `transform`) — posé au niveau
+ * de toute la page, ÇA AURAIT CASSÉ toutes les fenêtres modales de l'app (ShareEntryModal,
+ * VaultEntryForm, BugReportModal...), qui se seraient mises à défiler avec le contenu au lieu de
+ * rester ancrées à l'écran. Scopé ICI, juste autour de la liste elle-même, aucun risque : les
+ * modales ne sont jamais des descendantes de ce `<div>`. */
+export function listContainerClass(layout: ListLayout, gridCols = "grid-cols-2 @sm:grid-cols-3 @lg:grid-cols-4"): string {
   if (layout === "cards") return `grid gap-3 ${gridCols}`;
   return "flex flex-col gap-2";
 }
