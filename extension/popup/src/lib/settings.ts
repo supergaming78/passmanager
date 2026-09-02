@@ -70,20 +70,33 @@ const WINDOW_MODE_KEY = "passmanager.windowMode";
  * Choix à trois (demande explicite de l'utilisateur, 2026-09-02 — pas juste un interrupteur
  * on/off) de quand basculer du popup ancré (se ferme dès qu'on clique ailleurs) vers une vraie
  * fenêtre détachée (voir lib/popupWindow.ts) :
- * - "tfa" (PAR DÉFAUT) : uniquement le temps de saisir le code 2FA — ferme la fenêtre une fois le
- *   code validé, retour au popup normal pour l'usage quotidien du coffre.
  * - "always" : dès le tout premier clic sur l'icône de l'extension, plus jamais en popup ancré
  *   (même pour consulter le coffre au quotidien) — un bref flash du petit popup reste inévitable
  *   avant la bascule (impossible d'empêcher Chrome/Firefox d'ouvrir le popup ancré au clic sur
  *   l'icône), mais la fenêtre réelle prend le relais immédiatement.
+ * - "tfa" : uniquement le temps de saisir le code 2FA — ferme la fenêtre une fois le code validé,
+ *   retour au popup normal pour l'usage quotidien du coffre.
  * - "never" : reste toujours en popup ancré, y compris pendant la 2FA (comportement d'origine,
  *   avant ce correctif — accepte le risque de perte de focus en échange d'un popup plus discret).
+ *
+ * DÉFAUT DIFFÉRENT SELON LE NAVIGATEUR (demande explicite, 2026-09-02) : "never" sur Chromium
+ * (Chrome/Edge/Brave/...), "tfa" sur Firefox — seul un choix explicite dans Réglages l'emporte
+ * sur ce défaut, quel que soit le navigateur (une valeur déjà stockée n'est jamais réinterprétée).
  */
 export type WindowMode = "always" | "tfa" | "never";
 
+function isFirefox(): boolean {
+  return navigator.userAgent.includes("Firefox");
+}
+
+function defaultWindowMode(): WindowMode {
+  return isFirefox() ? "tfa" : "never";
+}
+
 export function getWindowMode(): WindowMode {
   const raw = localStorage.getItem(WINDOW_MODE_KEY);
-  return raw === "always" || raw === "never" ? raw : "tfa";
+  if (raw === "always" || raw === "tfa" || raw === "never") return raw;
+  return defaultWindowMode();
 }
 
 export function setWindowMode(mode: WindowMode): void {
