@@ -138,28 +138,9 @@ jobs:
       # tauri-action n'a pas d'option pour lire releaseBody depuis un fichier (juste une chaîne en
       # ligne, voir sa doc) : lu ici et passé en sortie multi-lignes (même technique que pour les
       # secrets ci-dessus) plutôt que codé en dur dans le YAML.
-      #
-      # CORRECTIF (retour utilisateur, 2026-09-02) : le corps de release ne montrait QUE le guide
-      # (toujours identique d'une version à l'autre) — rien qui dise concrètement ce qui a changé
-      # DANS CETTE version précise. CHANGELOG.md (racine du dépôt) liste les changements par
-      # version, la plus récente en tête (`## App vX.Y.Z — ...`) suivie des sections plus anciennes
-      # (`## Extension ...`, `## Backend ...`). L'awk ci-dessous isole UNIQUEMENT la toute première
-      # section (de son titre `## ...` jusqu'au PROCHAIN titre `## ...` exclu, quel qu'il soit) —
-      # donc juste l'entrée du haut, à condition qu'elle soit bien tenue à jour AVANT de taguer une
-      # nouvelle version (aucune vérification automatique que la version en tête correspond au tag
-      # poussé — à la charge de qui prépare la release).
-      - name: Lire le changelog + le guide utilisateur (pour le corps de la release)
+      - name: Lire le guide utilisateur (pour le corps de la release)
         id: guide
-        run: |
-          {
-            echo "content<<__EOF__"
-            awk '/^## /{n++} n==1' CHANGELOG.md
-            echo ""
-            echo "---"
-            echo ""
-            cat GUIDE_UTILISATEUR.md
-            echo "__EOF__"
-          } >> "$GITHUB_OUTPUT"
+        run: printf 'content<<__EOF__\n%s\n__EOF__\n' "$(cat GUIDE_UTILISATEUR.md)" >> "$GITHUB_OUTPUT"
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -182,6 +163,16 @@ jobs:
           tagName: app-v__VERSION__
           releaseName: "PassManager v__VERSION__"
           releaseBody: ${{ steps.guide.outputs.content }}
+          # CORRECTIF (retour utilisateur, 2026-09-02) : voulait un changelog affiché SOUS le titre
+          # de version sur la page de release GitHub — PAS un fichier séparé dans le dépôt (essayé
+          # d'abord via un CHANGELOG.md maintenu à la main, retiré ensuite). `generateReleaseNotes`
+          # délègue entièrement à la fonctionnalité NATIVE de GitHub (celle du bouton "Generate
+          # release notes") : à la création, GitHub liste automatiquement les commits/PR fusionnées
+          # depuis le tag `app-v*` précédent, sans aucun fichier ni entretien manuel de notre côté.
+          # Quand `releaseBody` est ALSO fourni (le guide, ci-dessus), GitHub le met AVANT ces notes
+          # générées plutôt que de choisir l'un ou l'autre (comportement documenté de l'API Releases
+          # de GitHub, repris tel quel par cette option de tauri-action).
+          generateReleaseNotes: true
           releaseDraft: true
           prerelease: false
 
