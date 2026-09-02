@@ -945,21 +945,18 @@ export default function Vault() {
     return renderEntryRow(entry, options);
   }
 
-  /** Classes du conteneur — grille pour "cards". CORRECTIF (retour utilisateur, 2026-09-02) :
-   * `repeat(auto-fit, minmax(210px, 260px))` au lieu d'un nombre de colonnes fixe par palier de
-   * largeur — une carte garde une taille QUASI constante (repéré par l'utilisateur : le format
-   * changeait visiblement en passant d'un palier à l'autre), c'est le nombre de colonnes qui
-   * s'adapte tout seul à l'espace réellement disponible. `auto-fit` (pas `auto-fill`) + un léger
-   * écart 210→260px (pas `1fr`) : repéré par l'utilisateur, suite — un dossier avec peu d'entrées
-   * (ex. "Jeux (3)") laissait un grand vide à droite de sa propre grille (chaque section de dossier
-   * est SA PROPRE grille, voir groupedSections plus bas) ; les cartes présentes peuvent maintenant
-   * grandir un peu pour combler, sans jamais ressembler à une disposition différente. Voir
-   * lib/listLayout.ts::listContainerClass pour le raisonnement CSS complet (pourquoi `auto-fit` et
-   * pas `auto-fill` change concrètement quelque chose ici) — fonctionne SANS `@container`, ce
-   * mécanisme calcule directement l'espace dispo pour la grille elle-même. LIMITE assumée : avec
-   * très peu d'entrées (1-2) dans un dossier, sur une très large fenêtre, un vide reste inévitable
-   * même à la taille maximale — aucune disposition ne peut à la fois garder un format quasi
-   * constant ET remplir une ligne bien plus large que son contenu réel.
+  /** Classes du conteneur — grille pour "cards". CORRECTIF (retour utilisateur, 2026-09-02,
+   * plusieurs allers-retours) : `repeat(auto-fit, minmax(210px, 1fr))` — voir
+   * lib/listLayout.ts::listContainerClass pour l'historique complet des deux défauts corrigés dans
+   * l'ordre (paliers fixes qui faisaient sauter brusquement le format des cartes, PUIS une taille
+   * rigide qui laissait un vide à droite dès qu'un dossier a peu d'entrées — chaque section de
+   * dossier est SA PROPRE grille, voir groupedSections plus bas). `1fr` (comme "list" juste en
+   * dessous, plus un écart modeste fixe) : les cartes présentes sur une ligne comblent maintenant
+   * TOUJOURS tout l'espace, exactement comme "list" — comparé côte à côte, "Cartes" ne doit plus
+   * jamais paraître moins large que "Liste". Compromis assumé : un dossier avec très peu d'entrées
+   * verra sa/ses carte(s) s'étirer nettement, mais ÇA RESTE CONTINU (dépend du nombre réel de
+   * cartes sur CETTE ligne, jamais de la largeur de fenêtre en elle-même) — pas un retour au
+   * problème d'origine (un saut brusque à un seuil arbitraire).
    *
    * "list"/"compact" : CORRECTIF (retour utilisateur, 2026-09-02, suite — captures d'écran plein
    * écran 1440p) — une seule colonne quelle que soit la largeur laissait chaque ligne s'étirer sur
@@ -974,7 +971,7 @@ export default function Vault() {
    * conteneur (gère aussi "cards", que ce module ne gère pas). */
   const entryListContainerClass =
     listLayout === "cards"
-      ? "grid gap-3 grid-cols-[repeat(auto-fit,minmax(210px,260px))]"
+      ? "grid gap-3 grid-cols-[repeat(auto-fit,minmax(210px,1fr))]"
       : listLayout === "compact"
         ? "grid grid-cols-1 gap-1.5 @4xl:grid-cols-2 @6xl:grid-cols-3"
         : "grid grid-cols-1 gap-2 @6xl:grid-cols-2";

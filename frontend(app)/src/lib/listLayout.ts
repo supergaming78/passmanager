@@ -35,34 +35,35 @@ export function setListLayout(layout: ListLayout): void {
  * `<ul>` qu'un `<div>` — inutile de changer de balise juste pour "cards" et de risquer un `<li>`
  * mal imbriqué dans un `<div>` (HTML valide mais moins propre).
  *
- * `gridCols` ("cards" uniquement) : CORRECTIF (retour utilisateur, 2026-09-02) — remplacé un
- * nombre de colonnes FIXE par palier de largeur (`grid-cols-2 @sm:grid-cols-3 @lg:grid-cols-4`...)
- * par `repeat(auto-fit, minmax(Npx, Mpx))` : la TAILLE d'une carte ne change plus BRUSQUEMENT
- * (repéré par l'utilisateur : passer de 4 à 5 colonnes à un palier de largeur changeait visiblement
- * le format des cartes) — c'est le NOMBRE de colonnes qui s'adapte à l'espace disponible, en
- * calculant combien de cartes tiennent sur une ligne à leur largeur MINIMALE (`N`), une carte
- * pouvant grandir un peu (jusqu'à `M`) pour combler le reste plutôt que de laisser un grand vide à
- * droite (repéré par l'utilisateur, suite — une section avec peu d'entrées, ex. un dossier de 1-3
- * entrées, laissait un vide disproportionné). `auto-fit` (pas `auto-fill`) : indispensable pour ce
- * comblement — `auto-fill` réserverait quand même la largeur de TOUTES les colonnes possibles même
- * sans carte à y mettre (le vide resterait identique), `auto-fit` EFFONDRE les colonnes vides,
- * libérant leur place pour que les cartes réellement présentes grandissent jusqu'à `M`. Écart M-N
- * volontairement MODESTE (~50px, jamais `1fr`/illimité) : une carte grandit un peu, jamais au point
- * de ressembler à une disposition différente. LIMITE PHYSIQUE assumée : avec très peu de cartes
- * (1-2) dans une ligne très large, même à `M`, un vide reste inévitable — aucune disposition ne
- * peut à la fois garder un format quasi constant ET remplir une ligne bien plus large que son
- * contenu réel. Une liste avec peu de métadonnées par élément (ex: partages reçus) peut se
+ * `gridCols` ("cards" uniquement) : CORRECTIF (retour utilisateur, 2026-09-02, plusieurs allers-
+ * retours) — remplacé un nombre de colonnes FIXE par palier de largeur (`grid-cols-2 @sm:grid-
+ * cols-3 @lg:grid-cols-4`...) par `repeat(auto-fit, minmax(Npx, 1fr))`. Historique des deux
+ * défauts corrigés dans l'ordre : 1) des paliers fixes faisaient sauter BRUSQUEMENT le nombre de
+ * colonnes (et donc la taille des cartes) à des seuils de largeur arbitraires ; 2) `minmax(Npx,
+ * Npx)` (taille rigide) réglait ça mais laissait un grand vide à droite dès qu'une ligne ne
+ * pouvait pas être remplie pile par des cartes de largeur fixe (fréquent : chaque section de
+ * dossier est SA PROPRE grille, voir groupedSections dans Vault.tsx, donc souvent PEU d'entrées
+ * par ligne) — même un écart modeste type `minmax(Npx, Npx+50)` ne comblait pas assez, la
+ * disposition "Liste" d'à côté (qui utilise `grid-cols-N`, TOUJOURS pile ajusté à 100% de la
+ * largeur) faisait paraître "Cartes" plus étroite en comparaison directe. `1fr` (comme "list") :
+ * les cartes présentes sur une ligne comblent maintenant TOUJOURS tout l'espace, comme "list" —
+ * plus de vide à droite. `auto-fit` (pas `auto-fill`) reste indispensable : `auto-fill`
+ * réserverait quand même la largeur de colonnes VIDES même sans carte à y mettre (le `1fr` se
+ * répartirait alors sur des colonnes fantômes, pas sur les cartes visibles) ; `auto-fit` effondre
+ * les colonnes vides, le `1fr` ne profite qu'aux cartes réellement présentes. COMPROMIS ASSUMÉ :
+ * une ligne avec très peu d'entrées (ex. un dossier de 1 entrée) verra sa/ses carte(s) s'étirer
+ * nettement plus large que `N` — contrairement au problème d'ORIGINE (un saut BRUSQUE à un seuil
+ * de fenêtre arbitraire, sans lien avec le contenu), cet étirement reste CONTINU et dépend
+ * uniquement du nombre RÉEL de cartes sur cette ligne précise, jamais de la largeur de la fenêtre
+ * en elle-même. Une liste avec peu de métadonnées par élément (ex: partages reçus) peut se
  * permettre une carte plus étroite qu'une carte de coffre avec logo/avatar — ajustable par
  * appelant.
  *
  * Fonctionne SANS `@container` (contrairement aux paliers `@sm:`/`@lg:` encore utilisés pour
  * "list"/"compact" juste en dessous) : `repeat(auto-fit, ...)` calcule directement combien de
  * colonnes de cette largeur tiennent dans l'espace RÉELLEMENT disponible pour la grille elle-même
- * (barre latérale déjà déduite, aucune requête de conteneur nécessaire) — le vrai motif CSS pour
- * "des cartes de taille quasi constante, le nombre qui s'adapte", plus robuste que des paliers de
- * largeur fixes qui font brusquement sauter le nombre de colonnes (et donc la taille des cartes
- * avec l'ancien `1fr`) à des seuils arbitraires. */
-export function listContainerClass(layout: ListLayout, gridCols = "grid-cols-[repeat(auto-fit,minmax(200px,240px))]"): string {
+ * (barre latérale déjà déduite, aucune requête de conteneur nécessaire). */
+export function listContainerClass(layout: ListLayout, gridCols = "grid-cols-[repeat(auto-fit,minmax(200px,1fr))]"): string {
   if (layout === "cards") return `grid gap-3 ${gridCols}`;
   // "list"/"compact" : CORRECTIF (retour utilisateur, 2026-09-02, captures d'écran plein écran
   // 1440p) — une seule colonne quelle que soit la largeur du conteneur laissait chaque ligne
