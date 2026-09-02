@@ -18,6 +18,7 @@ import VaultHistoryModal from "../components/VaultHistoryModal";
 import AttachmentsModal from "../components/AttachmentsModal";
 import ShareEntryModal from "../components/ShareEntryModal";
 import BlindShareModal from "../components/BlindShareModal";
+import BulkShareModal from "../components/BulkShareModal";
 import { reseedEntryShares } from "../lib/entrySharing";
 import { recordEntryUse } from "../lib/vaultUsage";
 import { getListLayout } from "../lib/listLayout";
@@ -89,6 +90,11 @@ export default function Vault() {
   const [attachmentsEntry, setAttachmentsEntry] = useState<PlainVaultEntry | null>(null);
   const [sharingEntry, setSharingEntry] = useState<PlainVaultEntry | null>(null);
   const [blindSharingEntry, setBlindSharingEntry] = useState<PlainVaultEntry | null>(null);
+  // Partager PLUSIEURS entrées à la fois avec un seul destinataire (voir components/BulkShareModal.tsx)
+  // — retour utilisateur (2026-09-02), accessible depuis le mode "Sélectionner" ci-dessous. Un
+  // tableau plutôt qu'un booléen : capture les entrées CONCERNÉES au moment du clic, indépendant de
+  // selectedIds qui pourrait continuer à changer pendant que la modale reste ouverte.
+  const [bulkSharingEntries, setBulkSharingEntries] = useState<PlainVaultEntry[] | null>(null);
   const [revealedId, setRevealedId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedIdentifierId, setCopiedIdentifierId] = useState<string | null>(null);
@@ -701,11 +707,15 @@ export default function Vault() {
    * Pièces jointes/Partager/Partager limité/Supprimer) SAUF Copier (mot de passe) et Modifier, qui
    * restent des boutons visibles à part (voir les deux fonctions ci-dessous) — rien n'est retiré,
    * juste réorganisé pour tenir dans un espace plus restreint (retour utilisateur, 2026-09-02,
-   * "disposition des listes"). */
-  function secondaryActionItems(entry: PlainVaultEntry) {
+   * "disposition des listes"). `includeUrlAndReveal` (défaut true) : retour utilisateur, suite —
+   * "Ouvrir le site"/"Voir le mot de passe" deviennent des boutons visibles en mode "cards" (assez
+   * de place désormais, voir renderEntryCard), donc renderEntryCard passe `false` ici pour ne pas
+   * les DUPLIQUER dans "⋯". "compact" (aucune place à perdre) garde le défaut `true` — ils restent
+   * cachés là-bas. */
+  function secondaryActionItems(entry: PlainVaultEntry, includeUrlAndReveal = true) {
     return [
-      ...(entry.url ? [{ label: "Ouvrir le site", onClick: () => void openEntryUrl(entry.url) }] : []),
-      ...(entry.entryType !== "note"
+      ...(includeUrlAndReveal && entry.url ? [{ label: "Ouvrir le site", onClick: () => void openEntryUrl(entry.url) }] : []),
+      ...(includeUrlAndReveal && entry.entryType !== "note"
         ? [{ label: revealedId === entry.id ? "Cacher le mot de passe" : "Voir le mot de passe", onClick: () => setRevealedId((current) => (current === entry.id ? null : entry.id)) }]
         : []),
       ...(entry.entryType === "login" ? [{ label: "Copier l'identifiant", onClick: () => void handleCopyIdentifier(entry) }] : []),
@@ -830,7 +840,35 @@ export default function Vault() {
           <p className="w-full truncate text-xs text-neutral-500">{entry.entryType === "login" ? getPreferredIdentifier(entry) || "—" : entry.username || "—"}</p>
         )}
         {!isSelecting && (
-          <div className="mt-1 flex items-center gap-1">
+          // CORRECTIF (retour utilisateur, 2026-09-02) : "Ouvrir le site"/"Voir le mot de passe"
+          // rejoignent Copier/Modifier comme boutons visibles — assez de place désormais sur une
+          // carte (voir le correctif des colonnes de grille) pour ne plus les cacher dans "⋯"
+          // comme avant. Retirés de secondaryActionItems() ci-dessous (2e argument `false`) pour
+          // ne pas les y dupliquer. flex-wrap : jusqu'à 4 boutons ici selon le type d'entrée (avec/
+          // sans URL, note ou pas) — une carte étroite (beaucoup de colonnes sur très grand écran)
+          // peut passer sur 2 lignes, accepté (même compromis que renderEntryRow, où ces mêmes
+          // boutons coexistent déjà).
+          <div className="mt-1 flex flex-wrap items-center justify-center gap-1">
+            {entry.url && (
+              <button
+                type="button"
+                onClick={() => void openEntryUrl(entry.url)}
+                title="Ouvrir le site"
+                className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                Ouvrir
+              </button>
+            )}
+            {entry.entryType !== "note" && (
+              <button
+                type="button"
+                onClick={() => setRevealedId((current) => (current === entry.id ? null : entry.id))}
+                title={revealedId === entry.id ? "Cacher le mot de passe" : "Voir le mot de passe"}
+                className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                {revealedId === entry.id ? "Cacher" : "Voir"}
+              </button>
+            )}
             {entry.entryType !== "note" && (
               <button
                 type="button"
@@ -853,8 +891,11 @@ export default function Vault() {
               isOpen={openMenuId === entry.id}
               onToggle={() => setOpenMenuId((current) => (current === entry.id ? null : entry.id))}
               onClose={() => setOpenMenuId((current) => (current === entry.id ? null : current))}
-              items={secondaryActionItems(entry)}
+              items={secondaryActionItems(entry, false)}
             />
+            {revealedId === entry.id && entry.entryType !== "note" && (
+              <p className="mt-1 w-full select-all break-all font-mono text-xs text-neutral-700 dark:text-neutral-300">{entry.password}</p>
+            )}
           </div>
         )}
       </div>
@@ -1187,6 +1228,14 @@ export default function Vault() {
               <button
                 type="button"
                 disabled={selectedIds.size === 0 || isBulkBusy}
+                onClick={() => setBulkSharingEntries(entries.filter((e) => selectedIds.has(e.id)))}
+                className="rounded-lg border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                Partager
+              </button>
+              <button
+                type="button"
+                disabled={selectedIds.size === 0 || isBulkBusy}
                 onClick={() => void handleBulkDelete()}
                 className="rounded-lg border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-900 dark:bg-neutral-900 dark:text-red-400 dark:hover:bg-red-950"
               >
@@ -1312,6 +1361,16 @@ export default function Vault() {
           entry={blindSharingEntry}
           authorizedRequest={authorizedRequest}
           onClose={() => setBlindSharingEntry(null)}
+        />
+      )}
+      {bulkSharingEntries && (
+        <BulkShareModal
+          entries={bulkSharingEntries}
+          authorizedRequest={authorizedRequest}
+          onClose={() => {
+            setBulkSharingEntries(null);
+            exitSelection();
+          }}
         />
       )}
       {showShortcutsHelp && <KeyboardShortcutsModal onClose={() => setShowShortcutsHelp(false)} />}
