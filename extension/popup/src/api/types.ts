@@ -99,6 +99,9 @@ export interface VaultEntry extends VaultEntryInput {
   version: number;
   /** Vrai si cette entrée a au moins une pièce jointe (calculé à la volée côté serveur). */
   has_attachments: boolean;
+  /** Nombre de fois où cette entrée a été utilisée (copie du mot de passe ou remplissage
+   * automatique — voir api/client.ts::recordVaultEntryUse) — pour le tri "le plus utilisé". */
+  use_count: number;
 }
 
 /** Entrée dans la corbeille (GET /vault/trash) — PAS de encrypted_password ni user_email, voir

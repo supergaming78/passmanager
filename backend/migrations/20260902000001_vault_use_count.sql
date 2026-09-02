@@ -1,0 +1,16 @@
+-- Retour utilisateur (2026-09-02) : nouveau tri "le plus utilisé" côté client — nécessite de
+-- compter les utilisations réelles d'une entrée (copie du mot de passe OU remplissage
+-- automatique, décidé comme équivalents : au final, les deux servent le même mot de passe).
+-- Métadonnée EN CLAIR, comme `is_favorite`/`encrypted_folder`(le NOM du dossier, pas son contenu)
+-- déjà stockés en clair aujourd'hui — même modèle de confidentialité, rien de nouveau exposé au
+-- serveur qui ne le soit pas déjà pour d'autres métadonnées d'organisation.
+--
+-- Synchronisé entre appareils (choix explicite de l'utilisateur) : un simple compteur, PAS
+-- d'horodatage de dernière utilisation (pas demandé, et ça réduirait un peu la métadonnée exposée
+-- par rapport à un suivi plus fin type "dernière utilisation le originale à telle heure").
+--
+-- Voir VaultRepository::record_use (repository.rs) : incrémenté par PATCH /vault/{id}/use,
+-- appelé best-effort (jamais bloquant) par le client à la copie/au remplissage — ne touche NI
+-- updated_at (réservé aux modifications de CONTENU, pas d'usage) NI version (pas de conflit
+-- possible sur un simple compteur, aucune raison d'invalider un expected_version côté client).
+ALTER TABLE vault ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0;

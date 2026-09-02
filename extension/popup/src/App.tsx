@@ -14,6 +14,7 @@ import { runAutofill, getActiveTabUrl, domainsLikelyMatch } from "./lib/autofill
 import { getErrorMessage } from "./lib/errors";
 import { copyPasswordWithAutoClear } from "./lib/clipboard";
 import * as entrySharing from "./lib/entrySharing";
+import { recordEntryUse } from "./lib/vaultUsage";
 import VaultEntryForm, { type VaultEntryFormValues } from "./components/VaultEntryForm";
 import TrashView from "./components/TrashView";
 import ShareEntryView from "./components/ShareEntryView";
@@ -350,6 +351,8 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
     await copyPasswordWithAutoClear(entry.password);
     setCopiedId(entry.id);
     setTimeout(() => setCopiedId((id) => (id === entry.id ? null : id)), 1500);
+    // Best-effort, jamais attendu (voir lib/vaultUsage.ts) : ne doit jamais ralentir la copie.
+    recordEntryUse(session.authorizedRequest, entry.id);
   }
 
   async function handleFill(entry: PlainVaultEntry) {
@@ -376,6 +379,9 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
       }
       setFilledId(entry.id);
       setTimeout(() => setFilledId((id) => (id === entry.id ? null : id)), 1500);
+      // Uniquement si le remplissage a réellement réussi (voir le "return" ci-dessus sinon) —
+      // best-effort, jamais attendu (voir lib/vaultUsage.ts).
+      recordEntryUse(session.authorizedRequest, entry.id);
     } catch (err) {
       setError(getErrorMessage(err));
     }
@@ -416,7 +422,7 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
     // Best-effort : garde les copies partagées à jour avec le nouveau contenu — ne doit jamais
     // faire échouer la modification elle-même.
     await entrySharing
-      .reseedEntryShares({ ...values, id: original.id, updatedAt: "", version: 0, hasAttachments: false }, session.authorizedRequest)
+      .reseedEntryShares({ ...values, id: original.id, updatedAt: "", version: 0, hasAttachments: false, useCount: 0 }, session.authorizedRequest)
       .catch(() => {});
     setView({ kind: "list" });
     await reload();

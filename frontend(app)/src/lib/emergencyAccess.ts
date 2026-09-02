@@ -109,6 +109,7 @@ export async function openEmergencyVault(authorizedRequest: AuthorizedRequest, c
       updatedAt: entry.updated_at,
       version: entry.version,
       hasAttachments: entry.has_attachments,
+      useCount: entry.use_count,
     };
   });
 }

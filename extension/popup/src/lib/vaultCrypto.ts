@@ -32,6 +32,7 @@ export interface PlainVaultEntry {
   updatedAt: string;
   version: number;
   hasAttachments: boolean;
+  useCount: number;
 }
 
 export interface PlainTrashedEntry {
@@ -98,6 +99,7 @@ export async function decryptEntry(entry: VaultEntry, vaultKey: Uint8Array): Pro
     updatedAt: entry.updated_at,
     version: entry.version,
     hasAttachments: entry.has_attachments,
+    useCount: entry.use_count,
   };
 }
 
@@ -128,7 +130,7 @@ export async function decryptTrashedEntry(entry: TrashedVaultEntry, vaultKey: Ui
  * pour le détail des règles (`username`/`loginEmail`/`folder`/`notes`/`url` vides -> `null`,
  * `passwordChanged`/`expectedVersion` déterminés par l'appelant). */
 export async function encryptEntry(
-  plain: Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments">,
+  plain: Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments" | "useCount">,
   vaultKey: Uint8Array,
   passwordChanged = false,
   expectedVersion?: number,

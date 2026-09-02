@@ -7,7 +7,7 @@ import { useState, type FormEvent } from "react";
 import { NOTE_TYPE_PASSWORD_PLACEHOLDER, type EntryType, type PlainVaultEntry } from "../lib/vaultCrypto";
 import { getErrorMessage } from "../lib/errors";
 
-export type VaultEntryFormValues = Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments">;
+export type VaultEntryFormValues = Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments" | "useCount">;
 
 const TYPE_LABELS: Record<EntryType, string> = {
   login: "Identifiant",

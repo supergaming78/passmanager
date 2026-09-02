@@ -274,6 +274,11 @@ pub struct VaultEntry {
     // CLAIR calculée à la volée (pas une colonne stockée), utile pour un filtre "avec pièce
     // jointe" côté client sans devoir interroger GET /vault/{id}/attachments pour CHAQUE entrée.
     pub has_attachments: bool,
+    // Nombre de fois où cette entrée a été utilisée (copie du mot de passe OU remplissage
+    // automatique — voir PATCH /vault/{id}/use, VaultRepository::record_use) — métadonnée EN
+    // CLAIR, retour utilisateur (2026-09-02) pour un tri "le plus utilisé" côté client. Ne reflète
+    // JAMAIS une modification de contenu : n'affecte ni updated_at ni version.
+    pub use_count: i64,
 }
 
 /// Représente une entrée dans la CORBEILLE (supprimée en douceur, pas encore purgée).

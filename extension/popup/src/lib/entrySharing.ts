@@ -101,5 +101,5 @@ export async function openSharedEntry(vaultKey: Uint8Array, shareId: string, aut
   }
   const content = coerceSharedContent(parsed);
 
-  return { id: shareId, ...content, updatedAt: "", version: 0, hasAttachments: false };
+  return { id: shareId, ...content, updatedAt: "", version: 0, hasAttachments: false, useCount: 0 };
 }

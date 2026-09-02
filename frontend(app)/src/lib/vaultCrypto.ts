@@ -59,6 +59,10 @@ export interface PlainVaultEntry {
    * (voir VaultEntry.has_attachments), sert au filtre "avec pièce jointe" sans avoir à interroger
    * GET /vault/{id}/attachments pour chaque entrée. */
   hasAttachments: boolean;
+  /** Nombre de fois où cette entrée a été utilisée (copie du mot de passe ou remplissage
+   * automatique) — métadonnée EN CLAIR côté serveur (voir VaultEntry.use_count), sert au tri "le
+   * plus utilisé". Incrémentée via lib/vaultUsage.ts::recordEntryUse. */
+  useCount: number;
 }
 
 /** Version corbeille : PAS de mot de passe (voir TrashedVaultEntry, le backend ne le renvoie pas
@@ -153,6 +157,7 @@ export async function decryptEntries(entries: VaultEntry[]): Promise<PlainVaultE
       updatedAt: entry.updated_at,
       version: entry.version,
       hasAttachments: entry.has_attachments,
+      useCount: entry.use_count,
     };
   });
 }
@@ -223,7 +228,7 @@ export async function decryptTrashedEntry(entry: TrashedVaultEntry): Promise<Pla
  * PROPRE à CHAQUE entrée (voir reassignFolder() dans Vault.tsx, qui isole aussi l'échec de chaque
  * appel réseau individuellement), garder encryptEntry() ci-dessous en boucle. */
 export async function encryptEntries(
-  plains: Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments">[],
+  plains: Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments" | "useCount">[],
   passwordChanged = false,
   expectedVersion?: number,
 ): Promise<VaultEntryInput[]> {
@@ -289,7 +294,7 @@ export async function encryptEntries(
  * `undefined` (ajout d'une nouvelle entrée, pas encore de version à comparer) désactive simplement
  * le contrôle. */
 export async function encryptEntry(
-  plain: Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments">,
+  plain: Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments" | "useCount">,
   passwordChanged = false,
   expectedVersion?: number,
 ): Promise<VaultEntryInput> {

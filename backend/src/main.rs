@@ -488,6 +488,8 @@ fn build_router(state: Arc<AppState>) -> Router {
             .route("/{id}", put(handlers::update_vault_entry).delete(handlers::delete_vault_entry))
             // Route pour mettre ou enlever un élément des favoris
             .route("/{id}/favorite", patch(handlers::toggle_favorite))
+            // Compteur d'usage (copie/remplissage — voir handlers/vault.rs::record_vault_entry_use)
+            .route("/{id}/use", patch(handlers::record_vault_entry_use))
             // Historique des mots de passe d'une entrée (voir handlers/vault.rs)
             .route("/{id}/history", get(handlers::get_vault_entry_history))
             // Pièces jointes chiffrées d'une entrée (voir handlers/vault.rs). Isolées dans leur

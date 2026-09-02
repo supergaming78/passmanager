@@ -402,7 +402,8 @@ Liste les entrées actives du coffre de l'utilisateur (favoris en premier).
   "encrypted_extra_fields": null,
   "updated_at": "2026-08-05T12:00:00",
   "version": 1,
-  "has_attachments": false
+  "has_attachments": false,
+  "use_count": 0
 }]
 ```
 `version` : compteur entier incrémenté à chaque modification — à renvoyer dans `expected_version`
@@ -410,6 +411,9 @@ lors d'un `PUT /vault/{id}` pour détecter un conflit d'édition (voir plus bas)
 `has_attachments` : vrai si cette entrée a au moins une pièce jointe (calculé à la volée, pas une
 colonne stockée) — évite au client d'interroger `GET /vault/{id}/attachments` pour chaque entrée
 juste pour savoir s'il faut afficher un indicateur.
+`use_count` : nombre de fois où cette entrée a été utilisée (copie du mot de passe ou remplissage
+automatique — voir `PATCH /vault/{id}/use`) — pour un tri "le plus utilisé" côté client. Ne
+reflète jamais une modification de contenu : n'affecte ni `updated_at` ni `version`.
 `entry_type` : type d'entrée dédié (`"login"` par défaut, ou `"card"`/`"identity"`/`"note"`) —
 métadonnée EN CLAIR, comme `is_favorite`. `encrypted_extra_fields` : blob JSON chiffré côté client
 contenant les champs spécifiques au type (ex: date d'expiration/CVV pour une carte) — jamais
@@ -544,6 +548,20 @@ Bascule le statut favori (`true` <-> `false`).
 
 **Réponse** : `200 OK`, corps vide.
 **Erreurs** : `404` (y compris si l'entrée est dans la corbeille).
+
+### `PATCH /vault/{id}/use`
+
+Incrémente le compteur d'utilisation (`use_count`, voir `GET /vault`) — à appeler à chaque copie du
+mot de passe ou remplissage automatique. N'affecte ni `updated_at` ni `version` : pas une
+modification de contenu, jamais de conflit d'édition possible dessus. Appel best-effort côté
+client, recommandé de ne pas attendre sa réponse avant de continuer l'action réelle
+(copier/remplir). Ne déclenche PAS de notification de synchronisation vers les autres appareils
+(voir `GET /api/vault/sync`) — volontairement, pour ne pas provoquer un rechargement complet du
+coffre à chaque copie de mot de passe ; les autres appareils voient la valeur à jour à leur
+prochain rechargement naturel du coffre.
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `404` (y compris si l'entrée est dans la corbeille, ou n'appartient pas à l'appelant).
 
 ### `GET /vault/trash`
 

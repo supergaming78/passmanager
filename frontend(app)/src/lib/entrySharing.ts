@@ -122,10 +122,11 @@ export async function openSharedEntry(authorizedRequest: AuthorizedRequest, shar
   const plaintext = await tauri.unsealSharedEntry(view.sealed_entry, ownKeys.encrypted_private_key);
   const content = coerceSharedContent(JSON.parse(plaintext));
 
-  // `version: 0`/`hasAttachments: false` factices : une entrée partagée est une COPIE scellée en
-  // lecture seule (pièces jointes explicitement hors périmètre du partage, voir
-  // toSealableContent() plus haut), jamais réenregistrée via PUT /vault/{id} — la détection de
-  // conflit d'édition et le filtre "avec pièce jointe" n'ont donc aucun sens ici, ces deux champs
-  // ne sont simplement jamais lus pour ce type d'entrée.
-  return { id: shareId, updatedAt: "", version: 0, hasAttachments: false, ...content };
+  // `version: 0`/`hasAttachments: false`/`useCount: 0` factices : une entrée partagée est une
+  // COPIE scellée en lecture seule (pièces jointes explicitement hors périmètre du partage, voir
+  // toSealableContent() plus haut), jamais réenregistrée via PUT /vault/{id} ni utilisée via
+  // PATCH /vault/{id}/use — la détection de conflit d'édition, le filtre "avec pièce jointe" et le
+  // tri "le plus utilisé" n'ont donc aucun sens ici, ces champs ne sont simplement jamais lus pour
+  // ce type d'entrée.
+  return { id: shareId, updatedAt: "", version: 0, hasAttachments: false, useCount: 0, ...content };
 }

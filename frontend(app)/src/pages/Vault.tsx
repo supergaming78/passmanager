@@ -21,6 +21,7 @@ import ShareEntryModal from "../components/ShareEntryModal";
 import BlindShareModal from "../components/BlindShareModal";
 import BugReportModal from "../components/BugReportModal";
 import { reseedEntryShares } from "../lib/entrySharing";
+import { recordEntryUse } from "../lib/vaultUsage";
 import EntryActionsMenu from "../components/EntryActionsMenu";
 import KeyboardShortcutsModal from "../components/KeyboardShortcutsModal";
 import SiteAvatar from "../components/SiteAvatar";
@@ -77,7 +78,7 @@ export default function Vault() {
   // du coffre" détaille déjà (VaultHealthModal), pour ne pas avoir à l'ouvrir juste pour retrouver
   // ces entrées-là. Un seul actif à la fois, se combine avec la recherche/le dossier/le tri.
   const [quickFilter, setQuickFilter] = useState<"" | "weak" | "reused" | "old" | "favorite" | "attachment">("");
-  const [sortBy, setSortBy] = useState<"name" | "updated" | "strength">("name");
+  const [sortBy, setSortBy] = useState<"name" | "updated" | "strength" | "usage">("name");
   const [modal, setModal] = useState<ModalState>(null);
   const [showTrash, setShowTrash] = useState(false);
   const [showHealth, setShowHealth] = useState(false);
@@ -175,6 +176,10 @@ export default function Vault() {
       switch (sortBy) {
         case "updated":
           return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(); // plus récent d'abord
+        case "usage":
+          // Le plus utilisé d'abord (voir VaultEntry.use_count/lib/vaultUsage.ts) — départage
+          // alphabétique si deux entrées ont le même compteur (ex: deux entrées jamais utilisées).
+          return b.useCount - a.useCount || a.siteName.localeCompare(b.siteName);
         case "strength": {
           // Uniquement pertinent pour "login" (voir le commentaire sur reusedPasswordIds plus haut) —
           // un numéro de carte/document/le placeholder d'une note n'a pas de notion de "force".
@@ -260,13 +265,24 @@ export default function Vault() {
       groups.get(key)!.push(entry);
     }
 
+    // Retour utilisateur (2026-09-02) : quand le tri actif est "le plus utilisé", les DOSSIERS
+    // eux-mêmes remontent aussi par usage (somme des use_count de leurs entrées) — le dossier le
+    // plus utilisé en haut, pas juste les entrées à l'intérieur d'un dossier resté à sa place
+    // alphabétique. Pour tout autre tri, comportement inchangé (alphabétique).
     const named = Array.from(groups.keys())
       .filter((k) => k !== "")
-      .sort((a, b) => a.localeCompare(b))
+      .sort((a, b) => {
+        if (sortBy === "usage") {
+          const usageA = groups.get(a)!.reduce((sum, e) => sum + e.useCount, 0);
+          const usageB = groups.get(b)!.reduce((sum, e) => sum + e.useCount, 0);
+          if (usageA !== usageB) return usageB - usageA;
+        }
+        return a.localeCompare(b);
+      })
       .map((name) => ({ name, entries: groups.get(name)! }));
     const withoutFolder = groups.get("");
     return withoutFolder ? [...named, { name: "Sans dossier", entries: withoutFolder }] : named;
-  }, [filteredEntries, folderFilter, existingFolders]);
+  }, [filteredEntries, folderFilter, existingFolders, sortBy]);
 
   async function handleAdd(values: VaultEntryFormValues) {
     const encrypted = await encryptEntry(values);
@@ -283,10 +299,11 @@ export default function Vault() {
     // components/ShareEntryModal.tsx), le blob scellé côté serveur est désormais périmé — le
     // re-sceller avec le nouveau contenu. Best-effort, ne doit jamais faire échouer l'enregistrement
     // par ailleurs réussi de l'entrée (voir lib/entrySharing.ts::reseedEntryShares). `version`/
-    // `updatedAt`/`hasAttachments` factices : reseedEntryShares() n'en a pas besoin (il ne fait que
-    // re-sceller le contenu déjà accepté par le serveur ci-dessus, pas une nouvelle vérification de
-    // conflit, et les pièces jointes sont hors périmètre du partage — voir entrySharing.ts).
-    void reseedEntryShares(authorizedRequest, { id, updatedAt: "", version: 0, hasAttachments: false, ...values }).catch(() => {});
+    // `updatedAt`/`hasAttachments`/`useCount` factices : reseedEntryShares() n'en a pas besoin (il
+    // ne fait que re-sceller le contenu déjà accepté par le serveur ci-dessus, pas une nouvelle
+    // vérification de conflit, et les pièces jointes/le compteur d'usage sont hors périmètre du
+    // partage — voir entrySharing.ts).
+    void reseedEntryShares(authorizedRequest, { id, updatedAt: "", version: 0, hasAttachments: false, useCount: 0, ...values }).catch(() => {});
     await loadEntries();
   }
 
@@ -333,6 +350,9 @@ export default function Vault() {
     await copyPasswordWithAutoClear(entry.password);
     setCopiedId(entry.id);
     setTimeout(() => setCopiedId((current) => (current === entry.id ? null : current)), 1500);
+    // Best-effort, jamais attendu (voir lib/vaultUsage.ts) : ne doit jamais ralentir la copie
+    // elle-même, qui doit rester instantanée pour l'utilisateur.
+    recordEntryUse(authorizedRequest, entry.id);
   }
 
   async function handleCopyIdentifier(entry: PlainVaultEntry) {
@@ -807,11 +827,12 @@ export default function Vault() {
             )}
             <select
               value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as "name" | "updated" | "strength")}
+              onChange={(e) => setSortBy(e.target.value as "name" | "updated" | "strength" | "usage")}
               className="shrink-0 rounded-lg border border-neutral-300 px-2 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
             >
               <option value="name">Trier : nom</option>
               <option value="updated">Trier : dernière modification</option>
+              <option value="usage">Trier : le plus utilisé</option>
               <option value="strength">Trier : force (faible d'abord)</option>
             </select>
           </div>

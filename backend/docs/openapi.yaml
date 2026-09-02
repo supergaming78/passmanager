@@ -346,6 +346,23 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '429': { $ref: '#/components/responses/RateLimited' }
 
+  /vault/{id}/use:
+    patch:
+      tags: [vault]
+      summary: Incremente le compteur d'utilisation d'une entree (use_count)
+      description: >
+        A appeler a chaque copie du mot de passe ou remplissage automatique. N'affecte ni
+        updated_at ni version. Ne declenche pas de notification de synchronisation vers les
+        autres appareils (volontaire, evite un rechargement complet du coffre a chaque copie).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/VaultEntryId' }
+      responses:
+        '200': { description: Compteur incremente }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
   /vault/{id}/history:
     get:
       tags: [vault]
@@ -1436,6 +1453,9 @@ components:
         has_attachments:
           type: boolean
           description: Vrai si cette entree a au moins une piece jointe (calcule a la volee, pas une colonne stockee).
+        use_count:
+          type: integer
+          description: Nombre de fois ou cette entree a ete utilisee (copie/remplissage, voir PATCH /vault/{id}/use) - pour un tri "le plus utilise" cote client.
 
     PasswordHistoryEntry:
       type: object

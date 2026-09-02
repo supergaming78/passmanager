@@ -251,6 +251,30 @@ pub async fn toggle_favorite(
     Ok(StatusCode::OK)
 }
 
+/// Enregistre une UTILISATION d'une entrée (copie du mot de passe OU remplissage automatique,
+/// décidés comme équivalents côté client — voir lib/vaultUsage.ts) — retour utilisateur
+/// (2026-09-02), pour un tri "le plus utilisé" côté client (voir VaultEntry::use_count). Appelée
+/// en best-effort par le client (jamais bloquant sur l'action réelle : copier/remplir doit rester
+/// instantané pour l'utilisateur, cet appel part sans attendre sa réponse).
+///
+/// Volontairement PAS de log d'audit (une copie de mot de passe est une action ROUTINE et
+/// FRÉQUENTE, pas un événement de sécurité comme une connexion ou un changement de mot de passe —
+/// en journaliser chaque occurrence gonflerait `audit_logs` sans intérêt de sécurité réel) NI de
+/// réveil des autres appareils via sync_tx (contrairement à toggle_favorite ci-dessus) : diffuser
+/// un événement de synchronisation à CHAQUE copie de mot de passe déclencherait un rechargement
+/// complet du coffre sur tous les autres appareils connectés, potentiellement plusieurs fois par
+/// minute pour un usage actif — bien plus coûteux que l'intérêt d'un compteur d'usage à jour à la
+/// seconde près. Les autres appareils verront la valeur à jour au prochain rechargement naturel du
+/// coffre (connexion, actualisation manuelle...), cohérence "à terme" largement suffisante ici.
+pub async fn record_vault_entry_use(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    VaultRepository::record_use(&state.db, &user.email, &id).await?;
+    Ok(StatusCode::OK)
+}
+
 /// Nombre maximum de versions d'historique renvoyées par appel — reflète MAX_HISTORY_PER_ENTRY
 /// (voir repository.rs), qui plafonne déjà ce qui est CONSERVÉ en base.
 const MAX_HISTORY_RESULTS: i64 = 20;
@@ -634,6 +658,64 @@ mod tests {
         // Et elle ne doit plus apparaître dans le listage actif
         let active_entries = VaultRepository::get_all(&state.db, email, 50, 0).await.unwrap();
         assert!(active_entries.is_empty(), "une entrée supprimée ne doit plus apparaître dans le listage actif");
+    }
+
+    /// PATCH /vault/{id}/use (voir record_vault_entry_use) doit incrémenter use_count à chaque
+    /// appel, sans jamais toucher updated_at/version (contrairement à toggle_favorite) — retour
+    /// utilisateur (2026-09-02), pour le tri "le plus utilisé". Vérifie aussi l'isolation entre
+    /// utilisateurs (même raisonnement que test_vault_isolation_between_users pour les autres
+    /// routes) : un appel sur l'entrée d'un AUTRE utilisateur doit échouer en 404, pas incrémenter
+    /// silencieusement le compteur de quelqu'un d'autre.
+    #[tokio::test]
+    async fn test_record_vault_entry_use_increments_counter_without_touching_version_or_ownership() {
+        let state = build_test_state().await;
+        let owner = "usecountowner@example.com";
+        let other = "usecountother@example.com";
+        register_test_user(&state, owner).await;
+        register_test_user(&state, other).await;
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+
+        let entry = VaultEntryInput {
+            encrypted_site_name: "GitHub".to_string(),
+            encrypted_username: None, encrypted_login_email: None, encrypted_folder: None, encrypted_notes: None, encrypted_url: None, password_changed: false, expected_version: None,
+            entry_type: "login".to_string(), encrypted_extra_fields: None,
+            encrypted_password: "chiffre_xyz".to_string(),
+            encrypted_preferred_login_type: "username".to_string(),
+            is_favorite: false,
+        };
+        add_to_vault(
+            State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
+            AuthUser { email: owner.to_string(), is_moderator: false },
+            Json(entry),
+        ).await.expect("l'ajout doit réussir");
+
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
+            .bind(owner).fetch_one(&state.db).await.unwrap();
+        let (version_before, updated_at_before): (i64, String) = sqlx::query_as("SELECT version, updated_at FROM vault WHERE id = ?")
+            .bind(&id).fetch_one(&state.db).await.unwrap();
+
+        // Un autre utilisateur ne doit jamais pouvoir incrémenter le compteur de quelqu'un d'autre.
+        let denied = record_vault_entry_use(
+            State(state.clone()),
+            AuthUser { email: other.to_string(), is_moderator: false },
+            Path(id.clone()),
+        ).await;
+        assert!(denied.is_err(), "un utilisateur ne doit pas pouvoir marquer une entrée qui ne lui appartient pas comme utilisée");
+
+        // Deux appels du propriétaire -> use_count = 2, version/updated_at INCHANGÉS.
+        for _ in 0..2 {
+            record_vault_entry_use(
+                State(state.clone()),
+                AuthUser { email: owner.to_string(), is_moderator: false },
+                Path(id.clone()),
+            ).await.expect("l'enregistrement d'usage doit réussir pour le propriétaire");
+        }
+
+        let (use_count, version_after, updated_at_after): (i64, i64, String) = sqlx::query_as("SELECT use_count, version, updated_at FROM vault WHERE id = ?")
+            .bind(&id).fetch_one(&state.db).await.unwrap();
+        assert_eq!(use_count, 2, "use_count doit refléter les deux appels réussis (celui de l'autre utilisateur ne doit pas avoir compté)");
+        assert_eq!(version_after, version_before, "un simple compteur d'usage ne doit jamais faire avancer version (pas une modification de contenu)");
+        assert_eq!(updated_at_after, updated_at_before, "un simple compteur d'usage ne doit jamais toucher updated_at");
     }
 
     /// encrypted_folder doit vraiment être persisté et renvoyé (round-trip complet) : à l'ajout,

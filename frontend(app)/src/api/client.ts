@@ -271,6 +271,17 @@ export function toggleFavorite(accessToken: string, id: string): Promise<void> {
   });
 }
 
+/** Enregistre une utilisation de l'entrée (copie du mot de passe ou remplissage automatique —
+ * voir lib/vaultUsage.ts) pour le tri "le plus utilisé" (voir VaultEntry.use_count). À appeler en
+ * best-effort, SANS attendre sa réponse avant de continuer l'action réelle (copier/remplir) —
+ * voir lib/vaultUsage.ts::recordEntryUse, qui l'appelle déjà de cette façon. */
+export function recordVaultEntryUse(accessToken: string, id: string): Promise<void> {
+  return request<void>(`/vault/${encodeURIComponent(id)}/use`, {
+    method: "PATCH",
+    headers: authHeaders(accessToken),
+  });
+}
+
 export function getTrash(accessToken: string): Promise<TrashedVaultEntry[]> {
   return request<TrashedVaultEntry[]>("/vault/trash", { headers: authHeaders(accessToken) });
 }

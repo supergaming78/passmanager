@@ -30,12 +30,12 @@ import * as tauri from "../api/tauri";
 import { normalizeEntryType, parseExtraFields, type PlainVaultEntry } from "./vaultCrypto";
 import { withFocusLossLockSuppressed } from "./focusLossLockSuppression";
 
-// "updatedAt"/"version"/"hasAttachments" exclus : métadonnées serveur (dernière modification,
-// compteur de conflit d'édition, présence de pièce jointe), sans rapport avec l'import/export de
-// contenu — un fichier importé n'a ni "dernière modification" ni "version" ni pièce jointe côté
-// serveur avant d'y être ajouté (les pièces jointes elles-mêmes ne sont de toute façon jamais
-// incluses dans l'export de fichier, voir plus bas).
-export type ExportableEntry = Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments">;
+// "updatedAt"/"version"/"hasAttachments"/"useCount" exclus : métadonnées serveur (dernière
+// modification, compteur de conflit d'édition, présence de pièce jointe, compteur d'usage), sans
+// rapport avec l'import/export de contenu — un fichier importé n'a ni "dernière modification" ni
+// "version" ni pièce jointe ni historique d'usage côté serveur avant d'y être ajouté (les pièces
+// jointes elles-mêmes ne sont de toute façon jamais incluses dans l'export de fichier, voir plus bas).
+export type ExportableEntry = Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments" | "useCount">;
 export type FileFormat = "json" | "txt" | "csv";
 
 // DOIT rester identique à ENCRYPTED_EXPORT_MAGIC dans src-tauri/src/crypto.rs — c'est ce marqueur

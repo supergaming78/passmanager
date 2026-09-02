@@ -37,7 +37,7 @@ impl VaultRepository {
         // (voir idx_vault_attachments_vault_id), et le nombre de pièces jointes par utilisateur
         // est plafonné (MAX_ATTACHMENTS_PER_USER, voir handlers/vault.rs).
         sqlx::query_as::<_, VaultEntry>(
-        "SELECT id, encrypted_site_name, encrypted_username, encrypted_login_email, encrypted_password, encrypted_preferred_login_type, user_email, is_favorite, encrypted_folder, encrypted_notes, encrypted_url, entry_type, encrypted_extra_fields, updated_at, version,
+        "SELECT id, encrypted_site_name, encrypted_username, encrypted_login_email, encrypted_password, encrypted_preferred_login_type, user_email, is_favorite, encrypted_folder, encrypted_notes, encrypted_url, entry_type, encrypted_extra_fields, updated_at, version, use_count,
                 EXISTS(SELECT 1 FROM vault_attachments va WHERE va.vault_id = vault.id) AS has_attachments
          FROM vault
          WHERE user_email = ? AND deleted_at IS NULL
@@ -434,6 +434,22 @@ impl VaultRepository {
         // Même sécurité : si 0 ligne modifiée, on lève une erreur 404.
         if res.rows_affected() == 0 {
              return Err(AppError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Incrémente le compteur d'utilisation d'une entrée (copie du mot de passe OU remplissage
+    /// automatique, voir handlers/vault.rs::record_vault_entry_use) — retour utilisateur
+    /// (2026-09-02), pour un tri "le plus utilisé" côté client. Ne touche NI updated_at NI
+    /// version, contrairement à toggle_favorite() ci-dessus : un simple compteur d'usage n'est pas
+    /// une modification de CONTENU, ne doit donc jamais déclencher un conflit d'édition
+    /// (expected_version) ni faire paraître l'entrée "récemment modifiée" à tort.
+    pub async fn record_use(db: &SqlitePool, email: &str, id: &str) -> Result<(), AppError> {
+        let res = sqlx::query("UPDATE vault SET use_count = use_count + 1 WHERE id = ? AND user_email = ? AND deleted_at IS NULL")
+            .bind(id).bind(email).execute(db).await?;
+
+        if res.rows_affected() == 0 {
+            return Err(AppError::NotFound);
         }
         Ok(())
     }

@@ -3,7 +3,7 @@ import { NOTE_TYPE_PASSWORD_PLACEHOLDER, type EntryType, type PlainVaultEntry } 
 import { openEntryUrl } from "../lib/openExternalUrl";
 import PasswordGeneratorPanel from "./PasswordGeneratorPanel";
 
-export type VaultEntryFormValues = Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments">;
+export type VaultEntryFormValues = Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments" | "useCount">;
 
 /** Libellés/placeholders par type dédié — voir EntryType (lib/vaultCrypto.ts). Les champs
  * génériques (siteName/username/password) sont RÉUTILISÉS pour chaque type avec un sens différent
