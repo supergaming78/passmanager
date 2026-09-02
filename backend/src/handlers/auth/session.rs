@@ -93,14 +93,16 @@ async fn record_device_ip_and_maybe_alert(state: &AppState, email: &str, device_
 
             if previously_known_count > 0 {
                 state.log_audit(email, "LOGIN_NEW_IP_DETECTED", ip.to_string(), agent).await;
-                let _ = mailer::send_security_alert(
-                    email,
-                    &format!(
-                        "Connexion à votre compte depuis une nouvelle adresse IP ({ip}) sur l'appareil déjà approuvé « {device_label} ». Si vous n'êtes pas à l'origine de cette connexion, changez immédiatement votre mot de passe et consultez vos appareils de confiance."
-                    ),
-                    &state.config,
-                )
-                .await;
+                // CORRECTIF (même raisonnement que l'email 2FA, voir login() plus bas) : en
+                // arrière-plan, pour ne jamais faire attendre la réponse HTTP sur la latence SMTP.
+                let to_email = email.to_string();
+                let alert_message = format!(
+                    "Connexion à votre compte depuis une nouvelle adresse IP ({ip}) sur l'appareil déjà approuvé « {device_label} ». Si vous n'êtes pas à l'origine de cette connexion, changez immédiatement votre mot de passe et consultez vos appareils de confiance."
+                );
+                let config = state.config.clone();
+                tokio::spawn(async move {
+                    let _ = mailer::send_security_alert(&to_email, &alert_message, &config).await;
+                });
             }
         }
         Err(_) => {} // best-effort : une erreur de lecture ne doit jamais faire échouer le login
@@ -239,13 +241,25 @@ pub async fn login(
             .execute(&state.db)
             .await?;
 
-        // d. Envoi de l'e-mail contenant le code 2FA
-        match mailer::send_tfa_email(&user.email, &generated_code, &state.config).await {
-            Ok(_) => info!("E-mail de sécurité envoyé à {}", user.email),
-            Err(e) => {
-                error!("Erreur lors de l'envoi de l'email : {:?}", e);
-                return Err(e);
-            }
+        // d. Envoi de l'e-mail contenant le code 2FA — EN ARRIÈRE-PLAN (CORRECTIF, retour
+        // utilisateur : connexion parfois très lente). Avant, ce `.await` bloquait la réponse HTTP
+        // jusqu'à ce que le relais SMTP (Gmail ici) accepte l'email — latence variable, parfois
+        // plusieurs secondes selon l'état du relais, ressentie comme "la connexion traîne" à
+        // chaque 2FA (systématique sur tout nouvel appareil). Le code est déjà enregistré en base
+        // (étape c ci-dessus) AVANT ce point : le détacher de la réponse HTTP ne change rien à sa
+        // validité, seulement à QUAND l'email part réellement. Même principe déjà appliqué à
+        // send_security_alert (voir record_device_ip_and_maybe_alert plus haut) — best-effort, une
+        // erreur d'envoi n'empêche jamais la connexion de continuer, juste loggée.
+        {
+            let to_email = user.email.clone();
+            let code = generated_code.clone();
+            let config = state.config.clone();
+            tokio::spawn(async move {
+                match mailer::send_tfa_email(&to_email, &code, &config).await {
+                    Ok(_) => info!("E-mail de sécurité envoyé à {} (arrière-plan)", to_email),
+                    Err(e) => error!("Erreur lors de l'envoi de l'email 2FA (arrière-plan) : {:?}", e),
+                }
+            });
         }
         // Interruption du flux : on renvoie un statut 202 ACCEPTED indiquant que le 2FA est requis
         let tfa_res = Json(json!({ "status": "2FA_REQUIRED" }));
@@ -440,14 +454,20 @@ pub async fn verify_2fa_and_register_device(
     // le changement de mot de passe et le changement d'email en envoyaient une. Best-effort
     // comme les autres alertes (`let _ =`) : un échec SMTP ne doit pas faire échouer la
     // validation de l'appareil, déjà actée en BDD au-dessus.
+    // CORRECTIF (retour utilisateur : connexion parfois très lente) : en arrière-plan, pour ne
+    // jamais faire attendre la réponse HTTP sur la latence SMTP — voir le même correctif dans
+    // login() plus haut pour le raisonnement complet. Ce point de la validation 2FA est le SECOND
+    // envoi SMTP synchrone du cycle complet (après l'email du code lui-même) : les deux bloquaient
+    // la réponse avant ce correctif, cumulant leur latence sur un flux déjà en deux étapes.
     let device_label = payload.device_name.as_deref().unwrap_or("un appareil sans nom");
-    let _ = mailer::send_security_alert(
-        &email,
-        &format!(
-            "Un nouvel appareil ({device_label}) vient d'être approuvé sur votre compte. Si vous n'êtes pas à l'origine de cette action, changez immédiatement votre mot de passe et consultez vos appareils de confiance."
-        ),
-        &state.config
-    ).await;
+    let alert_email = email.clone();
+    let alert_message = format!(
+        "Un nouvel appareil ({device_label}) vient d'être approuvé sur votre compte. Si vous n'êtes pas à l'origine de cette action, changez immédiatement votre mot de passe et consultez vos appareils de confiance."
+    );
+    let alert_config = state.config.clone();
+    tokio::spawn(async move {
+        let _ = mailer::send_security_alert(&alert_email, &alert_message, &alert_config).await;
+    });
 
     // Établit la toute première IP connue pour ce nouvel appareil, SANS alerte (voir le commentaire
     // de record_device_ip_and_maybe_alert : previously_known_count vaudra 0 ici, la garde interne à
