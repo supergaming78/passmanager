@@ -133,35 +133,27 @@ jobs:
           printf 'key<<__EOF__\n%s\n__EOF__\n' "$clean_key" >> "$GITHUB_OUTPUT"
           printf 'password<<__EOF__\n%s\n__EOF__\n' "$clean_password" >> "$GITHUB_OUTPUT"
 
-      # CORRECTIF (retour utilisateur, 2026-09-02) : le guide utilisateur n'était visible qu'une
-      # fois un installeur téléchargé et le dossier ouvert — rien sur la page de release elle-même.
-      # tauri-action n'a pas d'option pour lire releaseBody depuis un fichier (juste une chaîne en
-      # ligne, voir sa doc) : lu ici et passé en sortie multi-lignes (même technique que pour les
-      # secrets ci-dessus) plutôt que codé en dur dans le YAML.
-      #
-      # CORRECTIF (retour utilisateur, 2026-09-02) : voulait TOUS les changements par rapport à la
-      # version précédente, affichés SOUS le titre de version sur la page de release — mais PAS un
-      # fichier séparé dans le dépôt. Deux essais précédents écartés : (1) CHANGELOG.md maintenu à
-      # la main dans le dépôt — rejeté, c'est justement le "fichier" que l'utilisateur ne voulait
-      # pas. (2) `generateReleaseNotes: true` de tauri-action (délègue à l'API "Generate release
-      # notes" de GitHub) — écarté aussi : ne liste que les TITRES de commit, pas d'explication
-      # lisible, ET a publié la release immédiatement malgré `releaseDraft: true` juste en dessous
-      # (constaté sur le run réel de app-v0.2.5, republié en brouillon à la main après coup —
-      # comportement non documenté par tauri-action ni par l'API GitHub, mais reproduit).
+      # CORRECTIF (retour utilisateur, 2026-09-02) : la description de la release doit contenir
+      # UNIQUEMENT le changelog (tout ce qui a changé par rapport à la version précédente) — PAS le
+      # guide utilisateur (celui-ci vit maintenant dans README.md, section "Guide d'utilisation" —
+      # visible directement sur la page principale du dépôt, l'endroit voulu). Deux essais
+      # précédents écartés pour la SOURCE du changelog : (1) CHANGELOG.md maintenu à la main dans
+      # le dépôt — rejeté, c'est justement le "fichier" que l'utilisateur ne voulait pas voir traîner
+      # dans l'arborescence. (2) `generateReleaseNotes: true` de tauri-action (délègue à l'API
+      # "Generate release notes" de GitHub) — écarté aussi : ne liste que les TITRES de commit, pas
+      # d'explication lisible, ET a publié la release immédiatement malgré `releaseDraft: true` juste
+      # en dessous (constaté sur le run réel de app-v0.2.5, republié en brouillon à la main après
+      # coup — comportement non documenté par tauri-action ni par l'API GitHub, mais reproduit).
       #
       # Solution retenue : le MESSAGE du tag annoté lui-même (`git tag -a app-vX.Y.Z -F fichier`,
       # jamais commité au dépôt — pure métadonnée Git, lue ici via `git for-each-ref`) porte le
       # changelog complet, écrit à la main à chaque nouvelle version au moment de taguer.
-      - name: Lire le changelog (message du tag annoté) + le guide utilisateur
+      - name: Lire le changelog (message du tag annoté, pour le corps de la release)
         id: guide
         run: |
           {
             echo "content<<__EOF__"
             git for-each-ref "refs/tags/${{ github.ref_name }}" --format='%(contents)'
-            echo ""
-            echo "---"
-            echo ""
-            cat GUIDE_UTILISATEUR.md
             echo "__EOF__"
           } >> "$GITHUB_OUTPUT"
 
@@ -289,10 +281,12 @@ jobs:
           # sous-dossier `universal/` supplémentaire (`.../apk/universal/release/`), pas directement
           # sous `.../apk/release/` comme pour un build avec cibles séparées — vérifié contre le
           # comportement documenté de Tauri, pas juste deviné une seconde fois.
-          # GUIDE_UTILISATEUR.md ajouté ici (demande explicite, 2026-09-02) : déjà affiché sur la
-          # page de release (voir releaseBody du job desktop plus haut), mais aussi disponible en
-          # fichier téléchargeable à côté des installeurs — pas de raison de le refaire dans le job
-          # ios (même release, un seul exemplaire suffit).
+          # GUIDE_UTILISATEUR.md ajouté ici (demande explicite, 2026-09-02) : le guide vit
+          # maintenant dans README.md (page principale du dépôt, PAS dans la description de la
+          # release — voir releaseBody du job desktop plus haut, changelog uniquement) mais reste
+          # aussi disponible en fichier téléchargeable à côté des installeurs, pour qui préfère
+          # l'avoir en local. Pas de raison de le refaire dans le job ios (même release, un seul
+          # exemplaire suffit).
           files: |
             frontend(app)/src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk
             GUIDE_UTILISATEUR.md

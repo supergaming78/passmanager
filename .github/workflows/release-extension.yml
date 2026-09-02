@@ -136,6 +136,24 @@ jobs:
           echo "XPI trouvé : $xpi_path"
           echo "XPI_PATH=$xpi_path" >> "$GITHUB_ENV"
 
+      # CORRECTIF (retour utilisateur, 2026-09-02) : la description de la release doit contenir
+      # UNIQUEMENT le changelog — PAS le guide d'installation (celui-ci vit maintenant dans
+      # README.md à la racine du dépôt, section "Installer l'extension navigateur" — visible
+      # directement sur la page principale du dépôt). Même solution que release-app.yml (voir son
+      # commentaire équivalent pour le raisonnement complet, y compris pourquoi PAS
+      # `generate_release_notes` de cette action — même bug de publication immédiate malgré
+      # `draft: true` constaté côté tauri-action, prudence à supposer le même risque ici) : le
+      # MESSAGE du tag annoté lui-même porte le changelog, écrit à la main à chaque nouvelle
+      # version au moment de taguer.
+      - name: Lire le changelog (message du tag annoté, pour le corps de la release)
+        id: changelog
+        run: |
+          {
+            echo "content<<__EOF__"
+            git for-each-ref "refs/tags/${{ github.ref_name }}" --format='%(contents)'
+            echo "__EOF__"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Publier la release GitHub (brouillon)
         uses: softprops/action-gh-release@v2
         env:
@@ -143,18 +161,14 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: "Extension PassManager ${{ github.ref_name }}"
-          # CORRECTIF (retour utilisateur, 2026-09-02) : le guide n'était visible qu'une fois le
-          # zip/xpi téléchargé et ouvert — rien sur la page de release elle-même. body_path (natif
-          # à cette action, contrairement à tauri-action utilisé par release-app.yml qui n'a que du
-          # texte en ligne, voir son propre correctif équivalent) affiche directement le contenu du
-          # guide sur la page de release.
-          body_path: extension/GUIDE_INSTALLATION.md
+          body: ${{ steps.changelog.outputs.content }}
           # XPI_PATH reste vide (donc ignoré par cette action) si les secrets AMO n'étaient pas
-          # configurés — voir l'étape de signature ci-dessus. GUIDE_INSTALLATION.md ajouté ici en
-          # plus de body_path ci-dessus (demande explicite, 2026-09-02) : déjà affiché sur la page
-          # de release, mais aussi disponible en fichier téléchargeable à côté du zip/xpi — il est
-          # de toute façon déjà inclus DANS le zip (voir "Assembler le paquet" plus haut), ce n'est
-          # qu'une copie supplémentaire pour qui ne veut pas dézipper juste pour le lire.
+          # configurés — voir l'étape de signature ci-dessus. GUIDE_INSTALLATION.md ajouté ici :
+          # le guide vit maintenant dans README.md (page principale du dépôt, PAS dans la
+          # description de la release — voir body ci-dessus, changelog uniquement) mais reste aussi
+          # disponible en fichier téléchargeable à côté du zip/xpi — il est de toute façon déjà
+          # inclus DANS le zip (voir "Assembler le paquet" plus haut), ce n'est qu'une copie
+          # supplémentaire pour qui ne veut pas dézipper juste pour le lire.
           files: |
             ${{ env.PACKAGE_PATH }}
             ${{ env.XPI_PATH }}
