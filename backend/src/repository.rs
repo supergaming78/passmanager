@@ -1680,11 +1680,20 @@ pub struct DeletedBugReport {
 // plus que le plafond pour SON PROPRE compte, jamais un impact sur les autres utilisateurs).
 // =========================================================================
 
-/// Par auteur (pas global, contrairement à MAX_BUG_REPORTS_TOTAL — cette route exige un compte,
-/// donc chaque abus reste imputable à un seul compte plutôt qu'à épuiser une ressource partagée).
-/// `pub(crate)` (pas juste privé) : réutilisée telle quelle par le test de régression sur ce
-/// plafond dans handlers/feature_suggestion.rs, même raisonnement que MAX_BUG_REPORTS_TOTAL.
+/// Par auteur (pas global — cette route exige un compte, donc chaque abus reste imputable à un
+/// seul compte plutôt qu'à épuiser une ressource partagée). `pub(crate)` (pas juste privé) :
+/// réutilisée telle quelle par le test de régression sur ce plafond dans
+/// handlers/feature_suggestion.rs, même raisonnement que MAX_BUG_REPORTS_TOTAL.
 pub(crate) const MAX_FEATURE_SUGGESTIONS_PER_USER: i64 = 20;
+
+/// CORRECTIF (repéré en relecture, pas par un incident réel) : contrairement à MAX_BUG_REPORTS_TOTAL,
+/// cette table n'avait jusqu'ici AUCUN plafond global — seulement le plafond par auteur ci-dessus.
+/// Sur une instance avec beaucoup de comptes (chacun pouvant en avoir jusqu'à
+/// MAX_FEATURE_SUGGESTIONS_PER_USER en attente), la table pouvait quand même croître sans aucune
+/// limite. Filet de sécurité supplémentaire, pas la défense principale (qui reste le plafond par
+/// auteur ci-dessus) — largement au-dessus de tout usage légitime même à plusieurs dizaines de
+/// comptes.
+const MAX_FEATURE_SUGGESTIONS_TOTAL: i64 = 2000;
 
 pub struct FeatureSuggestionRepository;
 
@@ -1701,12 +1710,29 @@ impl FeatureSuggestionRepository {
         }
 
         let id = uuid::Uuid::new_v4().to_string();
-        sqlx::query("INSERT INTO feature_suggestions (id, author_email, description) VALUES (?, ?, ?)")
-            .bind(&id)
-            .bind(author_email)
-            .bind(&payload.description)
-            .execute(db)
-            .await?;
+        // Plafond GLOBAL (voir MAX_FEATURE_SUGGESTIONS_TOTAL) appliqué ICI via une insertion
+        // atomique — même motif que BugReportRepository::create ci-dessus — plutôt qu'un second
+        // SELECT-puis-INSERT non atomique comme le plafond par auteur ci-dessus : celui-là accepte
+        // sciemment sa fenêtre de course (aucun intérêt réel pour un attaquant, imputable à un seul
+        // compte), mais CE plafond-ci protège une ressource partagée par TOUS les comptes, où la
+        // fenêtre de course aurait un vrai sens à exploiter.
+        let res = sqlx::query(
+            "INSERT INTO feature_suggestions (id, author_email, description)
+             SELECT ?, ?, ?
+             WHERE (SELECT COUNT(*) FROM feature_suggestions) < ?",
+        )
+        .bind(&id)
+        .bind(author_email)
+        .bind(&payload.description)
+        .bind(MAX_FEATURE_SUGGESTIONS_TOTAL)
+        .execute(db)
+        .await?;
+
+        if res.rows_affected() == 0 {
+            return Err(AppError::ValidationError(
+                "Trop de suggestions en attente au total sur ce serveur — réessaie plus tard.".to_string(),
+            ));
+        }
 
         Ok(id)
     }

@@ -545,30 +545,40 @@ function FeatureSuggestionsSection() {
   }
 
   if (isLoading) return <p className="text-sm text-neutral-500">Chargement…</p>;
-  if (error) return <p className="text-sm text-red-600 dark:text-red-400">{error}</p>;
-  if (suggestions.length === 0) return <p className="text-sm text-neutral-500">Aucune suggestion en attente.</p>;
 
+  // CORRECTIF (repéré en relecture) : un `if (error) return ...` ici, comme dans
+  // BugReportsSection ci-dessus, ferait DISPARAÎTRE toute la liste dès qu'une seule suppression
+  // échoue (ex: coupure réseau) — jusqu'à la prochaine action réussie, plus aucune suggestion
+  // n'est visible/actionnable, alors qu'elles sont toujours bien là. L'erreur s'affiche maintenant
+  // EN PLUS de la liste, jamais à sa place.
   return (
-    <ul className="flex max-h-96 flex-col gap-2 overflow-y-auto">
-      {suggestions.map((suggestion) => (
-        <li key={suggestion.id} className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-800">
-          <div className="mb-1 flex items-center justify-between gap-2">
-            <span className="text-xs text-neutral-500">
-              {new Date(suggestion.created_at).toLocaleString()} · {suggestion.author_email}
-            </span>
-            <button
-              type="button"
-              disabled={busyId === suggestion.id}
-              onClick={() => void handleDelete(suggestion)}
-              className="shrink-0 rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-            >
-              Marquer examinée
-            </button>
-          </div>
-          <p className="whitespace-pre-wrap text-sm text-neutral-800 dark:text-neutral-200">{suggestion.description}</p>
-        </li>
-      ))}
-    </ul>
+    <>
+      {error && <p className="mb-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {suggestions.length === 0 ? (
+        <p className="text-sm text-neutral-500">Aucune suggestion en attente.</p>
+      ) : (
+        <ul className="flex max-h-96 flex-col gap-2 overflow-y-auto">
+          {suggestions.map((suggestion) => (
+            <li key={suggestion.id} className="rounded-lg border border-neutral-200 p-3 dark:border-neutral-800">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="text-xs text-neutral-500">
+                  {new Date(suggestion.created_at).toLocaleString()} · {suggestion.author_email}
+                </span>
+                <button
+                  type="button"
+                  disabled={busyId === suggestion.id}
+                  onClick={() => void handleDelete(suggestion)}
+                  className="shrink-0 rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                >
+                  Marquer examinée
+                </button>
+              </div>
+              <p className="whitespace-pre-wrap text-sm text-neutral-800 dark:text-neutral-200">{suggestion.description}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 
