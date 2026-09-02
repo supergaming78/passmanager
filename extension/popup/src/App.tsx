@@ -15,6 +15,7 @@ import { getErrorMessage } from "./lib/errors";
 import { copyPasswordWithAutoClear } from "./lib/clipboard";
 import * as entrySharing from "./lib/entrySharing";
 import { recordEntryUse } from "./lib/vaultUsage";
+import { setTheme, setCachedCustomTheme } from "./lib/theme";
 import VaultEntryForm, { type VaultEntryFormValues } from "./components/VaultEntryForm";
 import TrashView from "./components/TrashView";
 import ShareEntryView from "./components/ShareEntryView";
@@ -33,6 +34,34 @@ type Screen =
   | { kind: "login" }
   | { kind: "tfa"; email: string; authHashHex: string; vaultKey: Uint8Array; rememberMe: boolean }
   | { kind: "vault"; email: string; vaultKey: Uint8Array };
+
+/** Récupère la personnalisation de thème du compte et l'active si elle existe (voir
+ * lib/theme.ts::setTheme, api/client.ts::getThemeCustomization) — équivalent, pour la popup, du
+ * bloc fait dans state/AuthContext.tsx::establishSession côté desktop (voir son commentaire pour
+ * le raisonnement complet). Ici, PAS de point "établissement de session" unique comme là-bas (la
+ * popup n'en a pas, voir lib/session.ts) : appelée à la fois quand une session déjà active est
+ * retrouvée au montage (la popup vient d'être rouverte, potentiellement des jours après une
+ * modification faite depuis un autre appareil) ET juste après une connexion/2FA réussie (voir
+ * goToVault() ci-dessous, appelée dans les deux cas). Best-effort : une coupure réseau laisse
+ * simplement le thème local (preset ou dernière personnalisation connue) inchangé. */
+async function syncThemeCustomization(accessToken: string): Promise<void> {
+  try {
+    const customization = await api.getThemeCustomization(accessToken);
+    if (customization) {
+      setCachedCustomTheme({
+        mode: customization.mode,
+        accentHue: customization.accent_hue,
+        backgroundTinted: customization.background_tinted,
+        dangerHue: customization.danger_hue,
+        successHue: customization.success_hue,
+        favoriteHue: customization.favorite_hue,
+      });
+      setTheme("custom");
+    }
+  } catch {
+    // best-effort, voir la doc ci-dessus.
+  }
+}
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>({ kind: "loading" });
@@ -61,13 +90,17 @@ export default function App() {
       }
       void session.getActiveSession().then((active) => {
         setScreen(active ? { kind: "vault", email: active.email, vaultKey: active.vaultKey } : { kind: "login" });
+        if (active) void syncThemeCustomization(active.accessToken);
       });
     });
   }, []);
 
   async function goToVault() {
     const active = await session.getActiveSession();
-    if (active) setScreen({ kind: "vault", email: active.email, vaultKey: active.vaultKey });
+    if (active) {
+      setScreen({ kind: "vault", email: active.email, vaultKey: active.vaultKey });
+      void syncThemeCustomization(active.accessToken);
+    }
   }
 
   // Bandeau de mise à jour (voir components/UpdateBanner.tsx — Chrome/Edge uniquement, ne fait

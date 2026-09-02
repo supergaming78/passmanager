@@ -61,6 +61,8 @@ import {
   type BugReportView,
   type CreateFeatureSuggestionPayload,
   type FeatureSuggestionView,
+  type ThemeCustomizationView,
+  type UpdateThemeCustomizationPayload,
 } from "./types";
 
 /**
@@ -768,6 +770,29 @@ export function listFeatureSuggestions(accessToken: string): Promise<FeatureSugg
 
 export function deleteFeatureSuggestion(accessToken: string, id: string): Promise<void> {
   return request<void>(`/admin/feature-suggestions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(accessToken),
+  });
+}
+
+// --- Personnalisation de thème (voir api/types.ts, lib/customTheme.ts) — synchronisée par
+// compte, PAS un réglage local comme le reste de lib/theme.ts. `null` tant que le compte n'a
+// jamais rien enregistré (voir handlers/theme_customization.rs::get_theme_customization).
+export function getThemeCustomization(accessToken: string): Promise<ThemeCustomizationView | null> {
+  return request<ThemeCustomizationView | null>("/theme-customization", { headers: authHeaders(accessToken) });
+}
+
+export function updateThemeCustomization(accessToken: string, payload: UpdateThemeCustomizationPayload): Promise<void> {
+  return request<void>("/theme-customization", {
+    method: "PUT",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Revient à un thème preset — supprime la personnalisation enregistrée côté serveur. */
+export function deleteThemeCustomization(accessToken: string): Promise<void> {
+  return request<void>("/theme-customization", {
     method: "DELETE",
     headers: authHeaders(accessToken),
   });

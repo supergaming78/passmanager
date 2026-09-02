@@ -462,6 +462,22 @@ export interface TfaRequiredResponse {
   status: "2FA_REQUIRED";
 }
 
+// --- Personnalisation de thème (voir handlers/theme_customization.rs côté backend) ---
+
+/** `null` si le compte n'a jamais rien enregistré (voir getThemeCustomization ci-dessous) — le
+ * client applique alors un thème preset. Teintes en degrés (0-359) ; toute la dérivation de
+ * palette (L/C par palier Tailwind) reste côté client, voir lib/customTheme.ts. */
+export interface ThemeCustomizationView {
+  mode: "dark" | "light";
+  accent_hue: number;
+  background_tinted: boolean;
+  danger_hue: number;
+  success_hue: number;
+  favorite_hue: number;
+}
+
+export type UpdateThemeCustomizationPayload = ThemeCustomizationView;
+
 /** Erreur générique renvoyée par le backend, voir error.rs::AppError::into_response(). */
 export interface ApiErrorBody {
   error: string;

@@ -16,10 +16,22 @@
 // Tailwind v4 : le variant `dark:` suit par défaut `prefers-color-scheme` seul (stratégie
 // "media") — voir `@custom-variant dark (&:where(.dark, .dark *));` dans App.css, qui bascule sur
 // une stratégie "class" (présence de `.dark` sur `<html>`, gérée ici) pour pouvoir le forcer.
-export type Theme = "dark" | "light" | "system" | "midnight" | "ocean" | "forest" | "sunset" | "rose" | "violet" | "amber" | "slate";
+//
+// "custom" (retour utilisateur, 2026-09-03) : un thème de PLUS, à côté des presets ci-dessus, où
+// l'utilisateur choisit lui-même chaque teinte (accent/danger/succès/favoris + fond teinté ou non)
+// via un curseur — voir lib/customTheme.ts pour la mécanique (propriétés CSS posées en inline,
+// PAS une classe statique comme les presets, puisque la teinte choisie peut être n'importe quelle
+// valeur 0-359°). Contrairement aux presets (volontairement sombre uniquement), "custom" supporte
+// AUSSI un mode clair (voir CustomThemeConfig.mode) — seul thème de la liste dans ce cas. Synchro-
+// nisé par COMPTE (voir api/client.ts::getThemeCustomization), pas seulement en local comme le
+// reste de ce fichier — voir state/AuthContext.tsx::establishSession pour le point de récupération.
+import { applyCustomTheme, clearCustomTheme, DEFAULT_CUSTOM_THEME, type CustomThemeConfig } from "./customTheme";
+
+export type Theme = "dark" | "light" | "system" | "midnight" | "ocean" | "forest" | "sunset" | "rose" | "violet" | "amber" | "slate" | "custom";
+export type { CustomThemeConfig };
 
 const STORAGE_KEY = "passmanager.theme";
-const VALID_THEMES: readonly Theme[] = ["dark", "light", "system", "midnight", "ocean", "forest", "sunset", "rose", "violet", "amber", "slate"];
+const VALID_THEMES: readonly Theme[] = ["dark", "light", "system", "midnight", "ocean", "forest", "sunset", "rose", "violet", "amber", "slate", "custom"];
 const PALETTE_CLASSES = ["theme-midnight", "theme-ocean", "theme-forest", "theme-sunset", "theme-rose", "theme-violet", "theme-amber", "theme-slate"] as const;
 
 /** Classe de palette supplémentaire (voir App.css) pour les thèmes qui vont plus loin qu'un
@@ -55,15 +67,55 @@ function systemPrefersDark(): boolean {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
 
+// -------------------------------------------------------------------------
+// THÈME "CUSTOM" — cache local anti-FOUC (voir public/theme-init.js, qui lit la même clé en JS
+// brut avant même que React ne soit chargé) + copie de la config synchronisée par compte (voir
+// state/AuthContext.tsx::establishSession, seul point qui appelle setCachedCustomTheme() avec une
+// valeur venue du serveur). Écrire ici ne synchronise RIEN côté serveur — voir
+// api/client.ts::updateThemeCustomization pour ça, appelé séparément par components/ThemeSettings.tsx.
+const CUSTOM_THEME_STORAGE_KEY = "passmanager.customTheme";
+let cachedCustomTheme: CustomThemeConfig | null = null;
+
+/** Dernière config connue (cache local, potentiellement en retard d'une modification faite sur un
+ * autre appareil tant que establishSession() n'a pas encore tourné) — jamais `null` : retombe sur
+ * DEFAULT_CUSTOM_THEME (identique visuellement à "dark") si rien n'a jamais été enregistré. */
+export function getCachedCustomTheme(): CustomThemeConfig {
+  if (cachedCustomTheme) return cachedCustomTheme;
+  try {
+    const stored = localStorage.getItem(CUSTOM_THEME_STORAGE_KEY);
+    cachedCustomTheme = stored ? { ...DEFAULT_CUSTOM_THEME, ...(JSON.parse(stored) as Partial<CustomThemeConfig>) } : DEFAULT_CUSTOM_THEME;
+  } catch {
+    cachedCustomTheme = DEFAULT_CUSTOM_THEME;
+  }
+  return cachedCustomTheme;
+}
+
+/** Met à jour le cache local ET réapplique immédiatement si "custom" est le thème actif — appelée
+ * à la fois par ThemeSettings.tsx (modification locale, avant même la confirmation du serveur —
+ * réactivité immédiate) et par establishSession() (valeur fraîchement récupérée du serveur, voir
+ * plus haut). Ne touche PAS `passmanager.theme` (voir setTheme() ci-dessous) : choisir "custom"
+ * reste un choix séparé du contenu de la personnalisation elle-même. */
+export function setCachedCustomTheme(config: CustomThemeConfig): void {
+  cachedCustomTheme = config;
+  try {
+    localStorage.setItem(CUSTOM_THEME_STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // best-effort — au pire, pas de cache anti-FOUC au prochain démarrage, rien de grave.
+  }
+  if (getTheme() === "custom") applyTheme("custom");
+}
+
 /** Applique un thème à la page (classe `dark` + classe de palette éventuelle sur `<html>`) sans le
  * persister — utilisé par setTheme() ci-dessous ET par le listener système (voir initTheme()), qui
  * ne doit jamais réécrire localStorage (le choix "system" doit rester "system", pas se figer sur
- * sa résolution du moment). Toutes les variantes de palette (midnight/ocean/forest/sunset/rose/
- * violet/amber/slate) sont volontairement des variantes SOMBRES uniquement (tout leur intérêt —
- * noir plus profond, accent différent — s'exprime sur fond sombre) : `theme !== "light"` suffit à
- * les forcer en sombre ci-dessous, quel que soit leur nombre. */
+ * sa résolution du moment). Toutes les variantes de palette PRESET (midnight/ocean/forest/sunset/
+ * rose/violet/amber/slate) sont volontairement des variantes SOMBRES uniquement (tout leur
+ * intérêt — noir plus profond, accent différent — s'exprime sur fond sombre) : `theme !== "light"`
+ * suffit à les forcer en sombre ci-dessous, quel que soit leur nombre. "custom" fait exception —
+ * seul thème à supporter un mode clair (voir CustomThemeConfig.mode ci-dessus) — d'où la branche
+ * séparée pour lui juste en dessous. */
 function applyTheme(theme: Theme): void {
-  const isDark = theme !== "light" && (theme !== "system" || systemPrefersDark());
+  const isDark = theme === "custom" ? getCachedCustomTheme().mode === "dark" : theme !== "light" && (theme !== "system" || systemPrefersDark());
   document.documentElement.classList.toggle("dark", isDark);
   // `color-scheme` (PAS juste la classe `dark` ci-dessus) : contrôle le rendu des éléments natifs
   // du navigateur/webview (barres de défilement, cases à cocher non stylées...) — sans ça, ils
@@ -71,6 +123,14 @@ function applyTheme(theme: Theme): void {
   document.documentElement.style.colorScheme = isDark ? "dark" : "light";
 
   document.documentElement.classList.remove(...PALETTE_CLASSES);
+  if (theme === "custom") {
+    applyCustomTheme(getCachedCustomTheme());
+    return;
+  }
+  // Retire toute personnalisation inline qui pourrait rester d'un précédent "custom" — sinon elle
+  // masquerait la classe de palette preset ci-dessous (spécificité inline > classe, voir
+  // customTheme.ts). Sans effet si "custom" n'avait jamais été utilisé (rien à retirer).
+  clearCustomTheme();
   const paletteClass = paletteClassFor(theme);
   if (paletteClass) document.documentElement.classList.add(paletteClass);
 }

@@ -19,7 +19,7 @@ import {
   setWindowMode,
   type WindowMode,
 } from "../lib/settings";
-import { getTheme, setTheme, type Theme } from "../lib/theme";
+import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
 import type { TrustedDevice } from "../api/types";
 import { getErrorMessage } from "../lib/errors";
 
@@ -53,6 +53,8 @@ export default function SettingsView({
   const [clipboardSeconds, setClipboardSeconds] = useState(getClipboardClearSeconds());
   const [windowMode, setWindowModeState] = useState(getWindowMode());
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
+  const [customTheme, setCustomThemeState] = useState<CustomThemeConfig>(() => getCachedCustomTheme());
+  const [customThemeSaveState, setCustomThemeSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
   const [newEmail, setNewEmail] = useState("");
   const [emailPassword, setEmailPassword] = useState("");
@@ -116,6 +118,38 @@ export default function SettingsView({
   function handleSaveTheme(value: Theme) {
     setThemeState(value);
     setTheme(value);
+    if (value !== "custom") {
+      // Voir ThemeSettings.tsx côté desktop pour le même raisonnement : sans ce DELETE, une
+      // personnalisation encore enregistrée côté serveur reviendrait forcer "custom" ici (et sur
+      // tous les autres appareils) au prochain lancement (voir App.tsx::syncThemeCustomization).
+      void session.authorizedRequest((token) => api.deleteThemeCustomization(token)).catch(() => {});
+    }
+  }
+
+  function updateCustomTheme(patch: Partial<CustomThemeConfig>) {
+    const next = { ...customTheme, ...patch };
+    setCustomThemeState(next);
+    setCachedCustomTheme(next);
+    setCustomThemeSaveState("idle");
+  }
+
+  async function handleSaveCustomTheme() {
+    setCustomThemeSaveState("saving");
+    try {
+      await session.authorizedRequest((token) =>
+        api.updateThemeCustomization(token, {
+          mode: customTheme.mode,
+          accent_hue: customTheme.accentHue,
+          background_tinted: customTheme.backgroundTinted,
+          danger_hue: customTheme.dangerHue,
+          success_hue: customTheme.successHue,
+          favorite_hue: customTheme.favoriteHue,
+        }),
+      );
+      setCustomThemeSaveState("saved");
+    } catch {
+      setCustomThemeSaveState("error");
+    }
   }
 
   async function handleChangeEmail(e: FormEvent) {
@@ -205,7 +239,81 @@ export default function SettingsView({
           <option value="rose">Rose (accent rose)</option>
           <option value="violet">Violet (accent pourpre)</option>
           <option value="amber">Ambre (accent doré, fond réchauffé)</option>
+          <option value="custom">Personnalisé…</option>
         </select>
+
+        {theme === "custom" && (
+          <div className="mt-3 space-y-3 rounded-lg border border-neutral-200 p-3 dark:border-neutral-800">
+            <div className="flex gap-2">
+              {(["dark", "light"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => updateCustomTheme({ mode: m })}
+                  className={`flex-1 rounded-lg border px-2 py-1 text-xs ${
+                    customTheme.mode === m
+                      ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
+                      : "border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+                  }`}
+                >
+                  {m === "dark" ? "Sombre" : "Clair"}
+                </button>
+              ))}
+            </div>
+
+            {(
+              [
+                ["Accent (boutons, liens)", "accentHue"],
+                ["Danger (supprimer, erreurs)", "dangerHue"],
+                ["Succès (confirmations)", "successHue"],
+                ["Favoris (★)", "favoriteHue"],
+              ] as const
+            ).map(([label, key]) => (
+              <div key={key}>
+                <div className="mb-0.5 flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-400">
+                  <span>{label}</span>
+                  <span
+                    className="h-3.5 w-3.5 rounded-full border border-neutral-300 dark:border-neutral-700"
+                    style={{ backgroundColor: `oklch(58.5% .233 ${customTheme[key]})` }}
+                    aria-hidden="true"
+                  />
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={359}
+                  value={customTheme[key]}
+                  onChange={(e) => updateCustomTheme({ [key]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
+                  className="w-full accent-indigo-600"
+                  aria-label={label}
+                />
+              </div>
+            ))}
+
+            <label className="flex items-center gap-2 text-xs text-neutral-700 dark:text-neutral-300">
+              <input
+                type="checkbox"
+                checked={customTheme.backgroundTinted}
+                onChange={(e) => updateCustomTheme({ backgroundTinted: e.target.checked })}
+                className="h-3.5 w-3.5 rounded border-neutral-300 text-indigo-600 dark:border-neutral-700"
+              />
+              Teinter aussi le fond avec la couleur d'accent
+            </label>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleSaveCustomTheme()}
+                disabled={customThemeSaveState === "saving"}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+              >
+                {customThemeSaveState === "saving" ? "Enregistrement…" : "Enregistrer sur ce compte"}
+              </button>
+              {customThemeSaveState === "saved" && <span className="text-xs text-emerald-600 dark:text-emerald-400">Synchronisé.</span>}
+              {customThemeSaveState === "error" && <span className="text-xs text-red-600 dark:text-red-400">Échec — réessaie.</span>}
+            </div>
+          </div>
+        )}
       </Section>
 
       <Section title="Sécurité">

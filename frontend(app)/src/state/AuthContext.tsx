@@ -13,6 +13,7 @@ import * as tauri from "../api/tauri";
 import { getDeviceId, getDeviceName } from "../lib/deviceId";
 import { getAutoLockMinutes, getBackendUrl, getLockOnFocusLossDelaySeconds } from "../lib/settings";
 import { isFocusLossLockSuppressed } from "../lib/focusLossLockSuppression";
+import { setTheme, setCachedCustomTheme } from "../lib/theme";
 import { flattenForReencryption, rebuildAttachments, rebuildEntries, rebuildHistory } from "../lib/passwordChangeCrypto";
 import { reseedAllContacts } from "../lib/emergencyAccess";
 import { ApiError, type SyncEvent } from "../api/types";
@@ -204,7 +205,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    * connexion réussie. Le fetch de /me est best-effort : s'il échoue (ex: coupure réseau juste
    * après le login), l'utilisateur reste connecté normalement, simplement sans interface
    * d'administration visible tant qu'un prochain appel authentifié ne la redéclenche pas (voir
-   * authorizedRequest 401). */
+   * authorizedRequest 401).
+   *
+   * Récupère AUSSI la personnalisation de thème du compte (voir lib/theme.ts, lib/customTheme.ts)
+   * — SEUL réglage d'apparence synchronisé par compte plutôt que local à l'appareil (retour
+   * utilisateur, 2026-09-03 : "tous tes appareils"). Contrairement à isModerator/isAdmin, qui ne
+   * sont QUE lus ici et jamais réécrits depuis ce client, la personnalisation de thème peut aussi
+   * être modifiée localement par ThemeSettings.tsx (voir setCachedCustomTheme côté client) — ce
+   * fetch ne fait donc que RATTRAPER un changement fait depuis un AUTRE appareil, jamais écraser
+   * une modification locale plus récente : comme les tokens ne sont jamais persistés sur disque
+   * (voir le commentaire d'en-tête de ce fichier), CHAQUE lancement de l'app repasse forcément par
+   * establishSession() — pas besoin d'un point de "restauration de session" séparé pour éviter le
+   * bug de statut périmé déjà rencontré avec isModerator/isAdmin (qui, lui, ne se voyait qu'après
+   * une reconnexion manuelle sur le web/l'extension, où la session PEUT survivre sans repasser
+   * ici). Best-effort comme /me : une coupure réseau laisse simplement le thème local (preset ou
+   * dernière personnalisation connue) inchangé. */
   const establishSession = useCallback(
     async (userEmail: string, accessToken: string, refreshToken: string) => {
       setTokens({ email: userEmail, accessToken, refreshToken, isModerator: false, isAdmin: false, canChooseServerInSettings: false });
@@ -216,6 +231,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setTokens({ email: userEmail, accessToken, refreshToken, isModerator: me.is_moderator, isAdmin: me.is_admin, canChooseServerInSettings: me.can_choose_server_in_settings });
       } catch {
         // best-effort, voir la doc ci-dessus.
+      }
+      try {
+        const customization = await api.getThemeCustomization(accessToken);
+        if (customization) {
+          // Une personnalisation existe côté serveur : ce compte utilise "custom" sur AU MOINS un
+          // appareil — on l'active ici aussi (voir la doc ci-dessus). Un compte qui n'a jamais
+          // personnalisé, ou qui est explicitement revenu à un preset (DELETE, voir
+          // ThemeSettings.tsx), reçoit `null` ici : le thème local (preset) choisi sur CET
+          // appareil reste inchangé dans ce cas, voir setTheme()/getTheme() dans lib/theme.ts.
+          setCachedCustomTheme({
+            mode: customization.mode,
+            accentHue: customization.accent_hue,
+            backgroundTinted: customization.background_tinted,
+            dangerHue: customization.danger_hue,
+            successHue: customization.success_hue,
+            favoriteHue: customization.favorite_hue,
+          });
+          setTheme("custom");
+        }
+      } catch {
+        // best-effort — voir la doc ci-dessus.
       }
     },
     [setTokens],
