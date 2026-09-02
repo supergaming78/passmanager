@@ -321,6 +321,10 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
   const [entries, setEntries] = useState<PlainVaultEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // Retour utilisateur (2026-09-02) : même tri que côté app desktop (voir pages/Vault.tsx::sortBy),
+  // sans "force" (nécessiterait de porter l'estimation d'entropie, absente ici — hors périmètre de
+  // cette popup volontairement réduite, voir extension/README.md).
+  const [sortBy, setSortBy] = useState<"name" | "updated" | "usage">("name");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [filledId, setFilledId] = useState<string | null>(null);
   const [view, setView] = useState<VaultView>({ kind: "list" });
@@ -428,11 +432,26 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
     await reload();
   }
 
-  const filtered = (entries ?? []).filter((e) => {
-    const q = query.trim().toLowerCase();
-    if (!q) return true;
-    return e.siteName.toLowerCase().includes(q) || e.username.toLowerCase().includes(q) || e.loginEmail.toLowerCase().includes(q);
-  });
+  // Favoris toujours épinglés en premier (même comportement que côté app desktop, voir
+  // pages/Vault.tsx) — le tri choisi ne s'applique QU'À L'INTÉRIEUR de chaque groupe.
+  const filtered = (entries ?? [])
+    .filter((e) => {
+      const q = query.trim().toLowerCase();
+      if (!q) return true;
+      return e.siteName.toLowerCase().includes(q) || e.username.toLowerCase().includes(q) || e.loginEmail.toLowerCase().includes(q);
+    })
+    .sort((a, b) => {
+      if (a.isFavorite !== b.isFavorite) return Number(b.isFavorite) - Number(a.isFavorite);
+      switch (sortBy) {
+        case "updated":
+          return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(); // plus récent d'abord
+        case "usage":
+          return b.useCount - a.useCount || a.siteName.localeCompare(b.siteName);
+        case "name":
+        default:
+          return a.siteName.localeCompare(b.siteName);
+      }
+    });
 
   if (view.kind === "addEntry") {
     return (
@@ -580,7 +599,7 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
         </button>
       </div>
 
-      <div className="px-4 py-2">
+      <div className="flex flex-col gap-2 px-4 py-2">
         <input
           type="text"
           value={query}
@@ -588,6 +607,15 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
           placeholder="Rechercher…"
           className="w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
         />
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value as "name" | "updated" | "usage")}
+          className="w-full rounded-lg border border-neutral-300 px-2 py-1.5 text-xs outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          <option value="name">Trier : nom</option>
+          <option value="updated">Trier : dernière modification</option>
+          <option value="usage">Trier : le plus utilisé</option>
+        </select>
       </div>
 
       {error && <p className="px-4 pb-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
