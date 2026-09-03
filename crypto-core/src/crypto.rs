@@ -98,11 +98,17 @@ fn derive_subkey(master_key: &[u8; KEY_LEN], info: &[u8]) -> [u8; KEY_LEN] {
 /// le re-chiffrer — voir handlers/auth/account.rs côté backend pour le flux complet).
 pub fn derive_keys(email: &str, master_password: &str) -> DerivedKeys {
     let mut master_key = derive_master_key(email, master_password);
-    let auth_key = derive_subkey(&master_key, INFO_AUTH);
+    let mut auth_key = derive_subkey(&master_key, INFO_AUTH);
     let vault_key = derive_subkey(&master_key, INFO_VAULT);
     master_key.zeroize(); // Ne sert plus une fois les deux sous-clés dérivées — effacée immédiatement.
 
     let auth_hash_hex = hex_encode(&auth_key);
+    // Même raison que master_key juste au-dessus : `auth_key` ne sert plus une fois encodée en
+    // hexadécimal. Elle était auparavant laissée telle quelle sur la pile jusqu'à la fin de la
+    // fonction — un oubli, pas un choix : c'est un secret d'authentification (le hash envoyé au
+    // serveur en dérive directement), et tout le reste de ce fichier efface systématiquement ce
+    // genre de matériel dès qu'il devient inutile.
+    auth_key.zeroize();
 
     DerivedKeys { auth_hash_hex, vault_key }
 }

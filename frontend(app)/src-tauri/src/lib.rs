@@ -22,8 +22,14 @@ use zeroize::Zeroize;
 /// elle-même ne quitte JAMAIS ce processus Rust, le JS ne la voit jamais.
 #[tauri::command]
 fn derive_keys(email: String, master_password: String, vault_state: State<VaultKeyState>) -> String {
-    let keys = crypto::derive_keys(&email, &master_password);
+    let mut keys = crypto::derive_keys(&email, &master_password);
+    // `set()` COPIE la clé dans l'état protégé ([u8; 32] est `Copy`) : l'exemplaire local reste
+    // donc sur la pile après coup. Il était auparavant abandonné tel quel — cohérent avec rien
+    // d'autre dans ce projet, où la clé du coffre est effacée dès qu'elle ne sert plus (voir
+    // compute_auth_hash juste en dessous, quick_unlock.rs, state.rs::clear...). On efface donc
+    // explicitement cette copie une fois l'état renseigné.
     vault_state.set(keys.vault_key);
+    keys.vault_key.zeroize();
     keys.auth_hash_hex
 }
 
