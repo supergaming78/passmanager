@@ -44,7 +44,7 @@ type Screen =
  * desktop — distincts de components/VaultEntryForm.tsx::TYPE_LABELS, au singulier, propre au
  * formulaire de création/édition d'une entrée. */
 const TYPE_ORDER: EntryType[] = ["login", "card", "identity", "note"];
-const TYPE_SECTION_LABELS: Record<EntryType, string> = { login: "Identifiants", card: "Cartes bancaires", identity: "Identités", note: "Notes sécurisées" };
+const TYPE_SECTION_LABELS: Record<EntryType, string> = { login: "Mots de passe", card: "Cartes bancaires", identity: "Identités", note: "Notes sécurisées" };
 
 /** Regroupe une liste d'entrées par dossier — mêmes principe et logique que
  * pages/Vault.tsx::groupEntriesByFolder côté app desktop, factorisé pour être appelé soit une fois

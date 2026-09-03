@@ -11,7 +11,7 @@ import { validateEntryFields, normalizeEntryUrl } from "../lib/entryValidation";
 export type VaultEntryFormValues = Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments" | "useCount">;
 
 const TYPE_LABELS: Record<EntryType, string> = {
-  login: "Identifiant",
+  login: "Mot de passe",
   card: "Carte bancaire",
   identity: "Document d'identité",
   note: "Note sécurisée",

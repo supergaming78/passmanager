@@ -14,7 +14,13 @@ interface ValidatableEntry {
   password: string;
   extraFields: Record<string, string>;
   url: string;
+  loginEmail: string;
 }
+
+// Volontairement simple (pas la monstrueuse regex RFC 5322 complète) : attrape les fautes de
+// frappe courantes (email sans "@", sans domaine) sans risquer de rejeter à tort une adresse
+// valide mais inhabituelle.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const CARD_EXPIRY_YEAR_TOLERANCE_PAST = 1; // années dans le passé encore tolérées (carte qui vient d'expirer)
 const CARD_EXPIRY_YEAR_TOLERANCE_FUTURE = 30; // au-delà, presque certainement une faute de frappe
@@ -54,6 +60,12 @@ export function validateEntryFields(values: ValidatableEntry): string | null {
     if (cvv && !/^\d{3,4}$/.test(cvv)) {
       return "CVV : uniquement des chiffres (3 ou 4).";
     }
+  }
+
+  // Email de connexion (type "Mot de passe" uniquement) : s'il est rempli, doit ressembler à une
+  // adresse email — voir le commentaire complet côté app desktop.
+  if (values.entryType === "login" && values.loginEmail.trim() && !EMAIL_PATTERN.test(values.loginEmail.trim())) {
+    return "Email de connexion : format invalide.";
   }
 
   if (values.url.trim()) {
