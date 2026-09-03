@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { avatarColorClass, avatarLetter, matchKnownLogo } from "../lib/siteAvatar";
-import { ensureKnownLogosLoaded } from "../lib/knownLogos";
+import { areKnownLogosLoaded, subscribeToKnownLogos } from "../lib/knownLogos";
 
 interface Props {
   siteName: string;
@@ -25,18 +25,20 @@ export default function SiteAvatar({ siteName, url, size = 32 }: Props) {
   // SiteAvatar déclenche ce chargement (mémoïsé — un SEUL vrai chargement réseau/disque, même avec
   // des dizaines d'instances montées en même temps dans la liste du coffre) puis se re-rend une
   // fois prêt, pour passer de l'avatar générique (lettre/couleur) au vrai logo si reconnu.
-  const [logosReady, setLogosReady] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    void ensureKnownLogosLoaded().then(() => {
-      if (!cancelled) setLogosReady(true);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // OPTIMISATION : abonnement PARTAGÉ (voir lib/knownLogos.ts::subscribeToKnownLogos) plutôt qu'un
+  // useState + useEffect + callback de promesse PAR instance. La liste du coffre peut afficher des
+  // centaines d'avatars : c'était autant d'abonnements, de fermetures et de `setState` distincts
+  // pour un seul et même signal booléen, identique pour tout le monde.
+  const logosReady = useSyncExternalStore(subscribeToKnownLogos, areKnownLogosLoaded);
 
-  const logo = logosReady ? matchKnownLogo(siteName, url) : undefined;
+  // OPTIMISATION : mémoïsé. matchKnownLogo() normalise le nom du site et l'URL puis interroge
+  // jusqu'à trois tables — auparavant refait à CHAQUE rendu de CHAQUE avatar, donc N fois à chaque
+  // défilement, filtrage, copie de mot de passe ou changement d'état sans rapport dans la page.
+  // Les entrées d'une liste ne changent quasiment jamais de nom : ce résultat est stable.
+  const logo = useMemo(
+    () => (logosReady ? matchKnownLogo(siteName, url) : undefined),
+    [logosReady, siteName, url],
+  );
 
   if (logo?.kind === "color") {
     return (

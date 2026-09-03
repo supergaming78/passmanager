@@ -82,8 +82,39 @@ export function ensureKnownLogosLoaded(): Promise<void> {
       mono: mono.default as unknown as RawMonoLogos,
       multi: multi.default as unknown as RawMultiLogos,
     };
+    // Réveille en UNE fois tous les avatars montés (voir subscribeToKnownLogos ci-dessous).
+    for (const listener of listeners) listener();
   });
   return loadingPromise;
+}
+
+// --- Abonnement PARTAGÉ à la disponibilité de la bibliothèque -------------------------------
+// OPTIMISATION : chaque SiteAvatar portait auparavant son PROPRE useState + useEffect + callback
+// de promesse. Sur la liste du coffre, cela faisait autant d'abonnements, de fermetures et de
+// `setState` que d'entrées affichées — des centaines d'objets et de mises à jour d'état pour un
+// signal booléen unique, strictement identique pour tout le monde.
+//
+// Ces deux fonctions sont conçues pour `useSyncExternalStore` (voir SiteAvatar.tsx) : un seul
+// point de vérité partagé, une seule notification à l'arrivée des données. Références stables au
+// niveau module — indispensable, React se réabonnerait à chaque rendu si `subscribe` changeait
+// d'identité.
+const listeners = new Set<() => void>();
+
+export function subscribeToKnownLogos(onChange: () => void): () => void {
+  listeners.add(onChange);
+  // Déclencher le chargement ICI (plutôt que dans un effet séparé côté composant) garde
+  // "s'abonner" et "avoir besoin des logos" indissociables : impossible d'attendre un signal qui
+  // ne viendrait jamais faute d'avoir lancé le chargement.
+  void ensureKnownLogosLoaded();
+  return () => {
+    listeners.delete(onChange);
+  };
+}
+
+/** `true` dès que les trois fichiers sont chargés. Valeur booléenne stable — `useSyncExternalStore`
+ * exige un instantané qui ne change QUE lorsque la donnée change réellement. */
+export function areKnownLogosLoaded(): boolean {
+  return loaded !== null;
 }
 
 // Clé = forme normalisée (minuscules, sans accents/espaces/ponctuation, voir
