@@ -1054,9 +1054,13 @@ pub struct ThemeProfilePayload {
     pub background_hue: i64,
     #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
     pub background_lightness: i64,
-    /// Si vrai, `background_hue` est IGNORÉ côté client (chroma nulle — fond parfaitement gris,
-    /// sans aucune teinte) — voir migration 20260903020000 et lib/customTheme.ts::applyBackground.
-    pub background_neutral: bool,
+    /// "neutral" (gris pur, `background_hue` ignoré) | "subtle" ("fondu" — légère teinte, retour
+    /// utilisateur : "un noir avec une légère autre couleur") | "vivid" (couleur pleinement
+    /// perceptible) — validé À LA MAIN dans le handler (juste trois valeurs possibles, voir
+    /// handlers/theme_customization.rs), pas la peine d'un validateur `custom` pour ça. Voir
+    /// migration 20260903030000 et lib/customTheme.ts::applyBackground pour la chroma exacte
+    /// associée à chaque valeur.
+    pub background_style: String,
     #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
     pub accent_hue: i64,
     #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
@@ -1084,7 +1088,7 @@ pub struct ThemeProfileView {
     pub name: String,
     pub background_hue: i64,
     pub background_lightness: i64,
-    pub background_neutral: bool,
+    pub background_style: String,
     pub accent_hue: i64,
     pub accent_lightness: i64,
     pub danger_hue: i64,

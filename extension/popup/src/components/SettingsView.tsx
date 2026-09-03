@@ -20,7 +20,7 @@ import {
   type WindowMode,
 } from "../lib/settings";
 import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
-import { DEFAULT_CUSTOM_THEME } from "../lib/customTheme";
+import { DEFAULT_CUSTOM_THEME, type BackgroundStyle } from "../lib/customTheme";
 import type { TrustedDevice, ThemeProfileView } from "../api/types";
 import { getErrorMessage } from "../lib/errors";
 
@@ -149,7 +149,7 @@ export default function SettingsView({
     return {
       backgroundHue: p.background_hue,
       backgroundLightness: p.background_lightness,
-      backgroundNeutral: p.background_neutral,
+      backgroundStyle: p.background_style,
       accentHue: p.accent_hue,
       accentLightness: p.accent_lightness,
       dangerHue: p.danger_hue,
@@ -171,7 +171,7 @@ export default function SettingsView({
       name,
       background_hue: Math.round(c.backgroundHue),
       background_lightness: Math.round(c.backgroundLightness),
-      background_neutral: c.backgroundNeutral,
+      background_style: c.backgroundStyle,
       accent_hue: Math.round(c.accentHue),
       accent_lightness: Math.round(c.accentLightness),
       danger_hue: Math.round(c.dangerHue),
@@ -426,46 +426,67 @@ export default function SettingsView({
                     ["Favoris (★)", "favoriteHue", "favoriteLightness"],
                   ] as const
                 ).map(([label, hueKey, lightnessKey]) => {
-                  const hueDisabled = hueKey === "backgroundHue" && draftProfile.backgroundNeutral;
+                  const hueDisabled = hueKey === "backgroundHue" && draftProfile.backgroundStyle === "neutral";
+                  const hue = draftProfile[hueKey];
+                  const lightness = draftProfile[lightnessKey];
                   return (
                     <div key={hueKey}>
                       <div className="mb-0.5 flex items-center justify-between text-[11px] text-neutral-600 dark:text-neutral-400">
                         <span>{label}</span>
                         <span
                           className="h-3.5 w-3.5 rounded-full border border-neutral-300 dark:border-neutral-700"
-                          style={{ backgroundColor: `oklch(${draftProfile[lightnessKey]}% ${hueDisabled ? 0 : ".18"} ${draftProfile[hueKey]})` }}
+                          style={{ backgroundColor: `oklch(${lightness}% ${hueDisabled ? 0 : ".18"} ${hue})` }}
                           aria-hidden="true"
                         />
                       </div>
+                      {/* Retour utilisateur : "fait en sorte que les curseurs prennent la couleur
+                          sur laquelle ils sont" — voir ThemeSettings.tsx côté desktop pour le même
+                          raisonnement (teinte : couleur vive à la teinte pointée ; luminosité : la
+                          vraie couleur actuelle, donc noir/blanc à ses extrémités, voulu). */}
                       <input
                         type="range"
                         min={0}
                         max={359}
-                        value={draftProfile[hueKey]}
+                        value={hue}
                         disabled={hueDisabled}
                         onChange={(e) => updateDraftProfile({ [hueKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
-                        className="w-full accent-indigo-600 disabled:opacity-40"
+                        className="w-full disabled:opacity-40"
+                        style={hueDisabled ? undefined : { accentColor: `oklch(65% .2 ${hue})` }}
                         aria-label={`${label} — teinte`}
                       />
                       <input
                         type="range"
                         min={0}
                         max={100}
-                        value={draftProfile[lightnessKey]}
+                        value={lightness}
                         onChange={(e) => updateDraftProfile({ [lightnessKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
-                        className="w-full accent-indigo-600"
+                        className="w-full"
+                        style={{ accentColor: `oklch(${lightness}% ${hueDisabled ? 0 : ".15"} ${hue})` }}
                         aria-label={`${label} — luminosité`}
                       />
                       {hueKey === "backgroundHue" && (
-                        <label className="mt-0.5 flex items-center gap-1.5 text-[11px] text-neutral-700 dark:text-neutral-300">
-                          <input
-                            type="checkbox"
-                            checked={draftProfile.backgroundNeutral}
-                            onChange={(e) => updateDraftProfile({ backgroundNeutral: e.target.checked })}
-                            className="h-3 w-3 rounded border-neutral-300 text-indigo-600 dark:border-neutral-700"
-                          />
-                          Fond neutre (sans teinte)
-                        </label>
+                        <div className="mt-1 flex gap-1">
+                          {(
+                            [
+                              ["neutral", "Neutre"],
+                              ["subtle", "Fondu"],
+                              ["vivid", "Couleur"],
+                            ] as [BackgroundStyle, string][]
+                          ).map(([value, optLabel]) => (
+                            <button
+                              key={value}
+                              type="button"
+                              onClick={() => updateDraftProfile({ backgroundStyle: value })}
+                              className={`flex-1 rounded-lg border px-1.5 py-0.5 text-[10px] ${
+                                draftProfile.backgroundStyle === value
+                                  ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
+                                  : "border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+                              }`}
+                            >
+                              {optLabel}
+                            </button>
+                          ))}
+                        </div>
                       )}
                     </div>
                   );

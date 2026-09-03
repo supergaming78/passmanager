@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
-import { DEFAULT_CUSTOM_THEME } from "../lib/customTheme";
+import { DEFAULT_CUSTOM_THEME, type BackgroundStyle } from "../lib/customTheme";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import type { ThemeProfileView } from "../api/types";
@@ -23,12 +23,25 @@ const THEME_OPTIONS: { value: Theme; label: string }[] = [
 
 const MAX_PROFILES = 3;
 
+const BACKGROUND_STYLE_OPTIONS: { value: BackgroundStyle; label: string }[] = [
+  { value: "neutral", label: "Neutre" },
+  { value: "subtle", label: "Fondu" },
+  { value: "vivid", label: "Couleur" },
+];
+
 /** Aperçu teinte+luminosité — chroma fixe assez saturée pour bien distinguer les réglages
- * (`neutral` : aperçu gris pur, chroma 0, pour le fond quand "Fond neutre" est coché). */
+ * (`neutral` : aperçu gris pur, chroma 0, pour le fond en style "Neutre"). Chroma volontairement
+ * FIXE ici (indépendante de "neutral"/"subtle"/"vivid" du fond réellement appliqué) : ce n'est
+ * qu'un aperçu de la teinte/luminosité choisie, pas la couleur exacte qui sera rendue. */
 function swatchStyle(hue: number, lightness: number, neutral?: boolean): React.CSSProperties {
   return { backgroundColor: `oklch(${lightness}% ${neutral ? 0 : ".18"} ${hue})` };
 }
 
+/** Retour utilisateur : "fait en sorte que les curseurs prennent la couleur sur laquelle ils
+ * sont" — le curseur de teinte prend une couleur vive à la teinte pointée (peu importe la
+ * luminosité, pour rester lisible quel que soit le point sur le dégradé) ; le curseur de
+ * luminosité prend la VRAIE couleur actuelle (teinte + luminosité), donc devient visuellement
+ * noir/blanc à ses extrémités — c'est voulu, c'est littéralement "la couleur sur laquelle il est". */
 function ColorRow({
   label,
   hue,
@@ -40,9 +53,9 @@ function ColorRow({
   hue: number;
   lightness: number;
   onChange: (patch: { hue?: number; lightness?: number }) => void;
-  /** Fond "neutre" (voir la case à cocher juste en dessous) : la teinte n'a alors aucun effet
+  /** Fond en style "Neutre" (voir le sélecteur juste en dessous) : la teinte n'a alors aucun effet
    * visuel (chroma forcée à 0, voir lib/customTheme.ts) — le curseur reste visible mais grisé
-   * plutôt que caché, pour ne pas perdre la valeur choisie si l'utilisateur redécoche ensuite. */
+   * plutôt que caché, pour ne pas perdre la valeur choisie si l'utilisateur change de style ensuite. */
   hueDisabled?: boolean;
 }) {
   return (
@@ -60,7 +73,8 @@ function ColorRow({
           value={hue}
           disabled={hueDisabled}
           onChange={(e) => onChange({ hue: Number(e.target.value) })}
-          className="w-full accent-indigo-600 disabled:opacity-40"
+          className="w-full disabled:opacity-40"
+          style={hueDisabled ? undefined : { accentColor: `oklch(65% .2 ${hue})` }}
           aria-label={`${label} — teinte`}
         />
       </div>
@@ -72,7 +86,8 @@ function ColorRow({
           max={100}
           value={lightness}
           onChange={(e) => onChange({ lightness: Number(e.target.value) })}
-          className="w-full accent-indigo-600"
+          className="w-full"
+          style={{ accentColor: `oklch(${lightness}% ${hueDisabled ? 0 : ".15"} ${hue})` }}
           aria-label={`${label} — luminosité (plus sombre/plus clair)`}
         />
       </div>
@@ -84,7 +99,7 @@ function profileToConfig(p: ThemeProfileView): CustomThemeConfig {
   return {
     backgroundHue: p.background_hue,
     backgroundLightness: p.background_lightness,
-    backgroundNeutral: p.background_neutral,
+    backgroundStyle: p.background_style,
     accentHue: p.accent_hue,
     accentLightness: p.accent_lightness,
     dangerHue: p.danger_hue,
@@ -106,7 +121,7 @@ function configToPayload(name: string, c: CustomThemeConfig) {
     name,
     background_hue: Math.round(c.backgroundHue),
     background_lightness: Math.round(c.backgroundLightness),
-    background_neutral: c.backgroundNeutral,
+    background_style: c.backgroundStyle,
     accent_hue: Math.round(c.accentHue),
     accent_lightness: Math.round(c.accentLightness),
     danger_hue: Math.round(c.dangerHue),
@@ -343,18 +358,28 @@ export default function ThemeSettings() {
                 label="Fond de l'app"
                 hue={draft.backgroundHue}
                 lightness={draft.backgroundLightness}
-                hueDisabled={draft.backgroundNeutral}
+                hueDisabled={draft.backgroundStyle === "neutral"}
                 onChange={(p) => updateDraft({ backgroundHue: p.hue ?? draft.backgroundHue, backgroundLightness: p.lightness ?? draft.backgroundLightness })}
               />
-              <label className="-mt-2 flex items-center gap-2 text-xs text-neutral-700 dark:text-neutral-300">
-                <input
-                  type="checkbox"
-                  checked={draft.backgroundNeutral}
-                  onChange={(e) => updateDraft({ backgroundNeutral: e.target.checked })}
-                  className="h-3.5 w-3.5 rounded border-neutral-300 text-indigo-600 dark:border-neutral-700"
-                />
-                Fond neutre (gris pur, sans aucune teinte)
-              </label>
+              <div className="-mt-2 flex gap-1.5">
+                {BACKGROUND_STYLE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => updateDraft({ backgroundStyle: opt.value })}
+                    className={`flex-1 rounded-lg border px-2 py-1 text-xs ${
+                      draft.backgroundStyle === opt.value
+                        ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
+                        : "border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              <p className="-mt-1.5 text-[11px] text-neutral-500">
+                Neutre : gris pur. Fondu : une légère touche de la teinte choisie. Couleur : la teinte pleinement visible.
+              </p>
 
               <ColorRow label="Accent (boutons, liens)" hue={draft.accentHue} lightness={draft.accentLightness} onChange={(p) => updateDraft({ accentHue: p.hue ?? draft.accentHue, accentLightness: p.lightness ?? draft.accentLightness })} />
               <ColorRow label="Danger (supprimer, erreurs)" hue={draft.dangerHue} lightness={draft.dangerLightness} onChange={(p) => updateDraft({ dangerHue: p.hue ?? draft.dangerHue, dangerLightness: p.lightness ?? draft.dangerLightness })} />

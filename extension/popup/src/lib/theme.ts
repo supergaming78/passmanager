@@ -94,6 +94,10 @@ export function setCachedCustomTheme(rawConfig: CustomThemeConfig): void {
  * basé sur la luminosité de fond choisie), pas décidé ici. */
 function applyTheme(theme: Theme): void {
   document.documentElement.classList.remove(...PALETTE_CLASSES);
+  // Voir le commentaire équivalent côté desktop (frontend(app)/src/lib/theme.ts) pour le
+  // raisonnement — App.css n'a rien à corriger avec pour la popup (voir theme-init.js), mais on
+  // pose quand même la classe pour cohérence/simplicité de duplication entre les deux fichiers.
+  document.documentElement.classList.toggle("theme-custom", theme === "custom");
   if (theme === "custom") {
     const isDark = applyCustomTheme(getCachedCustomTheme());
     document.documentElement.classList.toggle("dark", isDark);

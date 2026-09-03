@@ -127,6 +127,14 @@ export function setCachedCustomTheme(rawConfig: CustomThemeConfig): void {
  * luminosité de fond choisie), pas décidé ici. */
 function applyTheme(theme: Theme): void {
   document.documentElement.classList.remove(...PALETTE_CLASSES);
+  // CORRECTIF (retour utilisateur : "au milieu du curseur luminosité tout est déjà blanc, alors
+  // que ça doit arriver au bout") : de nombreux composants utilisent `bg-white` en dur pour leur
+  // fond en mode clair (pas `bg-neutral-50`) — sans dark: gardant .dark actif, ces éléments basculent
+  // vers ce blanc figé dès qu'on quitte le régime sombre du custom, quelle que soit la luminosité de
+  // fond réellement choisie. `.theme-custom` (voir App.css) donne une prise CSS pour faire suivre
+  // `bg-white` au fond personnalisé quand ce thème est en régime clair (`:not(.dark)`), sans toucher
+  // `text-white`/`border-white` (boutons), qui doivent rester du vrai blanc — voir App.css.
+  document.documentElement.classList.toggle("theme-custom", theme === "custom");
   if (theme === "custom") {
     const isDark = applyCustomTheme(getCachedCustomTheme());
     document.documentElement.classList.toggle("dark", isDark);

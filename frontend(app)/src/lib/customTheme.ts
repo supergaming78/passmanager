@@ -91,16 +91,18 @@ const GREEN_STEPS: Record<string, Step> = {
   "600": { l: 62.7, c: ".194" },
 };
 
+/** "neutral" (gris pur, `backgroundHue` ignoré) | "subtle" ("fondu", retour utilisateur : "par
+ * exemple lorsqu'on choisit noir, le fondu permettrait d'avoir un noir avec une légère autre
+ * couleur" — chroma faible et fixe, la recette de la toute première version de cette fonction-
+ * nalité) | "vivid" (couleur pleinement perceptible, chroma nettement plus élevée) — voir
+ * applyBackground() pour la chroma exacte associée à chacun. */
+export type BackgroundStyle = "neutral" | "subtle" | "vivid";
+
 export interface CustomThemeConfig {
-  backgroundHue: number; // 0-359 — IGNORÉ si backgroundNeutral est vrai (voir applyBackground).
+  backgroundHue: number; // 0-359 — IGNORÉ si backgroundStyle vaut "neutral" (voir applyBackground).
   backgroundLightness: number; // 0-100 — luminosité du fond PRINCIPAL (page) ; < 50 = régime
   // sombre (fond très luminosité basse, texte clair), >= 50 = régime clair — voir applyBackground.
-  /** Fond parfaitement gris (chroma nulle), retour utilisateur : "je ne veux pas que le fond soit
-   * soit clair soit sombre je veux aussi pouvoir choisir la couleur pour le fond" avait fait
-   * disparaître l'option d'un fond NEUTRE (sans aucune teinte) qui existait dans la toute première
-   * version de cette fonctionnalité (case "teinté ou pas") — restaurée ici comme un choix
-   * indépendant plutôt qu'une bascule liée au clair/sombre. */
-  backgroundNeutral: boolean;
+  backgroundStyle: BackgroundStyle;
   accentHue: number;
   accentLightness: number; // 0-100 — luminosité voulue pour le palier "500" de l'accent
   dangerHue: number;
@@ -124,7 +126,7 @@ export interface CustomThemeConfig {
 export const DEFAULT_CUSTOM_THEME: CustomThemeConfig = {
   backgroundHue: 0,
   backgroundLightness: 15,
-  backgroundNeutral: true,
+  backgroundStyle: "neutral",
   accentHue: 277, // teinte "native" de l'indigo Tailwind.
   accentLightness: Math.round(INDIGO_ANCHOR_L),
   dangerHue: 27,
@@ -166,7 +168,7 @@ export function sanitizeCustomThemeConfig(config: Partial<CustomThemeConfig> | n
   return {
     backgroundHue: hue(c.backgroundHue, DEFAULT_CUSTOM_THEME.backgroundHue),
     backgroundLightness: lightness(c.backgroundLightness, DEFAULT_CUSTOM_THEME.backgroundLightness),
-    backgroundNeutral: typeof c.backgroundNeutral === "boolean" ? c.backgroundNeutral : DEFAULT_CUSTOM_THEME.backgroundNeutral,
+    backgroundStyle: c.backgroundStyle === "neutral" || c.backgroundStyle === "subtle" || c.backgroundStyle === "vivid" ? c.backgroundStyle : DEFAULT_CUSTOM_THEME.backgroundStyle,
     accentHue: hue(c.accentHue, DEFAULT_CUSTOM_THEME.accentHue),
     accentLightness: lightness(c.accentLightness, DEFAULT_CUSTOM_THEME.accentLightness),
     dangerHue: hue(c.dangerHue, DEFAULT_CUSTOM_THEME.dangerHue),
@@ -192,22 +194,32 @@ function applyFamily(el: HTMLElement, family: string, steps: Record<string, Step
  * "secondaires" (cartes/bordures) sont dérivés avec les MÊMES écarts que la palette Tailwind native
  * neutral-950/900/800 ; >= 50% = plutôt clair, dérivés comme neutral-50/100/200).
  *
- * `neutral` (retour utilisateur, 2026-09-03 : "tu as enlevé une fonctionnalité, le fondu" — un fond
- * parfaitement gris, sans AUCUNE teinte, existait dans la toute première version de cette
- * fonctionnalité et avait disparu) : force la chroma à 0 (donc `hue` sans aucun effet visuel).
- *
- * CHROMA (retour utilisateur, 2026-09-03, encore le même jour : "j'ai le choix entre noir et blanc
- * [...] mais je veux pas ce choix entre blanc et noir, [je veux choisir] entre toutes les couleurs
- * [teinte + plus foncé ou plus clair]") : la première version gardait une chroma minuscule
- * (.006-.015, la même recette discrète que les thèmes preset "tintés") — trop faible pour qu'une
- * teinte se voie vraiment, le fond restait perçu comme un simple dégradé gris quelle que soit la
- * teinte choisie. Chroma nettement relevée ici pour que le fond soit une VRAIE couleur (comme
- * l'accent/danger/succès/favoris), tout en restant en-dessous de leur chroma (~.18-.26) — un fond
- * de page ne doit pas être aussi saturé qu'un bouton, juste clairement teinté. */
-function applyBackground(el: HTMLElement, hue: number, lightness: number, neutral: boolean): boolean {
+ * TROIS intensités de chroma (retour utilisateur, 2026-09-03, plusieurs allers-retours le même
+ * jour) :
+ * - "neutral" : chroma nulle, `hue` sans aucun effet visuel — un fond parfaitement gris, restauré
+ *   après avoir disparu dans une version intermédiaire ("tu as enlevé une fonctionnalité").
+ * - "subtle" ("fondu") : "par exemple lorsqu'on choisit noir, le fondu permettrait d'avoir un noir
+ *   avec une légère autre couleur" — chroma faible et fixe (.006-.015), la recette de la toute
+ *   première version de cette fonctionnalité (déjà utilisée par les thèmes preset "tintés").
+ * - "vivid" : "j'ai le choix entre noir et blanc [...] mais je veux [choisir] entre toutes les
+ *   couleurs" — la chroma "subtle" ne se voyait quasiment pas, le fond restait perçu comme un
+ *   simple dégradé gris ; chroma nettement plus élevée (.05-.07) pour une VRAIE couleur, comme
+ *   l'accent/danger/succès/favoris, tout en restant en-dessous de leur chroma (~.18-.26) — un fond
+ *   de page ne doit pas être aussi saturé qu'un bouton, juste clairement teinté. */
+function applyBackground(el: HTMLElement, hue: number, lightness: number, style: BackgroundStyle): boolean {
   const isDark = lightness < 50;
-  const [c1, c2, c3] = neutral ? ["0", "0", "0"] : [".05", ".06", ".07"];
-  const [lc1, lc2, lc3] = neutral ? ["0", "0", "0"] : [".02", ".025", ".03"];
+  const CHROMA_DARK: Record<BackgroundStyle, [string, string, string]> = {
+    neutral: ["0", "0", "0"],
+    subtle: [".006", ".008", ".01"],
+    vivid: [".05", ".06", ".07"],
+  };
+  const CHROMA_LIGHT: Record<BackgroundStyle, [string, string, string]> = {
+    neutral: ["0", "0", "0"],
+    subtle: [".008", ".01", ".015"],
+    vivid: [".02", ".025", ".03"],
+  };
+  const [c1, c2, c3] = CHROMA_DARK[style];
+  const [lc1, lc2, lc3] = CHROMA_LIGHT[style];
   if (isDark) {
     // Écarts natifs Tailwind neutral 950->900->800 : 14.5 -> 20.5 (+6) -> 26.9 (+12.4).
     el.style.setProperty("--color-neutral-950", `oklch(${clampL(lightness).toFixed(1)}% ${c1} ${hue})`);
@@ -251,7 +263,7 @@ export function applyCustomTheme(rawConfig: CustomThemeConfig): boolean {
   // Retire l'éventuel jeu de propriétés de fond de l'AUTRE régime (ex: on vient de passer d'un
   // fond sombre à un fond clair) avant d'appliquer celui du régime courant.
   for (const prop of [...TINT_PROPERTIES_DARK, ...TINT_PROPERTIES_LIGHT]) el.style.removeProperty(prop);
-  return applyBackground(el, config.backgroundHue, config.backgroundLightness, config.backgroundNeutral);
+  return applyBackground(el, config.backgroundHue, config.backgroundLightness, config.backgroundStyle);
 }
 
 /** Retire toute personnalisation inline posée par applyCustomTheme() — appelée en quittant

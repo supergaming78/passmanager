@@ -1793,7 +1793,7 @@ impl ThemeProfileRepository {
     /// (scopé par user_email, comme partout ailleurs dans ce fichier).
     pub async fn list(db: &SqlitePool, email: &str) -> Result<Vec<ThemeProfileView>, AppError> {
         sqlx::query_as::<_, ThemeProfileView>(
-            "SELECT id, name, background_hue, background_lightness, background_neutral, accent_hue, accent_lightness,
+            "SELECT id, name, background_hue, background_lightness, background_style, accent_hue, accent_lightness,
                     danger_hue, danger_lightness, success_hue, success_lightness, favorite_hue, favorite_lightness, is_active
              FROM theme_customization_profiles WHERE user_email = ? ORDER BY created_at ASC",
         )
@@ -1827,7 +1827,7 @@ impl ThemeProfileRepository {
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO theme_customization_profiles
-                (id, user_email, name, background_hue, background_lightness, background_neutral, accent_hue, accent_lightness,
+                (id, user_email, name, background_hue, background_lightness, background_style, accent_hue, accent_lightness,
                  danger_hue, danger_lightness, success_hue, success_lightness, favorite_hue, favorite_lightness, is_active)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
         )
@@ -1836,7 +1836,7 @@ impl ThemeProfileRepository {
         .bind(&payload.name)
         .bind(payload.background_hue)
         .bind(payload.background_lightness)
-        .bind(payload.background_neutral)
+        .bind(&payload.background_style)
         .bind(payload.accent_hue)
         .bind(payload.accent_lightness)
         .bind(payload.danger_hue)
@@ -1853,7 +1853,7 @@ impl ThemeProfileRepository {
             name: payload.name.clone(),
             background_hue: payload.background_hue,
             background_lightness: payload.background_lightness,
-            background_neutral: payload.background_neutral,
+            background_style: payload.background_style.clone(),
             accent_hue: payload.accent_hue,
             accent_lightness: payload.accent_lightness,
             danger_hue: payload.danger_hue,
@@ -1872,14 +1872,14 @@ impl ThemeProfileRepository {
     pub async fn update(db: &SqlitePool, email: &str, id: &str, payload: &ThemeProfilePayload) -> Result<bool, AppError> {
         let result = sqlx::query(
             "UPDATE theme_customization_profiles SET
-                name = ?, background_hue = ?, background_lightness = ?, background_neutral = ?, accent_hue = ?, accent_lightness = ?,
+                name = ?, background_hue = ?, background_lightness = ?, background_style = ?, accent_hue = ?, accent_lightness = ?,
                 danger_hue = ?, danger_lightness = ?, success_hue = ?, success_lightness = ?, favorite_hue = ?, favorite_lightness = ?
              WHERE id = ? AND user_email = ?",
         )
         .bind(&payload.name)
         .bind(payload.background_hue)
         .bind(payload.background_lightness)
-        .bind(payload.background_neutral)
+        .bind(&payload.background_style)
         .bind(payload.accent_hue)
         .bind(payload.accent_lightness)
         .bind(payload.danger_hue)

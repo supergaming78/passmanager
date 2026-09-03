@@ -16,6 +16,25 @@
   color-scheme: light dark;
 }
 
+/* CORRECTIF (retour utilisateur, 2026-09-03 : "au milieu du curseur luminosité tout est déjà
+ * blanc, alors que ça doit arriver au bout") — beaucoup de composants utilisent `bg-white` EN DUR
+ * pour leur fond en mode clair (pas `bg-neutral-50`, qui LUI suit déjà correctement le fond
+ * personnalisé — voir lib/customTheme.ts::applyBackground). Résultat : dès que le thème "custom"
+ * passe en régime clair (`.dark` retiré, background_lightness >= 50), ces éléments retombent sur
+ * un blanc figé, quelle que soit la luminosité/teinte réellement choisie — la transition en milieu
+ * de curseur semblait "sauter" directement au blanc plutôt que de suivre progressivement.
+ *
+ * `.theme-custom` (posée par lib/theme.ts::applyTheme à chaque fois que ce thème est actif, dans
+ * les DEUX régimes — voir son commentaire) donne une prise CSS pour faire suivre SPÉCIFIQUEMENT
+ * `bg-white` (le fond) au fond personnalisé, `:not(.dark)` limitant l'effet au régime clair
+ * (en régime sombre, `bg-white` n'est de toute façon jamais utilisé, systématiquement accompagné
+ * d'un `dark:bg-neutral-9xx` qui prend le dessus). Volontairement scopé à la seule classe `.bg-
+ * white` — PAS à `--color-white` globalement, qui casserait `text-white` (labels de boutons
+ * colorés comme `bg-indigo-600 text-white`, censés rester du vrai blanc dans TOUS les régimes). */
+:root.theme-custom:not(.dark) .bg-white {
+  background-color: var(--color-neutral-50);
+}
+
 /* THÈMES SUPPLÉMENTAIRES (retour utilisateur, 2026-09-02) — voir lib/theme.ts pour le
  * raisonnement complet : Tailwind v4 génère ses utilitaires en lisant ces variables au lieu de
  * valeurs codées en dur (`bg-neutral-950` → `background-color: var(--color-neutral-950)`), donc
