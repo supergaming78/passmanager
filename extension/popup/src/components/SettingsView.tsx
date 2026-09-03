@@ -20,7 +20,16 @@ import {
   type WindowMode,
 } from "../lib/settings";
 import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
-import { DEFAULT_CUSTOM_THEME, type BackgroundStyle } from "../lib/customTheme";
+import {
+  DEFAULT_CUSTOM_THEME,
+  HUE_PRESETS,
+  previewAccentColor,
+  previewDangerColor,
+  previewSuccessColor,
+  previewFavoriteColor,
+  previewBackgroundColors,
+  type BackgroundStyle,
+} from "../lib/customTheme";
 import type { TrustedDevice, ThemeProfileView } from "../api/types";
 import { getErrorMessage } from "../lib/errors";
 
@@ -36,6 +45,43 @@ function Section({ title, children }: { title: string; children: React.ReactNode
     <div className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
       <h2 className="mb-2 text-sm font-medium text-neutral-900 dark:text-neutral-100">{title}</h2>
       {children}
+    </div>
+  );
+}
+
+/** Voir ThemeSettings.tsx côté desktop pour le raisonnement complet (retour utilisateur : "aperçu
+ * visuel dans l'éditeur") — version compacte pour la popup (380×580px). */
+function ThemePreviewMockup({ draft }: { draft: CustomThemeConfig }) {
+  const bg = previewBackgroundColors(draft.backgroundHue, draft.backgroundLightness, draft.backgroundStyle);
+  const accent = previewAccentColor(draft.accentHue, draft.accentLightness);
+  const danger = previewDangerColor(draft.dangerHue, draft.dangerLightness);
+  const success = previewSuccessColor(draft.successHue, draft.successLightness);
+  const favorite = previewFavoriteColor(draft.favoriteHue, draft.favoriteLightness);
+  const textColor = bg.isDark ? "oklch(92% 0 0)" : "oklch(20% 0 0)";
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800" style={{ backgroundColor: bg.page }}>
+      <div className="m-2 rounded-lg p-2" style={{ backgroundColor: bg.card, border: `1px solid ${bg.border}` }}>
+        <div className="mb-1.5 flex items-center justify-between">
+          <p className="text-xs font-medium" style={{ color: textColor }}>
+            Aperçu
+          </p>
+          <span style={{ color: favorite }} aria-hidden="true">
+            ★
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="rounded-lg px-2 py-0.5 text-[10px] font-medium text-white" style={{ backgroundColor: accent }}>
+            Copier
+          </span>
+          <span className="rounded-lg px-2 py-0.5 text-[10px] font-medium text-white" style={{ backgroundColor: danger }}>
+            Supprimer
+          </span>
+          <span className="rounded-lg px-2 py-0.5 text-[10px] font-medium text-white" style={{ backgroundColor: success }}>
+            Enregistré ✓
+          </span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -200,6 +246,18 @@ export default function SettingsView({
   function startEditThemeProfile(p: ThemeProfileView) {
     setEditingProfileId(p.id);
     setDraftProfileName(p.name);
+    const config = profileToConfig(p);
+    setDraftProfile(config);
+    setCachedCustomTheme(config);
+    setProfileActionError(null);
+    setProfileSaveState("idle");
+  }
+
+  /** Voir ThemeSettings.tsx côté desktop pour le raisonnement (retour utilisateur : "améliore [...]
+   * la personnalisation") — `editingProfileId = "new"` : "Créer" enregistrera un NOUVEAU profil. */
+  function duplicateThemeProfile(p: ThemeProfileView) {
+    setEditingProfileId("new");
+    setDraftProfileName(`${p.name} (copie)`);
     const config = profileToConfig(p);
     setDraftProfile(config);
     setCachedCustomTheme(config);
@@ -389,6 +447,15 @@ export default function SettingsView({
                         Activer
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => duplicateThemeProfile(p)}
+                      disabled={!isAdmin && (profiles?.length ?? 0) >= MAX_PROFILES}
+                      className="text-neutral-500 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:text-indigo-400"
+                      title="Dupliquer"
+                    >
+                      ⧉
+                    </button>
                     <button type="button" onClick={() => void handleDeleteThemeProfile(p)} className="text-neutral-500 hover:text-red-600 dark:hover:text-red-400">
                       ✕
                     </button>
@@ -416,6 +483,8 @@ export default function SettingsView({
                   maxLength={60}
                   className={inputClass()}
                 />
+
+                <ThemePreviewMockup draft={draftProfile} />
 
                 {(
                   [
@@ -454,6 +523,24 @@ export default function SettingsView({
                         style={hueDisabled ? undefined : { accentColor: `oklch(65% .2 ${hue})` }}
                         aria-label={`${label} — teinte`}
                       />
+                      {/* Retour utilisateur : "améliore la sélection de couleur" — voir
+                          ThemeSettings.tsx côté desktop pour le même raisonnement. */}
+                      <div className="mt-0.5 flex flex-wrap gap-1">
+                        {HUE_PRESETS.map((preset) => (
+                          <button
+                            key={preset.hue}
+                            type="button"
+                            disabled={hueDisabled}
+                            onClick={() => updateDraftProfile({ [hueKey]: preset.hue } as Partial<CustomThemeConfig>)}
+                            title={preset.label}
+                            aria-label={`${label} — ${preset.label}`}
+                            className={`h-3 w-3 rounded-full border disabled:cursor-not-allowed disabled:opacity-30 ${
+                              !hueDisabled && hue === preset.hue ? "border-neutral-900 dark:border-white" : "border-neutral-300 dark:border-neutral-700"
+                            }`}
+                            style={{ backgroundColor: `oklch(65% .2 ${preset.hue})` }}
+                          />
+                        ))}
+                      </div>
                       <input
                         type="range"
                         min={0}

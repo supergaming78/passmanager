@@ -180,11 +180,54 @@ export function sanitizeCustomThemeConfig(config: Partial<CustomThemeConfig> | n
   };
 }
 
-function applyFamily(el: HTMLElement, family: string, steps: Record<string, Step>, hue: number, lightness: number, anchorNativeL: number): void {
+/** Couleur d'UN palier d'une famille, à la teinte/luminosité choisies — même calcul (décalage
+ * depuis le palier "500" natif) que applyFamily() ci-dessous, extrait en fonction pure pour être
+ * réutilisable par l'aperçu visuel de l'éditeur (voir les fonctions preview*Color plus bas), sans
+ * dupliquer la formule. */
+function stepColor(steps: Record<string, Step>, anchorNativeL: number, step: string, hue: number, lightness: number): string {
+  const { l, c } = steps[step];
   const offset = lightness - anchorNativeL;
-  for (const [step, { l, c }] of Object.entries(steps)) {
-    el.style.setProperty(`--color-${family}-${step}`, `oklch(${clampL(l + offset).toFixed(1)}% ${c} ${hue})`);
+  return `oklch(${clampL(l + offset).toFixed(1)}% ${c} ${hue})`;
+}
+
+function applyFamily(el: HTMLElement, family: string, steps: Record<string, Step>, hue: number, lightness: number, anchorNativeL: number): void {
+  for (const step of Object.keys(steps)) {
+    el.style.setProperty(`--color-${family}-${step}`, stepColor(steps, anchorNativeL, step, hue, lightness));
   }
+}
+
+/** Teintes toutes prêtes proposées en plus des curseurs (retour utilisateur : "améliore la
+ * sélection de couleur") — un simple raccourci, pose `hue`, ne change jamais la luminosité déjà
+ * choisie. Réparties sur tout le cercle chromatique (~30-40° d'écart) plutôt qu'une sélection
+ * arbitraire, pour couvrir un large éventail de couleurs reconnaissables d'un coup d'œil. */
+export const HUE_PRESETS: { hue: number; label: string }[] = [
+  { hue: 0, label: "Rouge" },
+  { hue: 25, label: "Orange" },
+  { hue: 60, label: "Jaune" },
+  { hue: 140, label: "Vert" },
+  { hue: 180, label: "Turquoise" },
+  { hue: 220, label: "Bleu" },
+  { hue: 260, label: "Indigo" },
+  { hue: 290, label: "Violet" },
+  { hue: 330, label: "Rose" },
+];
+
+/** Couleurs pour l'aperçu visuel de l'éditeur (retour utilisateur : "aperçu visuel dans
+ * l'éditeur") — reprennent EXACTEMENT le calcul réellement appliqué (voir stepColor ci-dessus),
+ * au palier le plus représentatif de chaque usage (600 = couleur de bouton "plein", 500 = ★
+ * favoris). Fonctions PURES (aucun accès au DOM) — utilisables aussi bien côté aperçu que, plus
+ * tard, pour toute autre prévisualisation sans avoir à appliquer le thème pour de vrai. */
+export function previewAccentColor(hue: number, lightness: number): string {
+  return stepColor(INDIGO_STEPS, INDIGO_ANCHOR_L, "600", hue, lightness);
+}
+export function previewDangerColor(hue: number, lightness: number): string {
+  return stepColor(RED_STEPS, RED_ANCHOR_L, "600", hue, lightness);
+}
+export function previewSuccessColor(hue: number, lightness: number): string {
+  return stepColor(EMERALD_STEPS, EMERALD_ANCHOR_L, "600", hue, lightness);
+}
+export function previewFavoriteColor(hue: number, lightness: number): string {
+  return stepColor(AMBER_STEPS, AMBER_ANCHOR_L, "500", hue, lightness);
 }
 
 /** Fond ENTIÈREMENT personnalisé (teinte + luminosité, retour utilisateur : "je ne veux pas que le
@@ -206,30 +249,57 @@ function applyFamily(el: HTMLElement, family: string, steps: Record<string, Step
  *   simple dégradé gris ; chroma nettement plus élevée (.05-.07) pour une VRAIE couleur, comme
  *   l'accent/danger/succès/favoris, tout en restant en-dessous de leur chroma (~.18-.26) — un fond
  *   de page ne doit pas être aussi saturé qu'un bouton, juste clairement teinté. */
-function applyBackground(el: HTMLElement, hue: number, lightness: number, style: BackgroundStyle): boolean {
+const BACKGROUND_CHROMA_DARK: Record<BackgroundStyle, [string, string, string]> = {
+  neutral: ["0", "0", "0"],
+  subtle: [".006", ".008", ".01"],
+  vivid: [".05", ".06", ".07"],
+};
+const BACKGROUND_CHROMA_LIGHT: Record<BackgroundStyle, [string, string, string]> = {
+  neutral: ["0", "0", "0"],
+  subtle: [".008", ".01", ".015"],
+  vivid: [".02", ".025", ".03"],
+};
+
+/** Les 3 couleurs de fond (page/carte/bordure) pour la teinte/luminosité/style choisis — fonction
+ * PURE partagée par applyBackground() (application réelle) et l'aperçu visuel de l'éditeur (voir
+ * previewBackgroundColors ci-dessous), même raison que stepColor() plus haut. */
+function backgroundColors(hue: number, lightness: number, style: BackgroundStyle): { page: string; card: string; border: string; isDark: boolean } {
   const isDark = lightness < 50;
-  const CHROMA_DARK: Record<BackgroundStyle, [string, string, string]> = {
-    neutral: ["0", "0", "0"],
-    subtle: [".006", ".008", ".01"],
-    vivid: [".05", ".06", ".07"],
-  };
-  const CHROMA_LIGHT: Record<BackgroundStyle, [string, string, string]> = {
-    neutral: ["0", "0", "0"],
-    subtle: [".008", ".01", ".015"],
-    vivid: [".02", ".025", ".03"],
-  };
-  const [c1, c2, c3] = CHROMA_DARK[style];
-  const [lc1, lc2, lc3] = CHROMA_LIGHT[style];
+  const [c1, c2, c3] = isDark ? BACKGROUND_CHROMA_DARK[style] : BACKGROUND_CHROMA_LIGHT[style];
   if (isDark) {
     // Écarts natifs Tailwind neutral 950->900->800 : 14.5 -> 20.5 (+6) -> 26.9 (+12.4).
-    el.style.setProperty("--color-neutral-950", `oklch(${clampL(lightness).toFixed(1)}% ${c1} ${hue})`);
-    el.style.setProperty("--color-neutral-900", `oklch(${clampL(lightness + 6).toFixed(1)}% ${c2} ${hue})`);
-    el.style.setProperty("--color-neutral-800", `oklch(${clampL(lightness + 12.4).toFixed(1)}% ${c3} ${hue})`);
+    return {
+      page: `oklch(${clampL(lightness).toFixed(1)}% ${c1} ${hue})`,
+      card: `oklch(${clampL(lightness + 6).toFixed(1)}% ${c2} ${hue})`,
+      border: `oklch(${clampL(lightness + 12.4).toFixed(1)}% ${c3} ${hue})`,
+      isDark: true,
+    };
+  }
+  // Écarts natifs Tailwind neutral 50->100->200 : 98.5 -> 97 (-1.5) -> 92.2 (-6.3).
+  return {
+    page: `oklch(${clampL(lightness).toFixed(1)}% ${c1} ${hue})`,
+    card: `oklch(${clampL(lightness - 1.5).toFixed(1)}% ${c2} ${hue})`,
+    border: `oklch(${clampL(lightness - 6.3).toFixed(1)}% ${c3} ${hue})`,
+    isDark: false,
+  };
+}
+
+/** Voir backgroundColors() ci-dessus — exportée pour l'aperçu visuel de l'éditeur (retour
+ * utilisateur : "aperçu visuel dans l'éditeur"). */
+export function previewBackgroundColors(hue: number, lightness: number, style: BackgroundStyle): { page: string; card: string; border: string; isDark: boolean } {
+  return backgroundColors(hue, lightness, style);
+}
+
+function applyBackground(el: HTMLElement, hue: number, lightness: number, style: BackgroundStyle): boolean {
+  const { page, card, border, isDark } = backgroundColors(hue, lightness, style);
+  if (isDark) {
+    el.style.setProperty("--color-neutral-950", page);
+    el.style.setProperty("--color-neutral-900", card);
+    el.style.setProperty("--color-neutral-800", border);
   } else {
-    // Écarts natifs Tailwind neutral 50->100->200 : 98.5 -> 97 (-1.5) -> 92.2 (-6.3).
-    el.style.setProperty("--color-neutral-50", `oklch(${clampL(lightness).toFixed(1)}% ${lc1} ${hue})`);
-    el.style.setProperty("--color-neutral-100", `oklch(${clampL(lightness - 1.5).toFixed(1)}% ${lc2} ${hue})`);
-    el.style.setProperty("--color-neutral-200", `oklch(${clampL(lightness - 6.3).toFixed(1)}% ${lc3} ${hue})`);
+    el.style.setProperty("--color-neutral-50", page);
+    el.style.setProperty("--color-neutral-100", card);
+    el.style.setProperty("--color-neutral-200", border);
   }
   return isDark;
 }

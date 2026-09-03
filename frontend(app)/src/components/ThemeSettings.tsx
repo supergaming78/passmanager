@@ -1,6 +1,15 @@
 import { useEffect, useState } from "react";
 import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
-import { DEFAULT_CUSTOM_THEME, type BackgroundStyle } from "../lib/customTheme";
+import {
+  DEFAULT_CUSTOM_THEME,
+  HUE_PRESETS,
+  previewAccentColor,
+  previewDangerColor,
+  previewSuccessColor,
+  previewFavoriteColor,
+  previewBackgroundColors,
+  type BackgroundStyle,
+} from "../lib/customTheme";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import type { ThemeProfileView } from "../api/types";
@@ -78,6 +87,24 @@ function ColorRow({
           aria-label={`${label} — teinte`}
         />
       </div>
+      {/* Retour utilisateur : "améliore la sélection de couleur" — teintes toutes prêtes en plus
+          du curseur, un clic suffit (voir HUE_PRESETS dans lib/customTheme.ts). */}
+      <div className="ml-[4.5rem] mt-1 flex flex-wrap gap-1">
+        {HUE_PRESETS.map((preset) => (
+          <button
+            key={preset.hue}
+            type="button"
+            disabled={hueDisabled}
+            onClick={() => onChange({ hue: preset.hue })}
+            title={preset.label}
+            aria-label={`${label} — ${preset.label}`}
+            className={`h-4 w-4 rounded-full border disabled:cursor-not-allowed disabled:opacity-30 ${
+              !hueDisabled && hue === preset.hue ? "border-neutral-900 dark:border-white" : "border-neutral-300 dark:border-neutral-700"
+            }`}
+            style={{ backgroundColor: `oklch(65% .2 ${preset.hue})` }}
+          />
+        ))}
+      </div>
       <div className="mt-0.5 flex items-center gap-2">
         <span className="w-16 shrink-0 text-[11px] text-neutral-500">Luminosité</span>
         <input
@@ -90,6 +117,50 @@ function ColorRow({
           style={{ accentColor: `oklch(${lightness}% ${hueDisabled ? 0 : ".15"} ${hue})` }}
           aria-label={`${label} — luminosité (plus sombre/plus clair)`}
         />
+      </div>
+    </div>
+  );
+}
+
+/** Retour utilisateur : "aperçu visuel dans l'éditeur" — une mini-maquette (carte + boutons)
+ * montrant les couleurs ensemble, sans avoir à regarder le reste de l'app pendant qu'on règle les
+ * curseurs. Utilise les MÊMES fonctions de calcul que l'application réelle (voir
+ * lib/customTheme.ts::preview*) — ce qui est montré ici correspond exactement à ce qui sera
+ * effectivement rendu, pas une approximation séparée. */
+function ThemePreviewMockup({ draft }: { draft: CustomThemeConfig }) {
+  const bg = previewBackgroundColors(draft.backgroundHue, draft.backgroundLightness, draft.backgroundStyle);
+  const accent = previewAccentColor(draft.accentHue, draft.accentLightness);
+  const danger = previewDangerColor(draft.dangerHue, draft.dangerLightness);
+  const success = previewSuccessColor(draft.successHue, draft.successLightness);
+  const favorite = previewFavoriteColor(draft.favoriteHue, draft.favoriteLightness);
+  const textColor = bg.isDark ? "oklch(92% 0 0)" : "oklch(20% 0 0)";
+  const mutedTextColor = bg.isDark ? "oklch(70% 0 0)" : "oklch(45% 0 0)";
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800" style={{ backgroundColor: bg.page }}>
+      <div className="m-3 rounded-lg p-3" style={{ backgroundColor: bg.card, border: `1px solid ${bg.border}` }}>
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-sm font-medium" style={{ color: textColor }}>
+            Compte perso
+          </p>
+          <span style={{ color: favorite }} aria-hidden="true">
+            ★
+          </span>
+        </div>
+        <p className="mb-3 text-xs" style={{ color: mutedTextColor }}>
+          exemple@site.com
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-lg px-3 py-1 text-xs font-medium text-white" style={{ backgroundColor: accent }}>
+            Copier
+          </span>
+          <span className="rounded-lg px-3 py-1 text-xs font-medium text-white" style={{ backgroundColor: danger }}>
+            Supprimer
+          </span>
+          <span className="rounded-lg px-3 py-1 text-xs font-medium text-white" style={{ backgroundColor: success }}>
+            Enregistré ✓
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -197,6 +268,19 @@ export default function ThemeSettings() {
   function startEditProfile(p: ThemeProfileView) {
     setEditingId(p.id);
     setDraftName(p.name);
+    const config = profileToConfig(p);
+    setDraft(config);
+    setCachedCustomTheme(config);
+    setActionError(null);
+    setSaveState("idle");
+  }
+
+  /** Retour utilisateur : "améliore [...] la personnalisation" — pars d'un profil existant plutôt
+   * que de zéro. Comme startNewProfile() : `editingId = "new"`, donc "Créer le profil" enregistrera
+   * bien un NOUVEAU profil (jamais une modification du profil source) — soumis au même plafond. */
+  function duplicateProfile(p: ThemeProfileView) {
+    setEditingId("new");
+    setDraftName(`${p.name} (copie)`);
     const config = profileToConfig(p);
     setDraft(config);
     setCachedCustomTheme(config);
@@ -325,6 +409,15 @@ export default function ThemeSettings() {
                       Activer
                     </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => duplicateProfile(p)}
+                    disabled={atLimit}
+                    className="text-neutral-500 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:text-indigo-400"
+                    title={atLimit ? `Limite de ${MAX_PROFILES} profils atteinte` : "Dupliquer"}
+                  >
+                    ⧉
+                  </button>
                   <button type="button" onClick={() => void handleDelete(p)} className="text-neutral-500 hover:text-red-600 dark:hover:text-red-400" title="Supprimer">
                     ✕
                   </button>
@@ -353,6 +446,8 @@ export default function ThemeSettings() {
                 maxLength={60}
                 className="w-full rounded-lg border border-neutral-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
               />
+
+              <ThemePreviewMockup draft={draft} />
 
               <ColorRow
                 label="Fond de l'app"
