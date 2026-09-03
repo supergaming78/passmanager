@@ -11,6 +11,11 @@
           "version": "0.1.6",
           "update_link": "https://github.com/supergaming78/passmanager/releases/download/ext-v0.1.6/178929067fc54fec984d-0.1.6.xpi",
           "update_hash": "sha256:ff5297a134dc63e04c6989ff8964a21362afbcc9a8f522f95c0c0ccf2dd819d8"
+        },
+        {
+          "version": "0.2.0",
+          "update_link": "https://github.com/supergaming78/passmanager/releases/download/ext-v0.2.0/178929067fc54fec984d-0.2.0.xpi",
+          "update_hash": "sha256:1b07d6aeb5b2364efa033afe918b6aee17b6a6e3f9b06d17cbe745c8784b3bfb"
         }
       ]
     }
