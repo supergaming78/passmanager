@@ -9,7 +9,9 @@ import {
   previewSuccessColor,
   previewFavoriteColor,
   previewBackgroundColors,
-  type BackgroundStyle,
+  randomThemeConfig,
+  encodeThemeCode,
+  decodeThemeCode,
 } from "../lib/customTheme";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
@@ -33,46 +35,40 @@ const THEME_OPTIONS: { value: Theme; label: string }[] = [
 
 const MAX_PROFILES = 3;
 
-const BACKGROUND_STYLE_OPTIONS: { value: BackgroundStyle; label: string }[] = [
-  { value: "neutral", label: "Neutre" },
-  { value: "subtle", label: "Fondu" },
-  { value: "vivid", label: "Couleur" },
-];
-
-/** Aperçu teinte+luminosité — chroma fixe assez saturée pour bien distinguer les réglages
- * (`neutral` : aperçu gris pur, chroma 0, pour le fond en style "Neutre"). Chroma volontairement
- * FIXE ici (indépendante de "neutral"/"subtle"/"vivid" du fond réellement appliqué) : ce n'est
- * qu'un aperçu de la teinte/luminosité choisie, pas la couleur exacte qui sera rendue. */
-function swatchStyle(hue: number, lightness: number, neutral?: boolean): React.CSSProperties {
-  return { backgroundColor: `oklch(${lightness}% ${neutral ? 0 : ".18"} ${hue})` };
+/** Aperçu teinte+luminosité+saturation — chroma de base modérée (.18), MULTIPLIÉE par la
+ * saturation choisie (retour utilisateur : "contrôle de la saturation") : à 0%, un aperçu gris
+ * pur quelle que soit la teinte, exactement comme le rendu réel (voir lib/customTheme.ts). */
+function swatchStyle(hue: number, lightness: number, saturation: number): React.CSSProperties {
+  const chroma = (0.18 * saturation) / 100;
+  return { backgroundColor: `oklch(${lightness}% ${chroma} ${hue})` };
 }
 
 /** Retour utilisateur : "fait en sorte que les curseurs prennent la couleur sur laquelle ils
  * sont" — le curseur de teinte prend une couleur vive à la teinte pointée (peu importe la
- * luminosité, pour rester lisible quel que soit le point sur le dégradé) ; le curseur de
- * luminosité prend la VRAIE couleur actuelle (teinte + luminosité), donc devient visuellement
- * noir/blanc à ses extrémités — c'est voulu, c'est littéralement "la couleur sur laquelle il est". */
+ * luminosité, pour rester lisible quel que soit le point sur le dégradé) ; les curseurs de
+ * luminosité/saturation prennent la VRAIE couleur actuelle, donc deviennent visuellement noir/
+ * blanc ou gris à leurs extrémités — c'est voulu, c'est littéralement "la couleur sur laquelle il
+ * est". Utilisé pour les 5 couleurs, fond compris (retour utilisateur : "contrôle de la
+ * saturation" — plus de traitement spécial pour le fond, un curseur de saturation à 0 donne déjà
+ * un gris pur, comme les 4 autres couleurs). */
 function ColorRow({
   label,
   hue,
   lightness,
+  saturation,
   onChange,
-  hueDisabled,
 }: {
   label: string;
   hue: number;
   lightness: number;
-  onChange: (patch: { hue?: number; lightness?: number }) => void;
-  /** Fond en style "Neutre" (voir le sélecteur juste en dessous) : la teinte n'a alors aucun effet
-   * visuel (chroma forcée à 0, voir lib/customTheme.ts) — le curseur reste visible mais grisé
-   * plutôt que caché, pour ne pas perdre la valeur choisie si l'utilisateur change de style ensuite. */
-  hueDisabled?: boolean;
+  saturation: number;
+  onChange: (patch: { hue?: number; lightness?: number; saturation?: number }) => void;
 }) {
   return (
     <div>
       <div className="mb-1 flex items-center justify-between text-xs text-neutral-600 dark:text-neutral-400">
         <span>{label}</span>
-        <span className="h-4 w-4 rounded-full border border-neutral-300 dark:border-neutral-700" style={swatchStyle(hueDisabled ? 0 : hue, lightness, hueDisabled)} aria-hidden="true" />
+        <span className="h-4 w-4 rounded-full border border-neutral-300 dark:border-neutral-700" style={swatchStyle(hue, lightness, saturation)} aria-hidden="true" />
       </div>
       <div className="flex items-center gap-2">
         <span className="w-16 shrink-0 text-[11px] text-neutral-500">Teinte</span>
@@ -81,7 +77,6 @@ function ColorRow({
           min={0}
           max={359}
           value={hue}
-          disabled={hueDisabled}
           onChange={(e) => onChange({ hue: Number(e.target.value) })}
           className="hue-slider w-full"
           style={{ background: HUE_GRADIENT }}
@@ -98,13 +93,10 @@ function ColorRow({
           <button
             key={preset.hue}
             type="button"
-            disabled={hueDisabled}
             onClick={() => onChange({ hue: preset.hue })}
             title={preset.label}
             aria-label={`${label} — ${preset.label}`}
-            className={`h-4 w-4 rounded-full border disabled:cursor-not-allowed disabled:opacity-30 ${
-              !hueDisabled && hue === preset.hue ? "border-neutral-900 dark:border-white" : "border-neutral-300 dark:border-neutral-700"
-            }`}
+            className={`h-4 w-4 rounded-full border ${hue === preset.hue ? "border-neutral-900 dark:border-white" : "border-neutral-300 dark:border-neutral-700"}`}
             style={{ backgroundColor: `oklch(65% .2 ${preset.hue})` }}
           />
         ))}
@@ -118,10 +110,25 @@ function ColorRow({
           value={lightness}
           onChange={(e) => onChange({ lightness: Number(e.target.value) })}
           className="w-full"
-          style={{ accentColor: `oklch(${lightness}% ${hueDisabled ? 0 : ".15"} ${hue})` }}
+          style={{ accentColor: `oklch(${lightness}% ${(0.15 * saturation) / 100} ${hue})` }}
           aria-label={`${label} — luminosité (plus sombre/plus clair)`}
         />
         <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-neutral-500">{Math.round(lightness)}%</span>
+      </div>
+      {/* Retour utilisateur : "contrôle de la saturation (pas que teinte+luminosité)". */}
+      <div className="mt-0.5 flex items-center gap-2">
+        <span className="w-16 shrink-0 text-[11px] text-neutral-500">Saturation</span>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={saturation}
+          onChange={(e) => onChange({ saturation: Number(e.target.value) })}
+          className="w-full"
+          style={{ accentColor: `oklch(${lightness}% ${(0.18 * saturation) / 100} ${hue})` }}
+          aria-label={`${label} — saturation`}
+        />
+        <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-neutral-500">{Math.round(saturation)}%</span>
       </div>
     </div>
   );
@@ -133,11 +140,11 @@ function ColorRow({
  * lib/customTheme.ts::preview*) — ce qui est montré ici correspond exactement à ce qui sera
  * effectivement rendu, pas une approximation séparée. */
 function ThemePreviewMockup({ draft }: { draft: CustomThemeConfig }) {
-  const bg = previewBackgroundColors(draft.backgroundHue, draft.backgroundLightness, draft.backgroundStyle);
-  const accent = previewAccentColor(draft.accentHue, draft.accentLightness);
-  const danger = previewDangerColor(draft.dangerHue, draft.dangerLightness);
-  const success = previewSuccessColor(draft.successHue, draft.successLightness);
-  const favorite = previewFavoriteColor(draft.favoriteHue, draft.favoriteLightness);
+  const bg = previewBackgroundColors(draft.backgroundHue, draft.backgroundLightness, draft.backgroundSaturation);
+  const accent = previewAccentColor(draft.accentHue, draft.accentLightness, draft.accentSaturation);
+  const danger = previewDangerColor(draft.dangerHue, draft.dangerLightness, draft.dangerSaturation);
+  const success = previewSuccessColor(draft.successHue, draft.successLightness, draft.successSaturation);
+  const favorite = previewFavoriteColor(draft.favoriteHue, draft.favoriteLightness, draft.favoriteSaturation);
   const textColor = bg.isDark ? "oklch(92% 0 0)" : "oklch(20% 0 0)";
   const mutedTextColor = bg.isDark ? "oklch(70% 0 0)" : "oklch(45% 0 0)";
 
@@ -175,20 +182,24 @@ function profileToConfig(p: ThemeProfileView): CustomThemeConfig {
   return {
     backgroundHue: p.background_hue,
     backgroundLightness: p.background_lightness,
-    backgroundStyle: p.background_style,
+    backgroundSaturation: p.background_saturation,
     accentHue: p.accent_hue,
     accentLightness: p.accent_lightness,
+    accentSaturation: p.accent_saturation,
     dangerHue: p.danger_hue,
     dangerLightness: p.danger_lightness,
+    dangerSaturation: p.danger_saturation,
     successHue: p.success_hue,
     successLightness: p.success_lightness,
+    successSaturation: p.success_saturation,
     favoriteHue: p.favorite_hue,
     favoriteLightness: p.favorite_lightness,
+    favoriteSaturation: p.favorite_saturation,
   };
 }
 
 function configToPayload(name: string, c: CustomThemeConfig) {
-  // Math.round() défensif : le serveur stocke teintes/luminosités en entier (i64, voir
+  // Math.round() défensif : le serveur stocke teintes/luminosités/saturations en entier (i64, voir
   // models.rs::ThemeProfilePayload) — un flottant échoue la désérialisation JSON avec une 422 (voir
   // le CORRECTIF sur DEFAULT_CUSTOM_THEME.backgroundLightness, la cause déjà rencontrée une fois).
   // Les curseurs eux-mêmes ne peuvent produire que des entiers (step=1), donc en théorie inutile —
@@ -197,15 +208,19 @@ function configToPayload(name: string, c: CustomThemeConfig) {
     name,
     background_hue: Math.round(c.backgroundHue),
     background_lightness: Math.round(c.backgroundLightness),
-    background_style: c.backgroundStyle,
+    background_saturation: Math.round(c.backgroundSaturation),
     accent_hue: Math.round(c.accentHue),
     accent_lightness: Math.round(c.accentLightness),
+    accent_saturation: Math.round(c.accentSaturation),
     danger_hue: Math.round(c.dangerHue),
     danger_lightness: Math.round(c.dangerLightness),
+    danger_saturation: Math.round(c.dangerSaturation),
     success_hue: Math.round(c.successHue),
     success_lightness: Math.round(c.successLightness),
+    success_saturation: Math.round(c.successSaturation),
     favorite_hue: Math.round(c.favoriteHue),
     favorite_lightness: Math.round(c.favoriteLightness),
+    favorite_saturation: Math.round(c.favoriteSaturation),
   };
 }
 
@@ -215,10 +230,10 @@ function configToPayload(name: string, c: CustomThemeConfig) {
  * lib/theme.ts) — pas partagés entre appareils, comme les autres réglages de cette page
  * (AutoLockSettings...).
  *
- * "Personnalisé…" (retour utilisateur, 2026-09-03, affiné le même jour) fait EXCEPTION : PLUSIEURS
- * profils nommés, synchronisés par COMPTE (voir api/client.ts, state/AuthContext.tsx::
- * establishSession) — les créer/activer/modifier ici prend effet sur tous les appareils connectés
- * à ce compte. Plafonnés à 3 profils par compte, ILLIMITÉ pour l'Admin. */
+ * "Personnalisé…" (retour utilisateur, 2026-09-03, affiné plusieurs fois le même jour) fait
+ * EXCEPTION : PLUSIEURS profils nommés, synchronisés par COMPTE (voir api/client.ts,
+ * state/AuthContext.tsx::establishSession) — les créer/activer/modifier ici prend effet sur tous
+ * les appareils connectés à ce compte. Plafonnés à 3 profils par compte, ILLIMITÉ pour l'Admin. */
 export default function ThemeSettings() {
   const { authorizedRequest, isAdmin } = useAuth();
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
@@ -230,6 +245,8 @@ export default function ThemeSettings() {
   const [draft, setDraft] = useState<CustomThemeConfig>(() => getCachedCustomTheme());
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [codeInput, setCodeInput] = useState("");
+  const [codeMessage, setCodeMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     if (theme !== "custom" || profiles !== null) return;
@@ -267,6 +284,7 @@ export default function ThemeSettings() {
     setDraft(config);
     setCachedCustomTheme(config);
     setActionError(null);
+    setCodeMessage(null);
     setSaveState("idle");
   }
 
@@ -277,6 +295,7 @@ export default function ThemeSettings() {
     setDraft(config);
     setCachedCustomTheme(config);
     setActionError(null);
+    setCodeMessage(null);
     setSaveState("idle");
   }
 
@@ -290,6 +309,7 @@ export default function ThemeSettings() {
     setDraft(config);
     setCachedCustomTheme(config);
     setActionError(null);
+    setCodeMessage(null);
     setSaveState("idle");
   }
 
@@ -306,6 +326,32 @@ export default function ThemeSettings() {
    * touche pas au nom du profil. */
   function handleResetDraft() {
     updateDraft(DEFAULT_CUSTOM_THEME);
+  }
+
+  /** Retour utilisateur : "bouton aléatoire (couleurs surprise)". */
+  function handleRandomize() {
+    updateDraft(randomThemeConfig());
+  }
+
+  /** Retour utilisateur : "exporter/partager un profil avec un code". */
+  async function handleCopyCode() {
+    try {
+      await navigator.clipboard.writeText(encodeThemeCode(draft));
+      setCodeMessage({ ok: true, text: "Code copié — colle-le ailleurs (Importer) pour recréer ce profil." });
+    } catch {
+      setCodeMessage({ ok: false, text: "Impossible de copier — copie-le manuellement depuis le champ ci-dessous." });
+    }
+  }
+
+  function handleImportCode() {
+    const decoded = decodeThemeCode(codeInput);
+    if (!decoded) {
+      setCodeMessage({ ok: false, text: "Code invalide — vérifie qu'il a été copié en entier." });
+      return;
+    }
+    updateDraft(decoded);
+    setCodeInput("");
+    setCodeMessage({ ok: true, text: "Profil importé — pense à l'enregistrer pour le garder." });
   }
 
   async function handleSaveProfile() {
@@ -387,8 +433,8 @@ export default function ThemeSettings() {
         "Suivre l'appareil" utilise le thème clair/sombre configuré dans les réglages de ton
         système d'exploitation. Minuit, Ardoise, Océan, Forêt, Coucher de soleil, Rose, Violet et
         Ambre sont des versions sombres toutes prêtes. "Personnalisé…" te laisse enregistrer
-        jusqu'à {MAX_PROFILES} profils où chaque couleur (fond compris) a sa propre teinte et sa
-        propre luminosité — synchronisés sur tous tes appareils connectés à ce compte.
+        jusqu'à {MAX_PROFILES} profils où chaque couleur (fond compris) a sa propre teinte,
+        luminosité et saturation — synchronisés sur tous tes appareils connectés à ce compte.
       </p>
 
       {theme === "custom" && (
@@ -458,37 +504,43 @@ export default function ThemeSettings() {
                 label="Fond de l'app"
                 hue={draft.backgroundHue}
                 lightness={draft.backgroundLightness}
-                hueDisabled={draft.backgroundStyle === "neutral"}
-                onChange={(p) => updateDraft({ backgroundHue: p.hue ?? draft.backgroundHue, backgroundLightness: p.lightness ?? draft.backgroundLightness })}
+                saturation={draft.backgroundSaturation}
+                onChange={(p) =>
+                  updateDraft({ backgroundHue: p.hue ?? draft.backgroundHue, backgroundLightness: p.lightness ?? draft.backgroundLightness, backgroundSaturation: p.saturation ?? draft.backgroundSaturation })
+                }
               />
-              <div className="-mt-2 flex gap-1.5">
-                {BACKGROUND_STYLE_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => updateDraft({ backgroundStyle: opt.value })}
-                    className={`flex-1 rounded-lg border px-2 py-1 text-xs ${
-                      draft.backgroundStyle === opt.value
-                        ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
-                        : "border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-              <p className="-mt-1.5 text-[11px] text-neutral-500">
-                Neutre : gris pur. Fondu : une légère touche de la teinte choisie. Couleur : la teinte pleinement visible.
-              </p>
+              <p className="-mt-1.5 text-[11px] text-neutral-500">Une luminosité de fond inférieure à 50% donne une interface sombre, au-delà une interface claire.</p>
 
-              <ColorRow label="Accent (boutons, liens)" hue={draft.accentHue} lightness={draft.accentLightness} onChange={(p) => updateDraft({ accentHue: p.hue ?? draft.accentHue, accentLightness: p.lightness ?? draft.accentLightness })} />
-              <ColorRow label="Danger (supprimer, erreurs)" hue={draft.dangerHue} lightness={draft.dangerLightness} onChange={(p) => updateDraft({ dangerHue: p.hue ?? draft.dangerHue, dangerLightness: p.lightness ?? draft.dangerLightness })} />
-              <ColorRow label="Succès (confirmations)" hue={draft.successHue} lightness={draft.successLightness} onChange={(p) => updateDraft({ successHue: p.hue ?? draft.successHue, successLightness: p.lightness ?? draft.successLightness })} />
-              <ColorRow label="Favoris (★)" hue={draft.favoriteHue} lightness={draft.favoriteLightness} onChange={(p) => updateDraft({ favoriteHue: p.hue ?? draft.favoriteHue, favoriteLightness: p.lightness ?? draft.favoriteLightness })} />
+              <ColorRow
+                label="Accent (boutons, liens)"
+                hue={draft.accentHue}
+                lightness={draft.accentLightness}
+                saturation={draft.accentSaturation}
+                onChange={(p) => updateDraft({ accentHue: p.hue ?? draft.accentHue, accentLightness: p.lightness ?? draft.accentLightness, accentSaturation: p.saturation ?? draft.accentSaturation })}
+              />
+              <ColorRow
+                label="Danger (supprimer, erreurs)"
+                hue={draft.dangerHue}
+                lightness={draft.dangerLightness}
+                saturation={draft.dangerSaturation}
+                onChange={(p) => updateDraft({ dangerHue: p.hue ?? draft.dangerHue, dangerLightness: p.lightness ?? draft.dangerLightness, dangerSaturation: p.saturation ?? draft.dangerSaturation })}
+              />
+              <ColorRow
+                label="Succès (confirmations)"
+                hue={draft.successHue}
+                lightness={draft.successLightness}
+                saturation={draft.successSaturation}
+                onChange={(p) => updateDraft({ successHue: p.hue ?? draft.successHue, successLightness: p.lightness ?? draft.successLightness, successSaturation: p.saturation ?? draft.successSaturation })}
+              />
+              <ColorRow
+                label="Favoris (★)"
+                hue={draft.favoriteHue}
+                lightness={draft.favoriteLightness}
+                saturation={draft.favoriteSaturation}
+                onChange={(p) => updateDraft({ favoriteHue: p.hue ?? draft.favoriteHue, favoriteLightness: p.lightness ?? draft.favoriteLightness, favoriteSaturation: p.saturation ?? draft.favoriteSaturation })}
+              />
 
-              <p className="text-xs text-neutral-500">Une luminosité de fond inférieure à 50% donne une interface sombre, au-delà une interface claire.</p>
-
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
                   onClick={() => void handleSaveProfile()}
@@ -497,10 +549,40 @@ export default function ThemeSettings() {
                 >
                   {saveState === "saving" ? "Enregistrement…" : editingId === "new" ? "Créer le profil" : "Enregistrer"}
                 </button>
+                <button type="button" onClick={handleRandomize} className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-300">
+                  🎲 Aléatoire
+                </button>
                 <button type="button" onClick={handleResetDraft} className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-300">
                   Réinitialiser
                 </button>
                 {saveState === "saved" && <span className="text-xs text-emerald-600 dark:text-emerald-400">Enregistré — synchronisé sur tous tes appareils.</span>}
+              </div>
+
+              {/* Retour utilisateur : "exporter/partager un profil avec un code". */}
+              <div className="space-y-2 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => void handleCopyCode()} className="rounded-lg border border-neutral-300 px-3 py-1.5 text-xs text-neutral-700 hover:border-neutral-400 dark:border-neutral-700 dark:text-neutral-300">
+                    Copier le code de ce profil
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={codeInput}
+                    onChange={(e) => setCodeInput(e.target.value)}
+                    placeholder="Coller un code reçu…"
+                    className="w-full rounded-lg border border-neutral-300 px-3 py-1.5 text-xs outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleImportCode}
+                    disabled={!codeInput.trim()}
+                    className="shrink-0 rounded-lg border border-neutral-300 px-3 py-1.5 text-xs text-neutral-700 hover:border-neutral-400 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
+                  >
+                    Importer
+                  </button>
+                </div>
+                {codeMessage && <p className={`text-[11px] ${codeMessage.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>{codeMessage.text}</p>}
               </div>
             </div>
           )}

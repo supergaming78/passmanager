@@ -1793,8 +1793,9 @@ impl ThemeProfileRepository {
     /// (scopé par user_email, comme partout ailleurs dans ce fichier).
     pub async fn list(db: &SqlitePool, email: &str) -> Result<Vec<ThemeProfileView>, AppError> {
         sqlx::query_as::<_, ThemeProfileView>(
-            "SELECT id, name, background_hue, background_lightness, background_style, accent_hue, accent_lightness,
-                    danger_hue, danger_lightness, success_hue, success_lightness, favorite_hue, favorite_lightness, is_active
+            "SELECT id, name, background_hue, background_lightness, background_saturation, accent_hue, accent_lightness, accent_saturation,
+                    danger_hue, danger_lightness, danger_saturation, success_hue, success_lightness, success_saturation,
+                    favorite_hue, favorite_lightness, favorite_saturation, is_active
              FROM theme_customization_profiles WHERE user_email = ? ORDER BY created_at ASC",
         )
         .bind(email)
@@ -1827,24 +1828,29 @@ impl ThemeProfileRepository {
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO theme_customization_profiles
-                (id, user_email, name, background_hue, background_lightness, background_style, accent_hue, accent_lightness,
-                 danger_hue, danger_lightness, success_hue, success_lightness, favorite_hue, favorite_lightness, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                (id, user_email, name, background_hue, background_lightness, background_saturation,
+                 accent_hue, accent_lightness, accent_saturation, danger_hue, danger_lightness, danger_saturation,
+                 success_hue, success_lightness, success_saturation, favorite_hue, favorite_lightness, favorite_saturation, is_active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
         )
         .bind(&id)
         .bind(email)
         .bind(&payload.name)
         .bind(payload.background_hue)
         .bind(payload.background_lightness)
-        .bind(&payload.background_style)
+        .bind(payload.background_saturation)
         .bind(payload.accent_hue)
         .bind(payload.accent_lightness)
+        .bind(payload.accent_saturation)
         .bind(payload.danger_hue)
         .bind(payload.danger_lightness)
+        .bind(payload.danger_saturation)
         .bind(payload.success_hue)
         .bind(payload.success_lightness)
+        .bind(payload.success_saturation)
         .bind(payload.favorite_hue)
         .bind(payload.favorite_lightness)
+        .bind(payload.favorite_saturation)
         .execute(db)
         .await?;
 
@@ -1853,15 +1859,19 @@ impl ThemeProfileRepository {
             name: payload.name.clone(),
             background_hue: payload.background_hue,
             background_lightness: payload.background_lightness,
-            background_style: payload.background_style.clone(),
+            background_saturation: payload.background_saturation,
             accent_hue: payload.accent_hue,
             accent_lightness: payload.accent_lightness,
+            accent_saturation: payload.accent_saturation,
             danger_hue: payload.danger_hue,
             danger_lightness: payload.danger_lightness,
+            danger_saturation: payload.danger_saturation,
             success_hue: payload.success_hue,
             success_lightness: payload.success_lightness,
+            success_saturation: payload.success_saturation,
             favorite_hue: payload.favorite_hue,
             favorite_lightness: payload.favorite_lightness,
+            favorite_saturation: payload.favorite_saturation,
             is_active: false,
         })
     }
@@ -1872,22 +1882,29 @@ impl ThemeProfileRepository {
     pub async fn update(db: &SqlitePool, email: &str, id: &str, payload: &ThemeProfilePayload) -> Result<bool, AppError> {
         let result = sqlx::query(
             "UPDATE theme_customization_profiles SET
-                name = ?, background_hue = ?, background_lightness = ?, background_style = ?, accent_hue = ?, accent_lightness = ?,
-                danger_hue = ?, danger_lightness = ?, success_hue = ?, success_lightness = ?, favorite_hue = ?, favorite_lightness = ?
+                name = ?, background_hue = ?, background_lightness = ?, background_saturation = ?,
+                accent_hue = ?, accent_lightness = ?, accent_saturation = ?,
+                danger_hue = ?, danger_lightness = ?, danger_saturation = ?,
+                success_hue = ?, success_lightness = ?, success_saturation = ?,
+                favorite_hue = ?, favorite_lightness = ?, favorite_saturation = ?
              WHERE id = ? AND user_email = ?",
         )
         .bind(&payload.name)
         .bind(payload.background_hue)
         .bind(payload.background_lightness)
-        .bind(&payload.background_style)
+        .bind(payload.background_saturation)
         .bind(payload.accent_hue)
         .bind(payload.accent_lightness)
+        .bind(payload.accent_saturation)
         .bind(payload.danger_hue)
         .bind(payload.danger_lightness)
+        .bind(payload.danger_saturation)
         .bind(payload.success_hue)
         .bind(payload.success_lightness)
+        .bind(payload.success_saturation)
         .bind(payload.favorite_hue)
         .bind(payload.favorite_lightness)
+        .bind(payload.favorite_saturation)
         .bind(id)
         .bind(email)
         .execute(db)

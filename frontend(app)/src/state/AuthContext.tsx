@@ -243,16 +243,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // sur CET appareil reste inchangé dans ce cas, voir setTheme()/getTheme() dans lib/theme.ts.
           setCachedCustomTheme({
             backgroundHue: active.background_hue,
-            backgroundStyle: active.background_style,
             backgroundLightness: active.background_lightness,
+            backgroundSaturation: active.background_saturation,
             accentHue: active.accent_hue,
             accentLightness: active.accent_lightness,
+            accentSaturation: active.accent_saturation,
             dangerHue: active.danger_hue,
             dangerLightness: active.danger_lightness,
+            dangerSaturation: active.danger_saturation,
             successHue: active.success_hue,
             successLightness: active.success_lightness,
+            successSaturation: active.success_saturation,
             favoriteHue: active.favorite_hue,
             favoriteLightness: active.favorite_lightness,
+            favoriteSaturation: active.favorite_saturation,
           });
           setTheme("custom");
         }

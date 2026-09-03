@@ -1036,14 +1036,14 @@ pub struct FeatureSuggestionView {
 // MAX_PROFILES_PER_USER (voir repository.rs) pour tout compte SAUF l'Admin (AuthUser::is_admin,
 // voir handlers/theme_customization.rs), qui n'a aucune limite.
 //
-// Chaque couleur (fond/accent/danger/succès/favoris) est désormais teinte (0-359°) ET luminosité
-// (0-100%) INDÉPENDANTES — pas juste un mode clair/sombre global : "rendre une couleur plus sombre
-// ou plus claire" doit s'appliquer À CHAQUE couleur individuellement, fond compris (plus de bascule
-// binaire clair/sombre pour le fond : sa luminosité EST directement choisie, voir lib/customTheme.ts
-// côté client — le mode clair/sombre de l'interface se déduit simplement de si le fond choisi est
-// plutôt sombre ou plutôt clair). Le calcul de la palette complète (luminosité/chroma sûrs par
-// palier Tailwind, déjà éprouvés) reste entièrement CÔTÉ CLIENT, le serveur ne fait que
-// stocker/valider des entiers.
+// Chaque couleur (fond/accent/danger/succès/favoris) a TROIS réglages indépendants : teinte
+// (0-359°), luminosité (0-100%, "rendre une couleur plus sombre ou plus claire") ET saturation
+// (0-100%, retour utilisateur : "contrôle de la saturation" — multiplie la chroma native Tailwind
+// de chaque palier, voir lib/customTheme.ts::stepColor) — pas juste un mode clair/sombre global
+// pour le fond : sa luminosité EST directement choisie (le mode clair/sombre de l'interface se
+// déduit simplement de si le fond choisi est plutôt sombre ou plutôt clair). Le calcul de la
+// palette complète reste entièrement CÔTÉ CLIENT, le serveur ne fait que stocker/valider des
+// entiers.
 // =========================================================================
 
 #[derive(Deserialize, Validate)]
@@ -1054,29 +1054,39 @@ pub struct ThemeProfilePayload {
     pub background_hue: i64,
     #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
     pub background_lightness: i64,
-    /// "neutral" (gris pur, `background_hue` ignoré) | "subtle" ("fondu" — légère teinte, retour
-    /// utilisateur : "un noir avec une légère autre couleur") | "vivid" (couleur pleinement
-    /// perceptible) — validé À LA MAIN dans le handler (juste trois valeurs possibles, voir
-    /// handlers/theme_customization.rs), pas la peine d'un validateur `custom` pour ça. Voir
-    /// migration 20260903030000 et lib/customTheme.ts::applyBackground pour la chroma exacte
-    /// associée à chaque valeur.
-    pub background_style: String,
+    /// Retour utilisateur : "contrôle de la saturation (pas que teinte+luminosité)" — remplace
+    /// l'ancien `background_style` à 3 valeurs discrètes par un curseur continu, cohérent avec les
+    /// 4 autres couleurs ci-dessous (voir migration 20260903040000). 0 = gris pur (`background_hue`
+    /// ignoré), 100 = couleur la plus vive possible pour un fond (voir
+    /// lib/customTheme.ts::applyBackground pour la chroma exacte à chaque valeur).
+    #[validate(range(min = 0, max = 100, message = "La saturation doit être comprise entre 0 et 100"))]
+    pub background_saturation: i64,
     #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
     pub accent_hue: i64,
     #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
     pub accent_lightness: i64,
+    /// 0-100, multiplie la chroma native Tailwind de chaque palier (100 = chroma native, valeur
+    /// historique avant l'ajout de ce réglage — voir lib/customTheme.ts::stepColor).
+    #[validate(range(min = 0, max = 100, message = "La saturation doit être comprise entre 0 et 100"))]
+    pub accent_saturation: i64,
     #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
     pub danger_hue: i64,
     #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
     pub danger_lightness: i64,
+    #[validate(range(min = 0, max = 100, message = "La saturation doit être comprise entre 0 et 100"))]
+    pub danger_saturation: i64,
     #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
     pub success_hue: i64,
     #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
     pub success_lightness: i64,
+    #[validate(range(min = 0, max = 100, message = "La saturation doit être comprise entre 0 et 100"))]
+    pub success_saturation: i64,
     #[validate(range(min = 0, max = 359, message = "La teinte doit être comprise entre 0 et 359 degrés"))]
     pub favorite_hue: i64,
     #[validate(range(min = 0, max = 100, message = "La luminosité doit être comprise entre 0 et 100"))]
     pub favorite_lightness: i64,
+    #[validate(range(min = 0, max = 100, message = "La saturation doit être comprise entre 0 et 100"))]
+    pub favorite_saturation: i64,
 }
 
 /// Un profil enregistré, renvoyé par GET/POST/PUT /theme-profiles. `is_active` : au plus UN profil
@@ -1088,15 +1098,19 @@ pub struct ThemeProfileView {
     pub name: String,
     pub background_hue: i64,
     pub background_lightness: i64,
-    pub background_style: String,
+    pub background_saturation: i64,
     pub accent_hue: i64,
     pub accent_lightness: i64,
+    pub accent_saturation: i64,
     pub danger_hue: i64,
     pub danger_lightness: i64,
+    pub danger_saturation: i64,
     pub success_hue: i64,
     pub success_lightness: i64,
+    pub success_saturation: i64,
     pub favorite_hue: i64,
     pub favorite_lightness: i64,
+    pub favorite_saturation: i64,
     pub is_active: bool,
 }
 

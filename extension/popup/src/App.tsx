@@ -52,15 +52,19 @@ async function syncThemeCustomization(accessToken: string): Promise<void> {
       setCachedCustomTheme({
         backgroundHue: active.background_hue,
         backgroundLightness: active.background_lightness,
-        backgroundStyle: active.background_style,
+        backgroundSaturation: active.background_saturation,
         accentHue: active.accent_hue,
         accentLightness: active.accent_lightness,
+        accentSaturation: active.accent_saturation,
         dangerHue: active.danger_hue,
         dangerLightness: active.danger_lightness,
+        dangerSaturation: active.danger_saturation,
         successHue: active.success_hue,
         successLightness: active.success_lightness,
+        successSaturation: active.success_saturation,
         favoriteHue: active.favorite_hue,
         favoriteLightness: active.favorite_lightness,
+        favoriteSaturation: active.favorite_saturation,
       });
       setTheme("custom");
     }

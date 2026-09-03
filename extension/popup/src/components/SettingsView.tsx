@@ -29,7 +29,9 @@ import {
   previewSuccessColor,
   previewFavoriteColor,
   previewBackgroundColors,
-  type BackgroundStyle,
+  randomThemeConfig,
+  encodeThemeCode,
+  decodeThemeCode,
 } from "../lib/customTheme";
 import type { TrustedDevice, ThemeProfileView } from "../api/types";
 import { getErrorMessage } from "../lib/errors";
@@ -53,11 +55,11 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 /** Voir ThemeSettings.tsx côté desktop pour le raisonnement complet (retour utilisateur : "aperçu
  * visuel dans l'éditeur") — version compacte pour la popup (380×580px). */
 function ThemePreviewMockup({ draft }: { draft: CustomThemeConfig }) {
-  const bg = previewBackgroundColors(draft.backgroundHue, draft.backgroundLightness, draft.backgroundStyle);
-  const accent = previewAccentColor(draft.accentHue, draft.accentLightness);
-  const danger = previewDangerColor(draft.dangerHue, draft.dangerLightness);
-  const success = previewSuccessColor(draft.successHue, draft.successLightness);
-  const favorite = previewFavoriteColor(draft.favoriteHue, draft.favoriteLightness);
+  const bg = previewBackgroundColors(draft.backgroundHue, draft.backgroundLightness, draft.backgroundSaturation);
+  const accent = previewAccentColor(draft.accentHue, draft.accentLightness, draft.accentSaturation);
+  const danger = previewDangerColor(draft.dangerHue, draft.dangerLightness, draft.dangerSaturation);
+  const success = previewSuccessColor(draft.successHue, draft.successLightness, draft.successSaturation);
+  const favorite = previewFavoriteColor(draft.favoriteHue, draft.favoriteLightness, draft.favoriteSaturation);
   const textColor = bg.isDark ? "oklch(92% 0 0)" : "oklch(20% 0 0)";
 
   return (
@@ -109,6 +111,8 @@ export default function SettingsView({
   const [draftProfile, setDraftProfile] = useState<CustomThemeConfig>(() => getCachedCustomTheme());
   const [profileActionError, setProfileActionError] = useState<string | null>(null);
   const [profileSaveState, setProfileSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [themeCodeInput, setThemeCodeInput] = useState("");
+  const [themeCodeMessage, setThemeCodeMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
   const [newEmail, setNewEmail] = useState("");
   const [emailPassword, setEmailPassword] = useState("");
@@ -196,37 +200,45 @@ export default function SettingsView({
     return {
       backgroundHue: p.background_hue,
       backgroundLightness: p.background_lightness,
-      backgroundStyle: p.background_style,
+      backgroundSaturation: p.background_saturation,
       accentHue: p.accent_hue,
       accentLightness: p.accent_lightness,
+      accentSaturation: p.accent_saturation,
       dangerHue: p.danger_hue,
       dangerLightness: p.danger_lightness,
+      dangerSaturation: p.danger_saturation,
       successHue: p.success_hue,
       successLightness: p.success_lightness,
+      successSaturation: p.success_saturation,
       favoriteHue: p.favorite_hue,
       favoriteLightness: p.favorite_lightness,
+      favoriteSaturation: p.favorite_saturation,
     };
   }
 
   function configToProfilePayload(name: string, c: CustomThemeConfig) {
-    // Math.round() défensif : le serveur stocke teintes/luminosités en entier (i64, voir
-    // models.rs::ThemeProfilePayload) — un flottant échoue la désérialisation JSON avec une 422
-    // (voir le CORRECTIF sur customTheme.ts::DEFAULT_CUSTOM_THEME.backgroundLightness, la cause
-    // déjà rencontrée une fois). Les curseurs eux-mêmes ne peuvent produire que des entiers
+    // Math.round() défensif : le serveur stocke teintes/luminosités/saturations en entier (i64,
+    // voir models.rs::ThemeProfilePayload) — un flottant échoue la désérialisation JSON avec une
+    // 422 (voir le CORRECTIF sur customTheme.ts::DEFAULT_CUSTOM_THEME.backgroundLightness, la
+    // cause déjà rencontrée une fois). Les curseurs eux-mêmes ne peuvent produire que des entiers
     // (step=1), donc en théorie inutile — filet de sécurité si une future valeur oubliait d'arrondir.
     return {
       name,
       background_hue: Math.round(c.backgroundHue),
       background_lightness: Math.round(c.backgroundLightness),
-      background_style: c.backgroundStyle,
+      background_saturation: Math.round(c.backgroundSaturation),
       accent_hue: Math.round(c.accentHue),
       accent_lightness: Math.round(c.accentLightness),
+      accent_saturation: Math.round(c.accentSaturation),
       danger_hue: Math.round(c.dangerHue),
       danger_lightness: Math.round(c.dangerLightness),
+      danger_saturation: Math.round(c.dangerSaturation),
       success_hue: Math.round(c.successHue),
       success_lightness: Math.round(c.successLightness),
+      success_saturation: Math.round(c.successSaturation),
       favorite_hue: Math.round(c.favoriteHue),
       favorite_lightness: Math.round(c.favoriteLightness),
+      favorite_saturation: Math.round(c.favoriteSaturation),
     };
   }
 
@@ -278,6 +290,32 @@ export default function SettingsView({
    * les mêmes que le mode sombre"). Ne touche pas au nom du profil. */
   function handleResetThemeDraft() {
     updateDraftProfile(DEFAULT_CUSTOM_THEME);
+  }
+
+  /** Retour utilisateur : "bouton aléatoire (couleurs surprise)". */
+  function handleRandomizeTheme() {
+    updateDraftProfile(randomThemeConfig());
+  }
+
+  /** Retour utilisateur : "exporter/partager un profil avec un code". */
+  async function handleCopyThemeCode() {
+    try {
+      await navigator.clipboard.writeText(encodeThemeCode(draftProfile));
+      setThemeCodeMessage({ ok: true, text: "Code copié." });
+    } catch {
+      setThemeCodeMessage({ ok: false, text: "Impossible de copier." });
+    }
+  }
+
+  function handleImportThemeCode() {
+    const decoded = decodeThemeCode(themeCodeInput);
+    if (!decoded) {
+      setThemeCodeMessage({ ok: false, text: "Code invalide." });
+      return;
+    }
+    updateDraftProfile(decoded);
+    setThemeCodeInput("");
+    setThemeCodeMessage({ ok: true, text: "Importé — pense à l'enregistrer." });
   }
 
   async function handleSaveThemeProfile() {
@@ -489,23 +527,23 @@ export default function SettingsView({
 
                 {(
                   [
-                    ["Fond de l'app", "backgroundHue", "backgroundLightness"],
-                    ["Accent (boutons, liens)", "accentHue", "accentLightness"],
-                    ["Danger (supprimer, erreurs)", "dangerHue", "dangerLightness"],
-                    ["Succès (confirmations)", "successHue", "successLightness"],
-                    ["Favoris (★)", "favoriteHue", "favoriteLightness"],
+                    ["Fond de l'app", "backgroundHue", "backgroundLightness", "backgroundSaturation"],
+                    ["Accent (boutons, liens)", "accentHue", "accentLightness", "accentSaturation"],
+                    ["Danger (supprimer, erreurs)", "dangerHue", "dangerLightness", "dangerSaturation"],
+                    ["Succès (confirmations)", "successHue", "successLightness", "successSaturation"],
+                    ["Favoris (★)", "favoriteHue", "favoriteLightness", "favoriteSaturation"],
                   ] as const
-                ).map(([label, hueKey, lightnessKey]) => {
-                  const hueDisabled = hueKey === "backgroundHue" && draftProfile.backgroundStyle === "neutral";
+                ).map(([label, hueKey, lightnessKey, saturationKey]) => {
                   const hue = draftProfile[hueKey];
                   const lightness = draftProfile[lightnessKey];
+                  const saturation = draftProfile[saturationKey];
                   return (
                     <div key={hueKey}>
                       <div className="mb-0.5 flex items-center justify-between text-[11px] text-neutral-600 dark:text-neutral-400">
                         <span>{label}</span>
                         <span
                           className="h-3.5 w-3.5 rounded-full border border-neutral-300 dark:border-neutral-700"
-                          style={{ backgroundColor: `oklch(${lightness}% ${hueDisabled ? 0 : ".18"} ${hue})` }}
+                          style={{ backgroundColor: `oklch(${lightness}% ${(0.18 * saturation) / 100} ${hue})` }}
                           aria-hidden="true"
                         />
                       </div>
@@ -518,7 +556,6 @@ export default function SettingsView({
                           min={0}
                           max={359}
                           value={hue}
-                          disabled={hueDisabled}
                           onChange={(e) => updateDraftProfile({ [hueKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
                           className="hue-slider w-full"
                           style={{ background: HUE_GRADIENT }}
@@ -533,13 +570,10 @@ export default function SettingsView({
                           <button
                             key={preset.hue}
                             type="button"
-                            disabled={hueDisabled}
                             onClick={() => updateDraftProfile({ [hueKey]: preset.hue } as Partial<CustomThemeConfig>)}
                             title={preset.label}
                             aria-label={`${label} — ${preset.label}`}
-                            className={`h-3 w-3 rounded-full border disabled:cursor-not-allowed disabled:opacity-30 ${
-                              !hueDisabled && hue === preset.hue ? "border-neutral-900 dark:border-white" : "border-neutral-300 dark:border-neutral-700"
-                            }`}
+                            className={`h-3 w-3 rounded-full border ${hue === preset.hue ? "border-neutral-900 dark:border-white" : "border-neutral-300 dark:border-neutral-700"}`}
                             style={{ backgroundColor: `oklch(65% .2 ${preset.hue})` }}
                           />
                         ))}
@@ -552,43 +586,31 @@ export default function SettingsView({
                           value={lightness}
                           onChange={(e) => updateDraftProfile({ [lightnessKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
                           className="w-full"
-                          style={{ accentColor: `oklch(${lightness}% ${hueDisabled ? 0 : ".15"} ${hue})` }}
+                          style={{ accentColor: `oklch(${lightness}% ${(0.15 * saturation) / 100} ${hue})` }}
                           aria-label={`${label} — luminosité`}
                         />
                         <span className="w-7 shrink-0 text-right text-[10px] tabular-nums text-neutral-500">{Math.round(lightness)}%</span>
                       </div>
-                      {hueKey === "backgroundHue" && (
-                        <div className="mt-1 flex gap-1">
-                          {(
-                            [
-                              ["neutral", "Neutre"],
-                              ["subtle", "Fondu"],
-                              ["vivid", "Couleur"],
-                            ] as [BackgroundStyle, string][]
-                          ).map(([value, optLabel]) => (
-                            <button
-                              key={value}
-                              type="button"
-                              onClick={() => updateDraftProfile({ backgroundStyle: value })}
-                              className={`flex-1 rounded-lg border px-1.5 py-0.5 text-[10px] ${
-                                draftProfile.backgroundStyle === value
-                                  ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
-                                  : "border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
-                              }`}
-                            >
-                              {optLabel}
-                            </button>
-                          ))}
-                        </div>
-                      )}
+                      {/* Retour utilisateur : "contrôle de la saturation (pas que
+                          teinte+luminosité)". */}
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          value={saturation}
+                          onChange={(e) => updateDraftProfile({ [saturationKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
+                          className="w-full"
+                          style={{ accentColor: `oklch(${lightness}% ${(0.18 * saturation) / 100} ${hue})` }}
+                          aria-label={`${label} — saturation`}
+                        />
+                        <span className="w-7 shrink-0 text-right text-[10px] tabular-nums text-neutral-500">{Math.round(saturation)}%</span>
+                      </div>
                     </div>
                   );
                 })}
 
-                <div className="flex items-center gap-2">
-                  <button type="button" onClick={handleResetThemeDraft} className="rounded-lg border border-neutral-300 px-2 py-1 text-[11px] text-neutral-700 dark:border-neutral-700 dark:text-neutral-300">
-                    Réinitialiser
-                  </button>
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => void handleSaveThemeProfile()}
@@ -597,7 +619,38 @@ export default function SettingsView({
                   >
                     {profileSaveState === "saving" ? "Enregistrement…" : editingProfileId === "new" ? "Créer" : "Enregistrer"}
                   </button>
+                  <button type="button" onClick={handleRandomizeTheme} className="rounded-lg border border-neutral-300 px-2 py-1 text-[11px] text-neutral-700 dark:border-neutral-700 dark:text-neutral-300">
+                    🎲
+                  </button>
+                  <button type="button" onClick={handleResetThemeDraft} className="rounded-lg border border-neutral-300 px-2 py-1 text-[11px] text-neutral-700 dark:border-neutral-700 dark:text-neutral-300">
+                    Réinitialiser
+                  </button>
                   {profileSaveState === "saved" && <span className="text-[11px] text-emerald-600 dark:text-emerald-400">Synchronisé.</span>}
+                </div>
+
+                {/* Retour utilisateur : "exporter/partager un profil avec un code". */}
+                <div className="space-y-1.5 border-t border-neutral-200 pt-2 dark:border-neutral-800">
+                  <button type="button" onClick={() => void handleCopyThemeCode()} className="rounded-lg border border-neutral-300 px-2 py-1 text-[10px] text-neutral-700 dark:border-neutral-700 dark:text-neutral-300">
+                    Copier le code de ce profil
+                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={themeCodeInput}
+                      onChange={(e) => setThemeCodeInput(e.target.value)}
+                      placeholder="Coller un code…"
+                      className="w-full rounded-lg border border-neutral-300 px-2 py-1 text-[10px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleImportThemeCode}
+                      disabled={!themeCodeInput.trim()}
+                      className="shrink-0 rounded-lg border border-neutral-300 px-2 py-1 text-[10px] text-neutral-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
+                    >
+                      Importer
+                    </button>
+                  </div>
+                  {themeCodeMessage && <p className={`text-[10px] ${themeCodeMessage.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>{themeCodeMessage.text}</p>}
                 </div>
               </div>
             )}

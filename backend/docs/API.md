@@ -1398,11 +1398,12 @@ n'a rien à protéger. Chaque route agit UNIQUEMENT sur les profils du compte AP
 token, jamais d'un paramètre) — aucune restriction de rôle au-delà d'être connecté, SAUF la
 création, plafonnée à **3 profils par compte non-admin** (illimité pour le compte `ADMIN_EMAIL`).
 
-Chaque couleur (fond/accent/danger/succès/favoris) a sa propre teinte OKLCH (`*_hue`, 0-359°) ET sa
-propre luminosité (`*_lightness`, 0-100%) — pas de mode clair/sombre séparé : le client déduit s'il
-doit afficher en clair ou en sombre à partir de la luminosité du fond choisi (voir
-`lib/customTheme.ts` côté client). Le calcul de la palette complète (chroma sûr par palier
-Tailwind) reste entièrement côté client, le serveur ne stocke/valide que des entiers.
+Chaque couleur (fond/accent/danger/succès/favoris) a sa propre teinte OKLCH (`*_hue`, 0-359°), sa
+propre luminosité (`*_lightness`, 0-100%) ET sa propre saturation (`*_saturation`, 0-100% — un
+multiplicateur de la chroma native Tailwind de chaque palier) — pas de mode clair/sombre séparé :
+le client déduit s'il doit afficher en clair ou en sombre à partir de la luminosité du fond choisi
+(voir `lib/customTheme.ts` côté client). Le calcul de la palette complète reste entièrement côté
+client, le serveur ne stocke/valide que des entiers.
 
 ### `GET /theme-profiles`
 
@@ -1415,11 +1416,11 @@ récent.
   {
     "id": "b6b5...",
     "name": "Mon thème",
-    "background_hue": 220, "background_lightness": 12, "background_style": "vivid",
-    "accent_hue": 180, "accent_lightness": 55,
-    "danger_hue": 20, "danger_lightness": 60,
-    "success_hue": 150, "success_lightness": 65,
-    "favorite_hue": 60, "favorite_lightness": 75,
+    "background_hue": 220, "background_lightness": 12, "background_saturation": 80,
+    "accent_hue": 180, "accent_lightness": 55, "accent_saturation": 100,
+    "danger_hue": 20, "danger_lightness": 60, "danger_saturation": 100,
+    "success_hue": 150, "success_lightness": 65, "success_saturation": 100,
+    "favorite_hue": 60, "favorite_lightness": 75, "favorite_saturation": 100,
     "is_active": true
   }
 ]
@@ -1437,7 +1438,7 @@ caractères), sans `id`/`is_active`.
 | `name` | string | 1-60 caractères |
 | `background_hue`, `accent_hue`, `danger_hue`, `success_hue`, `favorite_hue` | entier | 0-359 |
 | `background_lightness`, `accent_lightness`, `danger_lightness`, `success_lightness`, `favorite_lightness` | entier | 0-100 |
-| `background_style` | string | `"neutral"` (gris pur, `background_hue` ignoré) \| `"subtle"` (légère teinte) \| `"vivid"` (couleur pleinement perceptible) |
+| `background_saturation`, `accent_saturation`, `danger_saturation`, `success_saturation`, `favorite_saturation` | entier | 0-100 (0 = gris pur pour le fond, chroma nulle pour les autres ; 100 = chroma native Tailwind) |
 
 **Réponse** : `201 Created`, le profil créé (même forme que GET, `is_active: false`).
 **Erreurs** : `400` validation (nom/teinte/luminosité hors plage, OU plafond de 3 profils atteint

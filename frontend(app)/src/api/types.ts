@@ -552,25 +552,30 @@ export interface TfaRequiredResponse {
 
 // --- Personnalisation de thème, en PROFILS (voir handlers/theme_customization.rs côté backend) ---
 
-/** Teintes en degrés (0-359), luminosités en pourcentage (0-100) — toute la dérivation de palette
- * (chroma sûr par palier Tailwind, décalage de luminosité relatif) reste côté client, voir
- * lib/customTheme.ts. Pas de mode clair/sombre séparé : déduit de `background_lightness`. */
+/** Teintes en degrés (0-359), luminosités/saturations en pourcentage (0-100) — toute la
+ * dérivation de palette (chroma native Tailwind MULTIPLIÉE par la saturation, décalage de
+ * luminosité relatif) reste côté client, voir lib/customTheme.ts. Pas de mode clair/sombre
+ * séparé : déduit de `background_lightness`. */
 export interface ThemeProfileView {
   id: string;
   name: string;
   background_hue: number;
   background_lightness: number;
-  /** "neutral" (gris pur, `background_hue` ignoré) | "subtle" ("fondu", légère teinte) | "vivid"
-   * (couleur pleinement perceptible) — voir lib/customTheme.ts::applyBackground. */
-  background_style: "neutral" | "subtle" | "vivid";
+  /** 0 = gris pur (`background_hue` ignoré), 100 = couleur de fond la plus vive possible — voir
+   * lib/customTheme.ts::applyBackground. */
+  background_saturation: number;
   accent_hue: number;
   accent_lightness: number;
+  accent_saturation: number;
   danger_hue: number;
   danger_lightness: number;
+  danger_saturation: number;
   success_hue: number;
   success_lightness: number;
+  success_saturation: number;
   favorite_hue: number;
   favorite_lightness: number;
+  favorite_saturation: number;
   /** Au plus UN profil actif à la fois par compte (voir activateThemeProfile côté client). */
   is_active: boolean;
 }

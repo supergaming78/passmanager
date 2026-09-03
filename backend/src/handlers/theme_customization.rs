@@ -16,19 +16,6 @@ use std::sync::Arc;
 use crate::{AppState, error::AppError, middleware::AuthUser, repository::ThemeProfileRepository, models::ThemeProfilePayload};
 use validator::Validate;
 
-/// Voir models.rs::ThemeProfilePayload::background_style — validé ICI (juste trois valeurs
-/// possibles), même approche que "mode" dans une version antérieure de cette fonctionnalité.
-const VALID_BACKGROUND_STYLES: [&str; 3] = ["neutral", "subtle", "vivid"];
-
-fn validate_background_style(style: &str) -> Result<(), AppError> {
-    if !VALID_BACKGROUND_STYLES.contains(&style) {
-        return Err(AppError::ValidationError(
-            "background_style doit être \"neutral\", \"subtle\" ou \"vivid\".".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 /// Tous les profils du compte connecté (voir ThemeProfileView pour `is_active`) — liste vide, pas
 /// une erreur, si le compte n'en a jamais créé (thème preset actif côté client dans ce cas).
 pub async fn list_theme_profiles(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
@@ -44,7 +31,6 @@ pub async fn create_theme_profile(
     Json(payload): Json<ThemeProfilePayload>,
 ) -> Result<impl IntoResponse, AppError> {
     payload.validate()?;
-    validate_background_style(&payload.background_style)?;
     let is_admin = user.is_admin(&state);
     let profile = ThemeProfileRepository::create(&state.db, &user.email, &payload, is_admin).await?;
     Ok((StatusCode::CREATED, Json(profile)))
@@ -60,7 +46,6 @@ pub async fn update_theme_profile(
     Json(payload): Json<ThemeProfilePayload>,
 ) -> Result<impl IntoResponse, AppError> {
     payload.validate()?;
-    validate_background_style(&payload.background_style)?;
     let updated = ThemeProfileRepository::update(&state.db, &user.email, &id, &payload).await?;
     if !updated {
         return Err(AppError::NotFound);
@@ -166,15 +151,19 @@ mod tests {
             name: name.to_string(),
             background_hue: 220,
             background_lightness: 12,
-            background_style: "vivid".to_string(),
+            background_saturation: 80,
             accent_hue: 180,
             accent_lightness: 55,
+            accent_saturation: 100,
             danger_hue: 20,
             danger_lightness: 60,
+            danger_saturation: 100,
             success_hue: 150,
             success_lightness: 65,
+            success_saturation: 100,
             favorite_hue: 60,
             favorite_lightness: 75,
+            favorite_saturation: 100,
         }
     }
 
@@ -201,7 +190,7 @@ mod tests {
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0]["name"], "Mon profil");
         assert_eq!(profiles[0]["accent_hue"], 180);
-        assert_eq!(profiles[0]["background_style"], "vivid");
+        assert_eq!(profiles[0]["background_saturation"], 80);
         assert_eq!(profiles[0]["is_active"], false);
     }
 
@@ -267,10 +256,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_rejects_invalid_background_style() {
+    async fn test_create_rejects_out_of_range_saturation() {
         let state = build_test_state(None).await;
         let mut payload = sample_payload("Invalide");
-        payload.background_style = "rainbow".to_string();
+        payload.background_saturation = 150;
         let result = create_theme_profile(State(state), auth("user7@example.com"), Json(payload)).await;
         assert!(matches!(result, Err(AppError::ValidationError(_))));
     }
