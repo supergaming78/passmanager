@@ -8,7 +8,7 @@ use tower_http::{cors::{CorsLayer, AllowOrigin}, trace::TraceLayer, set_header::
 use jsonwebtoken::{EncodingKey, DecodingKey};
 mod config;
 use crate::config::Config;
-use tracing::info;
+use tracing::{info, warn};
 use tower_governor::GovernorLayer;
 use tower_governor::key_extractor::{KeyExtractor, PeerIpKeyExtractor, SmartIpKeyExtractor};
 use tower_governor::errors::GovernorError;
@@ -314,8 +314,18 @@ impl KeyExtractor for ConfigurableIpKeyExtractor {
 /// nécessaire dans les handlers ni dans leurs tests (qui insèrent `ConnectInfo` manuellement, voir
 /// `test_addr()` plus bas). Le port de l'adresse réécrite est arbitraire (0) : aucun handler de ce
 /// projet ne lit jamais le port de `ConnectInfo`, seulement `.ip()`.
-async fn rewrite_client_ip_from_proxy_headers(State(state): State<Arc<AppState>>, mut req: Request, next: axum_middleware::Next) -> Response {
-    if state.config.trust_proxy_headers {
+/// Résout l'IP client "réelle" d'une requête — extrait de `rewrite_client_ip_from_proxy_headers`
+/// pour être réutilisable par `log_requests` ci-dessous (voir son commentaire), qui a besoin
+/// EXACTEMENT du même calcul mais depuis une position différente dans la pile de middlewares (la
+/// PLUS EXTÉRIEURE, pour voir la réponse FINALE y compris un rejet 429 du rate limiter — voir son
+/// commentaire pour le détail). Lit directement les EN-TÊTES (`X-Forwarded-For`/`X-Real-Ip`) et le
+/// `ConnectInfo` BRUT posé par Axum (`into_make_service_with_connect_info`, voir `main()`) —
+/// contrairement aux extensions de la requête (que seul `rewrite_client_ip_from_proxy_headers`
+/// modifie, une fois, à SA position dans la pile), les en-têtes et le `ConnectInfo` de base sont
+/// visibles IDENTIQUEMENT à n'importe quelle position, donc ce calcul reste correct peu importe
+/// lequel des deux appelants l'exécute en premier.
+fn resolve_client_ip(req: &Request, trust_proxy_headers: bool) -> Option<IpAddr> {
+    if trust_proxy_headers {
         let forwarded_ip = req.headers()
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
@@ -331,12 +341,73 @@ async fn rewrite_client_ip_from_proxy_headers(State(state): State<Arc<AppState>>
                     .and_then(|v| v.to_str().ok())
                     .and_then(|v| v.trim().parse::<IpAddr>().ok())
             });
-
-        if let Some(ip) = forwarded_ip {
-            req.extensions_mut().insert(ConnectInfo(SocketAddr::new(ip, 0)));
+        if forwarded_ip.is_some() {
+            return forwarded_ip;
         }
     }
+    req.extensions().get::<ConnectInfo<SocketAddr>>().map(|ci| ci.0.ip())
+}
+
+/// Middleware qui RÉÉCRIT l'extension `ConnectInfo<SocketAddr>` de la requête avec l'IP réelle du
+/// client, lue dans `X-Forwarded-For`/`X-Real-Ip` — uniquement si `Config::trust_proxy_headers`
+/// est activé (même garde-fou que [`ConfigurableIpKeyExtractor`] ci-dessus, pour la même raison :
+/// sans reverse proxy de confiance qui écrase ces en-têtes, n'importe quel client pourrait s'y
+/// attribuer l'IP de son choix).
+///
+/// CORRECTIF (repéré par l'utilisateur lui-même face à un vrai déploiement derrière Nginx Proxy
+/// Manager — voir la conversation du 2026-09-01) : `ConfigurableIpKeyExtractor` ne corrige QUE la
+/// clé utilisée par le rate limiter (tower_governor) — chaque HANDLER, lui, continue de recevoir
+/// `ConnectInfo<SocketAddr>` directement via l'extracteur Axum standard pour tout ce qui est
+/// ENREGISTRÉ EN BASE ou AFFICHÉ à l'utilisateur : IP dans le journal d'audit, IP associée à un
+/// appareil de confiance (voir handlers/auth/session.rs::record_device_ip_and_maybe_alert),
+/// alertes "nouvel appareil/nouvelle IP". Derrière un reverse proxy, `ConnectInfo` ne voit QUE
+/// l'IP du proxy — IDENTIQUE pour CHAQUE requête de CHAQUE client réel, quel qu'il soit. Résultat
+/// concret avant ce correctif : historique de sécurité et appareils de confiance rendus inutiles
+/// (impossible de distinguer un vrai nouvel appareil d'un autre, toutes les IP enregistrées étant
+/// la même).
+///
+/// Plutôt que de modifier individuellement CHAQUE handler (des dizaines, listés ci-dessus) pour
+/// leur faire lire l'en-tête eux-mêmes, ce middleware réécrit directement l'extension que TOUS
+/// consultent déjà de la même façon — correctif centralisé en un seul endroit, aucun changement
+/// nécessaire dans les handlers ni dans leurs tests (qui insèrent `ConnectInfo` manuellement, voir
+/// `test_addr()` plus bas). Le port de l'adresse réécrite est arbitraire (0) : aucun handler de ce
+/// projet ne lit jamais le port de `ConnectInfo`, seulement `.ip()`.
+async fn rewrite_client_ip_from_proxy_headers(State(state): State<Arc<AppState>>, mut req: Request, next: axum_middleware::Next) -> Response {
+    if let Some(ip) = resolve_client_ip(&req, state.config.trust_proxy_headers) {
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(ip, 0)));
+    }
     next.run(req).await
+}
+
+/// Retour utilisateur : "j'en ai marre, ça continue tout le temps 'Trop de tentatives' [...] il
+/// faudrait un moyen de voir les requêtes que reçoit le backend" — journal explicite de CHAQUE
+/// requête (méthode, chemin, IP résolue, statut), plutôt que de continuer à deviner des seuils de
+/// rate limiting à l'aveugle. Ajoutée comme couche la plus EXTÉRIEURE possible (juste à l'intérieur
+/// de `cors`, voir plus bas) — À DESSEIN, pour observer la réponse FINALE après TOUTES les couches
+/// internes, gouverneurs de rate limiting inclus : un rejet 429 est décidé PAR le `GovernorLayer`
+/// (plus intérieur) et court-circuite le reste de la pile sans jamais atteindre le routeur — une
+/// couche plus intérieure que lui ne verrait donc JAMAIS ces rejets. Un rejet 429 est explicitement
+/// logué à AVERTISSEMENT (`warn!`) avec un message "RATE_LIMITED" facile à repérer dans les
+/// journaux (`grep RATE_LIMITED` — voir ./logs/server.json ou `docker logs`) — permet de vérifier
+/// enfin, avec des faits plutôt que des suppositions, si plusieurs appareils partagent bien la même
+/// IP (attendu derrière un reverse proxy/une box internet partagée), ou si autre chose se passe.
+async fn log_requests(State(state): State<Arc<AppState>>, req: Request, next: axum_middleware::Next) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let ip = resolve_client_ip(&req, state.config.trust_proxy_headers);
+    let ip_display = ip.map(|ip| ip.to_string()).unwrap_or_else(|| "?".to_string());
+
+    let response = next.run(req).await;
+    let status = response.status();
+
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        let retry_after = response.headers().get(RETRY_AFTER).and_then(|v| v.to_str().ok()).unwrap_or("?");
+        warn!(target: "rate_limit", ip = %ip_display, method = %method, path = %path, retry_after_seconds = %retry_after, "RATE_LIMITED");
+    } else {
+        info!(target: "http_request", ip = %ip_display, method = %method, path = %path, status = %status.as_u16(), "REQUEST");
+    }
+
+    response
 }
 
 /// Construit le Router complet de l'application : routes, rate limiting par palier, CORS,
@@ -787,6 +858,11 @@ fn build_router(state: Arc<AppState>) -> Router {
                 }))
                 .timeout(Duration::from_secs(30))
         )
+        // Journal explicite de chaque requête (voir log_requests plus haut) — juste À L'INTÉRIEUR
+        // de `cors` (qui doit rester la toute dernière couche, voir son commentaire) mais À
+        // L'EXTÉRIEUR de tout le reste, pour observer la réponse FINALE (429 du rate limiter, 408
+        // du timeout...) plutôt qu'une décision prise plus loin à l'intérieur de la pile.
+        .layer(axum_middleware::from_fn_with_state(state.clone(), log_requests))
         // `cors` DERNIER (donc le plus À L'EXTÉRIEUR de toutes les couches ci-dessus) : n'importe
         // quel rejet généré par une couche interne — 429 du rate limiter, 408 du timeout, 500 du
         // HandleErrorLayer — doit quand même repasser par ici pour recevoir l'en-tête
