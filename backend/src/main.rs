@@ -707,6 +707,14 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/theme-profiles/shared/{id}/accept", post(handlers::accept_shared_theme_profile))
         .route("/theme-profiles/shared/{id}", delete(handlers::decline_shared_theme_profile))
 
+        // Choix du thème lui-même (preset ou "custom"), synchronisé par compte — retour
+        // utilisateur : "je veux que lorsqu'on choisit un thème ce soit pour partout (aussi
+        // l'extension) que le thème soit appliqué partout". Distinct de /theme-profiles ci-dessus
+        // (qui gère les COULEURS d'un profil "Personnalisé…") — voir
+        // handlers/theme_customization.rs::update_preferred_theme. Sur global_governor, comme le
+        // reste de l'API authentifiée.
+        .route("/theme-preference", put(handlers::update_preferred_theme))
+
         // Application des middlewares globaux de Tower
         // CORRECTIF SÉCURITÉ (voir rewrite_client_ip_from_proxy_headers ci-dessus) : ajoutée EN
         // PREMIER (donc la couche la plus INTERNE, la plus proche des routes/handlers) pour que

@@ -59,10 +59,19 @@ function paletteClassFor(theme: Theme): string | null {
 // appel. Aucune implication sécurité : c'est une préférence d'affichage, pas une donnée sensible.
 let cachedTheme: Theme | null = null;
 
+/** Valide qu'une chaîne quelconque (localStorage potentiellement périmé, ou valeur venue du
+ * serveur — voir state/AuthContext.tsx::establishSession) correspond bien à un thème connu de
+ * CETTE version du client, avec repli sur "dark" sinon (nouveau défaut, voir le commentaire
+ * d'en-tête). Exportée pour être réutilisée là où une valeur de thème arrive de l'EXTÉRIEUR de ce
+ * module (le champ `preferred_theme` de GET /me, par exemple un thème plus récent que cette
+ * version de l'app ne connaît pas encore, ou une valeur corrompue). */
+export function toValidTheme(value: string | null | undefined): Theme {
+  return (VALID_THEMES as readonly string[]).includes(value ?? "") ? (value as Theme) : "dark";
+}
+
 export function getTheme(): Theme {
   if (cachedTheme) return cachedTheme;
-  const stored = localStorage.getItem(STORAGE_KEY);
-  cachedTheme = (VALID_THEMES as readonly string[]).includes(stored ?? "") ? (stored as Theme) : "dark"; // nouveau défaut — voir le commentaire d'en-tête.
+  cachedTheme = toValidTheme(localStorage.getItem(STORAGE_KEY));
   return cachedTheme;
 }
 

@@ -192,9 +192,18 @@ export default function SettingsView({
     setWindowMode(mode);
   }
 
+  // Retour utilisateur : "je veux que lorsqu'on choisit un thème ce soit pour partout (aussi
+  // l'extension) que le thème soit appliqué partout" — voir ThemeSettings.tsx côté desktop pour le
+  // même raisonnement (identique ici) : pousse le choix vers le compte, best-effort, sans jamais
+  // bloquer l'application LOCALE déjà instantanée via setTheme() (voir chaque appelant).
+  function syncPreferredThemeToServer(value: Theme) {
+    session.authorizedRequest((token) => api.updatePreferredTheme(token, { theme: value })).catch(() => {});
+  }
+
   function handleSaveTheme(value: Theme) {
     setThemeState(value);
     setTheme(value);
+    syncPreferredThemeToServer(value);
     if (value === "custom" && profiles === null) {
       // OPTIMISATION BANDE PASSANTE (retour utilisateur) : App.tsx a déjà récupéré cette même
       // liste à l'ouverture de la popup — la réutiliser directement si elle est encore là plutôt
@@ -398,6 +407,8 @@ export default function SettingsView({
         setEditingProfileId(created.id);
         setCachedCustomTheme(draftProfile);
         setTheme("custom");
+        setThemeState("custom");
+        syncPreferredThemeToServer("custom");
       } else if (editingProfileId) {
         await session.authorizedRequest((token) => api.updateThemeProfile(token, editingProfileId, payload));
         setProfilesAndCache((prev) => prev.map((p) => (p.id === editingProfileId ? { ...p, ...payload } : p)));
@@ -417,6 +428,7 @@ export default function SettingsView({
       setCachedCustomTheme(profileToConfig(p));
       setTheme("custom");
       setThemeState("custom");
+      syncPreferredThemeToServer("custom");
     } catch (err) {
       setProfileActionError(getErrorMessage(err));
     }
@@ -432,6 +444,7 @@ export default function SettingsView({
       if (p.is_active) {
         setTheme("dark");
         setThemeState("dark");
+        syncPreferredThemeToServer("dark");
       }
     } catch (err) {
       setProfileActionError(getErrorMessage(err));

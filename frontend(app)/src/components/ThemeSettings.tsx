@@ -342,9 +342,22 @@ export default function ThemeSettings() {
       });
   }, [theme, profiles, authorizedRequest]);
 
+  // Retour utilisateur : "je veux que lorsqu'on choisit un thème ce soit pour partout (aussi
+  // l'extension) que le thème soit appliqué partout" — pousse le choix vers le compte, en plus de
+  // l'application LOCALE déjà instantanée via setTheme() (voir chaque appelant). Best-effort,
+  // volontairement en `.catch(() => {})` plutôt qu'`await`-é par l'appelant : une coupure réseau
+  // ne doit jamais empêcher l'utilisateur de voir son changement s'appliquer ici et maintenant,
+  // juste laisser la synchronisation vers les autres appareils en retard jusqu'à la prochaine
+  // connexion réussie (voir state/AuthContext.tsx::establishSession, qui la relit à chaque
+  // session).
+  function syncPreferredThemeToServer(value: Theme) {
+    authorizedRequest((token) => api.updatePreferredTheme(token, { theme: value })).catch(() => {});
+  }
+
   async function handleThemeChange(value: Theme) {
     setThemeState(value);
     setTheme(value);
+    syncPreferredThemeToServer(value);
   }
 
   // CORRECTIF (retour utilisateur : "je ne peux pas appliquer, ça reste tout le temps comme ça") :
@@ -486,6 +499,8 @@ export default function ThemeSettings() {
         setEditingId(created.id);
         setCachedCustomTheme(draft);
         setTheme("custom");
+        setThemeState("custom");
+        syncPreferredThemeToServer("custom");
       } else if (editingId) {
         await authorizedRequest((token) => api.updateThemeProfile(token, editingId, payload));
         setProfilesAndCache((prev) => prev.map((p) => (p.id === editingId ? { ...p, ...payload } : p)));
@@ -505,6 +520,7 @@ export default function ThemeSettings() {
       setCachedCustomTheme(profileToConfig(p));
       setTheme("custom");
       setThemeState("custom");
+      syncPreferredThemeToServer("custom");
     } catch (err) {
       setActionError(getErrorMessage(err));
     }
@@ -522,6 +538,7 @@ export default function ThemeSettings() {
       if (p.is_active) {
         setTheme("dark");
         setThemeState("dark");
+        syncPreferredThemeToServer("dark");
       }
     } catch (err) {
       setActionError(getErrorMessage(err));

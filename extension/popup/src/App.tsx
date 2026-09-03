@@ -16,7 +16,7 @@ import { copyPasswordWithAutoClear } from "./lib/clipboard";
 import * as entrySharing from "./lib/entrySharing";
 import { recordEntryUse } from "./lib/vaultUsage";
 import { openEntryUrl } from "./lib/openExternalUrl";
-import { setTheme, setCachedCustomTheme, setCachedThemeProfiles } from "./lib/theme";
+import { setTheme, setCachedCustomTheme, setCachedThemeProfiles, toValidTheme } from "./lib/theme";
 import VaultEntryForm, { type VaultEntryFormValues } from "./components/VaultEntryForm";
 import TrashView from "./components/TrashView";
 import ShareEntryView from "./components/ShareEntryView";
@@ -36,23 +36,32 @@ type Screen =
   | { kind: "tfa"; email: string; authHashHex: string; vaultKey: Uint8Array; rememberMe: boolean }
   | { kind: "vault"; email: string; vaultKey: Uint8Array };
 
-/** Récupère les profils de personnalisation de thème du compte et active le profil actif s'il y
- * en a un (voir lib/theme.ts::setTheme, api/client.ts::listThemeProfiles) — équivalent, pour la
+/** Récupère les profils de personnalisation de thème du compte ET le thème actuellement choisi
+ * (voir lib/theme.ts::setTheme, api/client.ts::listThemeProfiles/getMe) — équivalent, pour la
  * popup, du bloc fait dans state/AuthContext.tsx::establishSession côté desktop (voir son
- * commentaire pour le raisonnement complet). Ici, PAS de point "établissement de session" unique
- * comme là-bas (la popup n'en a pas, voir lib/session.ts) : appelée à la fois quand une session
- * déjà active est retrouvée au montage (la popup vient d'être rouverte, potentiellement des jours
- * après une modification faite depuis un autre appareil) ET juste après une connexion/2FA réussie
- * (voir goToVault() ci-dessous, appelée dans les deux cas). Best-effort : une coupure réseau laisse
- * simplement le thème local (preset ou dernière personnalisation connue) inchangé. */
+ * commentaire pour le raisonnement complet, y compris pourquoi `preferred_theme` — retour
+ * utilisateur : "je veux que lorsqu'on choisit un thème ce soit pour partout (aussi l'extension)"
+ * — est désormais la source de vérité sur QUEL thème afficher, pas simplement "un profil actif
+ * existe"). Ici, PAS de point "établissement de session" unique comme là-bas (la popup n'en a pas,
+ * voir lib/session.ts) : appelée à la fois quand une session déjà active est retrouvée au montage
+ * (la popup vient d'être rouverte, potentiellement des jours après une modification faite depuis
+ * un autre appareil) ET juste après une connexion/2FA réussie (voir goToVault() ci-dessous, appelée
+ * dans les deux cas). Les deux requêtes sont indépendantes (Promise.allSettled, jamais Promise.all)
+ * : chacune reste best-effort, l'échec de l'une ne doit jamais empêcher de traiter le résultat de
+ * l'autre, et une coupure réseau laisse simplement le thème local (preset ou dernière
+ * personnalisation connue) inchangé. */
 async function syncThemeCustomization(accessToken: string): Promise<void> {
-  try {
-    const profiles = await api.listThemeProfiles(accessToken);
+  const [meResult, profilesResult] = await Promise.allSettled([api.getMe(accessToken), api.listThemeProfiles(accessToken)]);
+
+  let hasActiveProfile = false;
+  if (profilesResult.status === "fulfilled") {
+    const profiles = profilesResult.value;
     // OPTIMISATION BANDE PASSANTE (retour utilisateur) : réutilisé par SettingsView.tsx si
     // l'utilisateur ouvre "Personnalisé…" pendant la MÊME ouverture de popup — voir lib/theme.ts.
     setCachedThemeProfiles(profiles);
     const active = profiles.find((p) => p.is_active);
     if (active) {
+      hasActiveProfile = true;
       setCachedCustomTheme({
         backgroundHue: active.background_hue,
         backgroundLightness: active.background_lightness,
@@ -70,10 +79,18 @@ async function syncThemeCustomization(accessToken: string): Promise<void> {
         favoriteLightness: active.favorite_lightness,
         favoriteSaturation: active.favorite_saturation,
       });
-      setTheme("custom");
     }
-  } catch {
-    // best-effort, voir la doc ci-dessus.
+  }
+
+  // `toValidTheme` : filet de sécurité si le serveur renvoie une valeur que CETTE version de
+  // l'extension ne connaît pas encore (repli "dark", jamais planté).
+  if (meResult.status === "fulfilled") {
+    setTheme(toValidTheme(meResult.value.preferred_theme));
+  } else if (hasActiveProfile) {
+    // Repli si GET /me a échoué mais /theme-profiles a réussi : comportement d'avant ce champ,
+    // encore raisonnable dans ce cas précis — un profil actif reste un signal fort qu'il faut
+    // afficher "custom".
+    setTheme("custom");
   }
 }
 

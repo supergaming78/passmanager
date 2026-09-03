@@ -1149,6 +1149,29 @@ pub struct SharedThemeProfileView {
     pub favorite_saturation: i64,
 }
 
+/// Ensemble des valeurs de thème reconnues côté serveur — mêmes valeurs que le type `Theme` côté
+/// client (voir lib/theme.ts, app ET extension, tenus manuellement synchronisés avec cette liste).
+/// Gardée ici comme simple liste (pas une enum Rust stricte) : le client reste la seule source de
+/// vérité sur les thèmes RÉELLEMENT disponibles (ajouter un preset ne doit jamais nécessiter une
+/// migration côté serveur) — celui-ci se contente de refuser une valeur manifestement invalide,
+/// jamais d'imposer le vocabulaire exact.
+pub const VALID_THEMES: &[&str] = &["dark", "light", "system", "midnight", "ocean", "forest", "sunset", "rose", "violet", "amber", "slate", "custom"];
+
+/// Retour utilisateur, 2026-09-03 : "je veux que lorsqu'on choisit un thème ce soit pour partout
+/// (aussi l'extension) que le thème soit appliqué partout" — synchronise, en plus du profil de
+/// personnalisation (déjà fait, voir ThemeProfilePayload plus haut), le CHOIX du thème lui-même
+/// (quel preset, ou "custom") par compte. Voir la migration
+/// 20260903070000_users_preferred_theme.sql et handlers/theme_customization.rs::update_preferred_theme.
+#[derive(Debug, Deserialize, Validate)]
+pub struct UpdatePreferredThemePayload {
+    // Borne de longueur généreuse (le plus long thème connu, "midnight", fait 8 caractères) —
+    // l'appartenance à VALID_THEMES ci-dessus, vérifiée dans le handler (pas via `validator`, pas
+    // besoin d'un validateur `custom` dédié pour une simple recherche dans un tableau), est la
+    // VRAIE garde ; ceci n'est qu'un filet de sécurité contre un corps de requête disproportionné.
+    #[validate(length(min = 1, max = 20, message = "Nom de thème invalide"))]
+    pub theme: String,
+}
+
 // =========================================================================
 // 6. STRUCTURES DIVERSES (PAGINATION & RÉPONSES API)
 // =========================================================================

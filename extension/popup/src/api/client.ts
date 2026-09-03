@@ -55,6 +55,7 @@ import {
   type ThemeProfilePayload,
   type ShareThemeProfilePayload,
   type SharedThemeProfileView,
+  type UpdatePreferredThemePayload,
 } from "./types";
 
 /**
@@ -720,6 +721,17 @@ export function declineSharedThemeProfile(accessToken: string, id: string): Prom
   return request<void>(`/theme-profiles/shared/${encodeURIComponent(id)}`, {
     method: "DELETE",
     headers: authHeaders(accessToken),
+  });
+}
+
+// --- Choix du thème lui-même (preset ou "custom"), synchronisé par compte — retour utilisateur :
+// "je veux que lorsqu'on choisit un thème ce soit pour partout (aussi l'extension)". Distinct des
+// fonctions de profils ci-dessus (qui gèrent les COULEURS d'un thème "Personnalisé…").
+export function updatePreferredTheme(accessToken: string, payload: UpdatePreferredThemePayload): Promise<void> {
+  return request<void>("/theme-preference", {
+    method: "PUT",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify(payload),
   });
 }
 

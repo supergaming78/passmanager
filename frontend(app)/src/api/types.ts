@@ -199,6 +199,11 @@ export interface MeResponse {
    * Valeur BRUTE de la colonne, PAS OR'ée avec is_admin côté serveur — c'est au client de combiner
    * les deux (l'Admin y a toujours accès indépendamment de cette valeur). */
   can_choose_server_in_settings: boolean;
+  /** Retour utilisateur : "je veux que lorsqu'on choisit un thème ce soit pour partout (aussi
+   * l'extension)" — le thème actuellement choisi (preset OU "custom"), synchronisé par compte.
+   * Voir lib/theme.ts::Theme pour les valeurs possibles, et
+   * backend/src/handlers/theme_customization.rs::update_preferred_theme pour l'écriture. */
+  preferred_theme: string;
   /** Vrai UNIQUEMENT pour le compte configuré via ADMIN_EMAIL — il n'existe qu'UN SEUL "Admin",
    * SEUL compte autorisé à changer un rôle modérateur (voir handlers/admin.rs::update_user_role()).
    * Utilisé par Admin.tsx pour masquer les boutons promouvoir/rétrograder pour tout le monde d'autre. */
@@ -591,6 +596,12 @@ export interface ShareThemeProfilePayload {
 /** Un partage EN ATTENTE reçu — mêmes champs qu'un profil, `from_email` en plus, sans `id` de
  * profil ni `is_active` (ce n'est pas encore un profil, voir GET /theme-profiles/shared). */
 export type SharedThemeProfileView = Omit<ThemeProfileView, "is_active"> & { from_email: string };
+
+/** Retour utilisateur : "que le thème soit appliqué partout" — voir
+ * handlers/theme_customization.rs::update_preferred_theme côté backend. */
+export interface UpdatePreferredThemePayload {
+  theme: string;
+}
 
 /** Erreur générique renvoyée par le backend, voir error.rs::AppError::into_response(). */
 export interface ApiErrorBody {

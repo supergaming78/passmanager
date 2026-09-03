@@ -315,7 +315,8 @@ données liées (coffre, appareils de confiance, logs d'audit...).
   "max_trusted_devices": 10,
   "can_change_email_via_extension": false,
   "can_choose_server_in_settings": false,
-  "is_admin": false
+  "is_admin": false,
+  "preferred_theme": "dark"
 }
 ```
 `is_moderator` : seule source fiable pour qu'un client sache s'il doit afficher une interface
@@ -332,6 +333,8 @@ Valeur BRUTE de la colonne, PAS combinée avec `is_admin` : c'est au client de f
 valeur). `is_admin` : vrai UNIQUEMENT pour le compte configuré via `ADMIN_EMAIL` — seul compte
 autorisé à appeler `PUT /admin/users/{email}/role` (voir plus bas) ; permet à l'écran
 Administration de masquer les boutons promouvoir/rétrograder pour tout le monde d'autre.
+`preferred_theme` : le thème actuellement choisi (preset ou `"custom"`), synchronisé par compte —
+voir `PUT /theme-preference` plus bas.
 
 ### `GET /audit/me`
 
@@ -1521,6 +1524,27 @@ partage d'entrée du coffre).
 **Réponse** : `204 No Content`.
 **Erreurs** : `404` si `id` n'existe pas ou n'implique le compte connecté ni comme expéditeur ni
 comme destinataire.
+
+### Choix du thème lui-même (preset ou "custom")
+
+Retour utilisateur : *"je veux que lorsqu'on choisit un thème ce soit pour partout (aussi
+l'extension) que le thème soit appliqué partout"* — distinct de tout ce qui précède, qui gère les
+COULEURS d'un profil "Personnalisé…". Ce champ dit simplement LEQUEL des thèmes disponibles est
+actuellement choisi sur le compte, y compris un simple preset (`dark`/`light`/`system`/`midnight`/
+`ocean`/`forest`/`sunset`/`rose`/`violet`/`amber`/`slate`/`custom`) qui restait jusqu'ici purement
+local à chaque appareil. Exposé en lecture via `preferred_theme` sur `GET /me`.
+
+### `PUT /theme-preference`
+
+*Authentification requise.* Met à jour le thème actuellement choisi par le compte connecté.
+
+**Corps** :
+```json
+{ "theme": "midnight" }
+```
+
+**Réponse** : `204 No Content`.
+**Erreurs** : `400` si `theme` ne fait pas partie des valeurs reconnues côté serveur.
 
 ## Endpoints — Divers
 

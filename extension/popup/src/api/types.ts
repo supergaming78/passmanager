@@ -199,6 +199,10 @@ export interface MeResponse {
    * utilisé côté popup (pas d'écran Administration ici), présent pour rester synchronisé avec la
    * forme réelle de GET /me côté backend. */
   is_admin: boolean;
+  /** Retour utilisateur : "je veux que lorsqu'on choisit un thème ce soit pour partout (aussi
+   * l'extension)" — le thème actuellement choisi (preset OU "custom"), synchronisé par compte.
+   * Voir lib/theme.ts::Theme pour les valeurs possibles. */
+  preferred_theme: string;
 }
 
 export interface ChangeMasterPasswordPayload {
@@ -503,6 +507,12 @@ export interface ShareThemeProfilePayload {
 /** Un partage EN ATTENTE reçu — mêmes champs qu'un profil, `from_email` en plus, sans `id` de
  * profil ni `is_active` (ce n'est pas encore un profil, voir GET /theme-profiles/shared). */
 export type SharedThemeProfileView = Omit<ThemeProfileView, "is_active"> & { from_email: string };
+
+/** Retour utilisateur : "que le thème soit appliqué partout" — voir
+ * handlers/theme_customization.rs::update_preferred_theme côté backend. */
+export interface UpdatePreferredThemePayload {
+  theme: string;
+}
 
 /** Erreur générique renvoyée par le backend, voir error.rs::AppError::into_response(). */
 export interface ApiErrorBody {

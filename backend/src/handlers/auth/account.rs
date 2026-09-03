@@ -230,8 +230,8 @@ pub async fn update_email(
 /// moyen de connaître son propre plafond actuel avant de le modifier (voir update_device_limit()) —
 /// PUT /devices/limit ne renvoie qu'un 200 vide, jamais la valeur en vigueur.
 pub async fn get_me(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
-    let (max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings): (i64, bool, bool) = sqlx::query_as(
-        "SELECT max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings FROM users WHERE email = ?"
+    let (max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, preferred_theme): (i64, bool, bool, String) = sqlx::query_as(
+        "SELECT max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, preferred_theme FROM users WHERE email = ?"
     )
         .bind(&user.email)
         .fetch_one(&state.db)
@@ -247,6 +247,12 @@ pub async fn get_me(State(state): State<Arc<AppState>>, user: AuthUser) -> Resul
         // décider d'afficher la section (voir pages/Settings.tsx), is_admin étant déjà exposé
         // séparément juste en dessous.
         "can_choose_server_in_settings": can_choose_server_in_settings,
+        // Retour utilisateur : "que le thème soit appliqué partout" — voir
+        // handlers/theme_customization.rs::update_preferred_theme et la migration
+        // 20260903070000_users_preferred_theme.sql. Appliqué par le CLIENT à l'établissement de
+        // session (voir state/AuthContext.tsx::establishSession côté app, App.tsx côté extension),
+        // jamais interprété ici — le serveur ne fait que stocker/relire une chaîne opaque.
+        "preferred_theme": preferred_theme,
         // Voir handlers/admin.rs::update_user_role() : SEUL ce compte (ADMIN_EMAIL) peut changer
         // un rôle modérateur — exposé ici pour que l'écran Administration puisse masquer les
         // boutons promouvoir/rétrograder pour tout le monde d'autre, plutôt que de laisser un

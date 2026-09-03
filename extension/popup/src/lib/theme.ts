@@ -43,10 +43,17 @@ function paletteClassFor(theme: Theme): string | null {
 // Aucune implication sécurité : c'est une préférence d'affichage, pas une donnée sensible.
 let cachedTheme: Theme | null = null;
 
+/** Valide qu'une chaîne quelconque (localStorage potentiellement périmé, ou valeur venue du
+ * serveur — voir App.tsx::syncThemeCustomization) correspond bien à un thème connu de CETTE
+ * version du client, avec repli sur "dark" sinon. Voir le commentaire équivalent côté desktop
+ * (frontend(app)/src/lib/theme.ts) pour le même raisonnement. */
+export function toValidTheme(value: string | null | undefined): Theme {
+  return (VALID_THEMES as readonly string[]).includes(value ?? "") ? (value as Theme) : "dark";
+}
+
 export function getTheme(): Theme {
   if (cachedTheme) return cachedTheme;
-  const stored = localStorage.getItem(STORAGE_KEY);
-  cachedTheme = (VALID_THEMES as readonly string[]).includes(stored ?? "") ? (stored as Theme) : "dark"; // nouveau défaut — voir le commentaire d'en-tête.
+  cachedTheme = toValidTheme(localStorage.getItem(STORAGE_KEY));
   return cachedTheme;
 }
 

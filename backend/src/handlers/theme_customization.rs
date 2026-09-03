@@ -13,7 +13,7 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
-use crate::{AppState, error::AppError, middleware::AuthUser, repository::{ThemeProfileRepository, ThemeShareRepository}, models::{ThemeProfilePayload, ShareThemeProfilePayload}};
+use crate::{AppState, error::AppError, middleware::AuthUser, repository::{ThemeProfileRepository, ThemeShareRepository}, models::{ThemeProfilePayload, ShareThemeProfilePayload, UpdatePreferredThemePayload, VALID_THEMES}};
 use validator::Validate;
 
 /// Tous les profils du compte connecté (voir ThemeProfileView pour `is_active`) — liste vide, pas
@@ -131,6 +131,37 @@ pub async fn decline_shared_theme_profile(State(state): State<Arc<AppState>>, us
     if !declined {
         return Err(AppError::NotFound);
     }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// =========================================================================
+// CHOIX DU THÈME LUI-MÊME (preset ou "custom") — retour utilisateur : "je veux que lorsqu'on
+// choisit un thème ce soit pour partout (aussi l'extension) que le thème soit appliqué partout".
+// Distinct de tout ce qui précède (qui gère les COULEURS d'un profil "Personnalisé…") : ce champ
+// dit simplement LEQUEL des thèmes disponibles est actuellement choisi sur le compte, y compris un
+// simple preset (Sombre/Minuit/Océan/...) qui restait jusqu'ici purement local à chaque appareil
+// (voir la migration 20260903070000_users_preferred_theme.sql).
+// =========================================================================
+
+/// Met à jour le thème actuellement choisi par le compte connecté. Aucune vérification de rôle
+/// au-delà d'être connecté (même raisonnement que le reste de ce fichier) : une préférence
+/// d'affichage n'a rien à protéger.
+pub async fn update_preferred_theme(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Json(payload): Json<UpdatePreferredThemePayload>,
+) -> Result<impl IntoResponse, AppError> {
+    payload.validate()?;
+    if !VALID_THEMES.contains(&payload.theme.as_str()) {
+        return Err(AppError::ValidationError("Thème inconnu.".to_string()));
+    }
+
+    sqlx::query("UPDATE users SET preferred_theme = ? WHERE email = ?")
+        .bind(&payload.theme)
+        .bind(&user.email)
+        .execute(&state.db)
+        .await?;
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -576,5 +607,63 @@ mod tests {
         let received = list_shared_theme_profiles(State(state.clone()), auth("recipient5@example.com")).await.unwrap();
         let received_body = read_json_body(received.into_response()).await;
         assert_eq!(received_body.as_array().unwrap().len(), 1);
+    }
+
+    /// RÉGRESSION : le thème choisi (preset ou "custom") doit être persisté et relisible via
+    /// GET /me (voir handlers/auth/account.rs::get_me) — c'est tout l'intérêt de ce champ (retour
+    /// utilisateur : "que le thème soit appliqué partout").
+    #[tokio::test]
+    async fn test_update_preferred_theme_persists_and_is_readable_via_get_me() {
+        let state = build_test_state(None).await;
+        let email = "themepref@example.com";
+        register_test_user(&state, email).await;
+
+        update_preferred_theme(State(state.clone()), auth(email), Json(UpdatePreferredThemePayload { theme: "midnight".to_string() }))
+            .await
+            .expect("un thème valide doit être accepté");
+
+        let stored: (String,) = sqlx::query_as("SELECT preferred_theme FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(stored.0, "midnight");
+    }
+
+    /// RÉGRESSION : une valeur hors de VALID_THEMES doit être rejetée (400), jamais stockée telle
+    /// quelle — sinon un client buggé pourrait laisser un compte dans un état que ni l'app ni
+    /// l'extension ne savent interpréter (repli silencieux sur "dark" des deux côtés, mais mieux
+    /// vaut refuser à la source).
+    #[tokio::test]
+    async fn test_update_preferred_theme_rejects_unknown_value() {
+        let state = build_test_state(None).await;
+        let email = "badtheme@example.com";
+        register_test_user(&state, email).await;
+
+        let result = update_preferred_theme(State(state.clone()), auth(email), Json(UpdatePreferredThemePayload { theme: "not-a-real-theme".to_string() })).await;
+        assert!(matches!(result, Err(AppError::ValidationError(_))));
+
+        let stored: (String,) = sqlx::query_as("SELECT preferred_theme FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(stored.0, "dark", "la valeur par défaut ne doit pas avoir été écrasée par une valeur invalide");
+    }
+
+    /// Défaut ('dark') pour un compte qui n'a jamais touché ce réglage — non-régression du
+    /// comportement précédent (voir le commentaire de la migration).
+    #[tokio::test]
+    async fn test_preferred_theme_defaults_to_dark() {
+        let state = build_test_state(None).await;
+        let email = "neverset@example.com";
+        register_test_user(&state, email).await;
+
+        let stored: (String,) = sqlx::query_as("SELECT preferred_theme FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(stored.0, "dark");
     }
 }
