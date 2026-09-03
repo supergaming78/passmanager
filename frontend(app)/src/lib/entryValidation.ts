@@ -5,16 +5,22 @@
 //
 // Retour utilisateur : "je veux qu'on vérifie ce qu'il y a dans les entrées lorsqu'on ajoute une
 // carte bancaire ou carte d'identité pour qu'il n'y ait pas de lettre là où il faut avoir
-// uniquement des numéros [...] et s'assurer qu'une URL commence toujours par http, https."
+// uniquement des numéros [...] et s'assurer qu'une URL commence toujours par http, https." Puis,
+// en clarifiant ce que "aussi au mot de passe" voulait dire : PAS le mot de passe lui-même, mais
+// les AUTRES champs du formulaire d'un type "Mot de passe" (ex: email de connexion) — voir
+// l'entrée loginEmail ci-dessous.
 //
 // Champs volontairement PAS validés en format ici :
 // - Le numéro de document d'identité (extraFields identity) : contrairement à une carte bancaire,
 //   les numéros de document mélangent souvent lettres ET chiffres selon le pays/document (passeport
 //   français "12AB34567", nouvelle carte d'identité française post-2021...) — une contrainte
 //   "chiffres uniquement" y rejetterait à tort des numéros parfaitement valides.
-// - Le mot de passe lui-même (type "login") : aucune contrainte de format n'a de sens pour un mot
-//   de passe, au contraire (autoriser n'importe quel caractère est le comportement correct).
-// - nationality/address (identity) : texte libre, trop variable pour une règle de format fiable.
+// - Le mot de passe lui-même (type "Mot de passe", ex-"Identifiant") : aucune contrainte de format
+//   n'a de sens pour un mot de passe, au contraire (autoriser n'importe quel caractère est le
+//   comportement correct).
+// - username (identifiant de connexion), nationality/address (identity) : texte libre, trop
+//   variable pour une règle de format fiable (un identifiant peut être un pseudo, un numéro de
+//   téléphone, etc. — pas toujours une adresse email, contrairement à loginEmail).
 
 import type { EntryType } from "./vaultCrypto";
 import { normalizeAndValidateUrl } from "./openExternalUrl";
@@ -26,7 +32,13 @@ interface ValidatableEntry {
   password: string;
   extraFields: Record<string, string>;
   url: string;
+  loginEmail: string;
 }
+
+// Volontairement simple (pas la monstrueuse regex RFC 5322 complète) : attrape les fautes de
+// frappe courantes (email sans "@", sans domaine) sans risquer de rejeter à tort une adresse
+// valide mais inhabituelle.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const CARD_EXPIRY_YEAR_TOLERANCE_PAST = 1; // années dans le passé encore tolérées (carte qui vient d'expirer)
 const CARD_EXPIRY_YEAR_TOLERANCE_FUTURE = 30; // au-delà, presque certainement une faute de frappe
@@ -67,6 +79,13 @@ export function validateEntryFields(values: ValidatableEntry): string | null {
     if (cvv && !/^\d{3,4}$/.test(cvv)) {
       return "CVV : uniquement des chiffres (3 ou 4).";
     }
+  }
+
+  // Email de connexion (type "Mot de passe" uniquement — seul type qui a ce champ) : s'il est
+  // rempli, doit ressembler à une adresse email. Retour utilisateur : "cette logique [validation
+  // de format] s'applique partout, aussi au [formulaire de type] mot de passe."
+  if (values.entryType === "login" && values.loginEmail.trim() && !EMAIL_PATTERN.test(values.loginEmail.trim())) {
+    return "Email de connexion : format invalide.";
   }
 
   // Champ URL commun à tous les types (voir VaultEntryForm.tsx — pas réservé à "login") : doit

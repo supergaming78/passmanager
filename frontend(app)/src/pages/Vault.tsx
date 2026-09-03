@@ -60,7 +60,7 @@ function EntryTypeIcon({ entryType }: { entryType: PlainVaultEntry["entryType"] 
  * passe d'abord, le contenu le plus consulté) plutôt qu'alphabétique. Mêmes 4 types que
  * components/VaultEntryForm.tsx::TYPE_LABELS, ici seulement le nom au pluriel pour un en-tête. */
 const TYPE_ORDER: EntryType[] = ["login", "card", "identity", "note"];
-const TYPE_SECTION_LABELS: Record<EntryType, string> = { login: "Identifiants", card: "Cartes bancaires", identity: "Identités", note: "Notes sécurisées" };
+const TYPE_SECTION_LABELS: Record<EntryType, string> = { login: "Mots de passe", card: "Cartes bancaires", identity: "Identités", note: "Notes sécurisées" };
 
 /** Regroupe une liste d'entrées par dossier (nom du dossier en en-tête) — factorisé pour être
  * appelé soit UNE fois sur tout le coffre (pas de séparation par type, voir groupedSections),
@@ -288,7 +288,7 @@ export default function Vault() {
   }, [entries, debouncedSearch, folderFilter, sortBy, quickFilter, reusedPasswordIds]);
 
   // Types d'entrée distincts déjà présents dans le coffre — détermine si un regroupement par type
-  // a un intérêt (voir typeSections plus bas) : inutile d'afficher un unique en-tête "Identifiants"
+  // a un intérêt (voir typeSections plus bas) : inutile d'afficher un unique en-tête "Mots de passe"
   // au-dessus de tout le coffre pour quelqu'un qui n'a que des mots de passe.
   const existingTypes = useMemo(() => Array.from(new Set(entries.map((e) => e.entryType))), [entries]);
 

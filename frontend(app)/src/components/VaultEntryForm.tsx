@@ -11,7 +11,7 @@ export type VaultEntryFormValues = Omit<PlainVaultEntry, "id" | "updatedAt" | "v
  * plutôt que d'ajouter une colonne dédiée par type par champ (voir le commentaire de la migration
  * 20260830000000_vault_entry_types.sql) — ce tableau centralise uniquement leur étiquette. */
 const TYPE_LABELS: Record<EntryType, { typeLabel: string; siteName: string; sitePlaceholder: string; username: string; password: string }> = {
-  login: { typeLabel: "Identifiant", siteName: "Site / application", sitePlaceholder: "ex: GitHub", username: "Identifiant", password: "Mot de passe" },
+  login: { typeLabel: "Mot de passe", siteName: "Site / application", sitePlaceholder: "ex: GitHub", username: "Identifiant", password: "Mot de passe" },
   card: { typeLabel: "Carte bancaire", siteName: "Nom de la carte", sitePlaceholder: "ex: Visa Perso", username: "Titulaire", password: "Numéro de carte" },
   identity: { typeLabel: "Identité", siteName: "Nom du document", sitePlaceholder: "ex: Passeport", username: "Nom complet", password: "Numéro de document" },
   note: { typeLabel: "Note sécurisée", siteName: "Titre", sitePlaceholder: "ex: Code du digicode", username: "", password: "" },
