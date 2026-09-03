@@ -212,6 +212,15 @@ export const HUE_PRESETS: { hue: number; label: string }[] = [
   { hue: 330, label: "Rose" },
 ];
 
+/** Dégradé arc-en-ciel posé en `style` inline sur chaque curseur de teinte (retour utilisateur :
+ * "améliore [...] la sélection de couleur, rends-la plus complète") — voir `.hue-slider` dans
+ * App.css pour la classe qui rend ce `background` réellement visible (un `<input type="range">`
+ * natif l'ignore sinon). Luminosité/chroma FIXES (mêmes que les pastilles HUE_PRESETS) : ce
+ * dégradé sert à repérer une teinte visuellement, pas à prévisualiser le rendu exact (déjà fait
+ * par le curseur de luminosité et l'aperçu visuel, voir ThemePreviewMockup). Calculé UNE FOIS ici
+ * (24 arrêts, tous les 15°) plutôt qu'à chaque rendu de curseur. */
+export const HUE_GRADIENT = `linear-gradient(to right, ${Array.from({ length: 25 }, (_, i) => `oklch(65% .2 ${i * 15})`).join(", ")})`;
+
 /** Couleurs pour l'aperçu visuel de l'éditeur (retour utilisateur : "aperçu visuel dans
  * l'éditeur") — reprennent EXACTEMENT le calcul réellement appliqué (voir stepColor ci-dessus),
  * au palier le plus représentatif de chaque usage (600 = couleur de bouton "plein", 500 = ★
@@ -265,7 +274,18 @@ const BACKGROUND_CHROMA_LIGHT: Record<BackgroundStyle, [string, string, string]>
  * previewBackgroundColors ci-dessous), même raison que stepColor() plus haut. */
 function backgroundColors(hue: number, lightness: number, style: BackgroundStyle): { page: string; card: string; border: string; isDark: boolean } {
   const isDark = lightness < 50;
-  const [c1, c2, c3] = isDark ? BACKGROUND_CHROMA_DARK[style] : BACKGROUND_CHROMA_LIGHT[style];
+  // CORRECTIF SÉCURITÉ (retour utilisateur : "une erreur est survenue" en ouvrant Réglages,
+  // causé par un backend pas encore redémarré renvoyant une forme de profil antérieure au champ
+  // `background_style`, actuel) : `style` n'est PAS forcément l'une des 3 valeurs valides ici — ni
+  // applyBackground() ni previewBackgroundColors() (les deux seuls appelants) ne passent par
+  // sanitizeCustomThemeConfig() avant d'arriver ici. Indexer BACKGROUND_CHROMA_DARK/LIGHT avec une
+  // clé absente (`undefined`, une ancienne valeur...) renvoyait `undefined`, et la déstructuration
+  // juste en dessous levait une exception NON RATTRAPÉE — faisait planter TOUTE la page Réglages
+  // (voir ErrorBoundary.tsx), pas juste perdre la couleur comme pour les autres champs déjà
+  // protégés (voir sanitizeCustomThemeConfig). `in` plutôt qu'un appel à sanitizeCustomThemeConfig
+  // (qui reconstruit toute une config) : ne concerne qu'UN champ ici.
+  const safeStyle: BackgroundStyle = style in BACKGROUND_CHROMA_DARK ? style : "neutral";
+  const [c1, c2, c3] = isDark ? BACKGROUND_CHROMA_DARK[safeStyle] : BACKGROUND_CHROMA_LIGHT[safeStyle];
   if (isDark) {
     // Écarts natifs Tailwind neutral 950->900->800 : 14.5 -> 20.5 (+6) -> 26.9 (+12.4).
     return {

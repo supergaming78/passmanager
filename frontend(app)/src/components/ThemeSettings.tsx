@@ -3,6 +3,7 @@ import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Th
 import {
   DEFAULT_CUSTOM_THEME,
   HUE_PRESETS,
+  HUE_GRADIENT,
   previewAccentColor,
   previewDangerColor,
   previewSuccessColor,
@@ -82,10 +83,13 @@ function ColorRow({
           value={hue}
           disabled={hueDisabled}
           onChange={(e) => onChange({ hue: Number(e.target.value) })}
-          className="w-full disabled:opacity-40"
-          style={hueDisabled ? undefined : { accentColor: `oklch(65% .2 ${hue})` }}
+          className="hue-slider w-full"
+          style={{ background: HUE_GRADIENT }}
           aria-label={`${label} — teinte`}
         />
+        {/* Retour utilisateur : "rends [la sélection de couleur] plus complète" — valeur numérique
+            exacte à côté du curseur, pas seulement sa position. */}
+        <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-neutral-500">{Math.round(hue)}°</span>
       </div>
       {/* Retour utilisateur : "améliore la sélection de couleur" — teintes toutes prêtes en plus
           du curseur, un clic suffit (voir HUE_PRESETS dans lib/customTheme.ts). */}
@@ -117,6 +121,7 @@ function ColorRow({
           style={{ accentColor: `oklch(${lightness}% ${hueDisabled ? 0 : ".15"} ${hue})` }}
           aria-label={`${label} — luminosité (plus sombre/plus clair)`}
         />
+        <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-neutral-500">{Math.round(lightness)}%</span>
       </div>
     </div>
   );

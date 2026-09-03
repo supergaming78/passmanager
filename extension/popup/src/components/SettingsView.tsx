@@ -23,6 +23,7 @@ import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Th
 import {
   DEFAULT_CUSTOM_THEME,
   HUE_PRESETS,
+  HUE_GRADIENT,
   previewAccentColor,
   previewDangerColor,
   previewSuccessColor,
@@ -508,21 +509,23 @@ export default function SettingsView({
                           aria-hidden="true"
                         />
                       </div>
-                      {/* Retour utilisateur : "fait en sorte que les curseurs prennent la couleur
-                          sur laquelle ils sont" — voir ThemeSettings.tsx côté desktop pour le même
-                          raisonnement (teinte : couleur vive à la teinte pointée ; luminosité : la
-                          vraie couleur actuelle, donc noir/blanc à ses extrémités, voulu). */}
-                      <input
-                        type="range"
-                        min={0}
-                        max={359}
-                        value={hue}
-                        disabled={hueDisabled}
-                        onChange={(e) => updateDraftProfile({ [hueKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
-                        className="w-full disabled:opacity-40"
-                        style={hueDisabled ? undefined : { accentColor: `oklch(65% .2 ${hue})` }}
-                        aria-label={`${label} — teinte`}
-                      />
+                      {/* Retour utilisateur : "améliore [...] la sélection de couleur, rends-la
+                          plus complète" — dégradé arc-en-ciel + valeur numérique, voir
+                          ThemeSettings.tsx côté desktop pour le même raisonnement. */}
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="range"
+                          min={0}
+                          max={359}
+                          value={hue}
+                          disabled={hueDisabled}
+                          onChange={(e) => updateDraftProfile({ [hueKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
+                          className="hue-slider w-full"
+                          style={{ background: HUE_GRADIENT }}
+                          aria-label={`${label} — teinte`}
+                        />
+                        <span className="w-7 shrink-0 text-right text-[10px] tabular-nums text-neutral-500">{Math.round(hue)}°</span>
+                      </div>
                       {/* Retour utilisateur : "améliore la sélection de couleur" — voir
                           ThemeSettings.tsx côté desktop pour le même raisonnement. */}
                       <div className="mt-0.5 flex flex-wrap gap-1">
@@ -541,16 +544,19 @@ export default function SettingsView({
                           />
                         ))}
                       </div>
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        value={lightness}
-                        onChange={(e) => updateDraftProfile({ [lightnessKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
-                        className="w-full"
-                        style={{ accentColor: `oklch(${lightness}% ${hueDisabled ? 0 : ".15"} ${hue})` }}
-                        aria-label={`${label} — luminosité`}
-                      />
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          value={lightness}
+                          onChange={(e) => updateDraftProfile({ [lightnessKey]: Number(e.target.value) } as Partial<CustomThemeConfig>)}
+                          className="w-full"
+                          style={{ accentColor: `oklch(${lightness}% ${hueDisabled ? 0 : ".15"} ${hue})` }}
+                          aria-label={`${label} — luminosité`}
+                        />
+                        <span className="w-7 shrink-0 text-right text-[10px] tabular-nums text-neutral-500">{Math.round(lightness)}%</span>
+                      </div>
                       {hueKey === "backgroundHue" && (
                         <div className="mt-1 flex gap-1">
                           {(
