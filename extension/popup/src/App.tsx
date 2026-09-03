@@ -10,7 +10,7 @@ import { decryptEntry, encryptEntry, type PlainVaultEntry } from "./lib/vaultCry
 import { getPreferredIdentifier } from "./lib/entryIdentifier";
 import { isStandaloneWindow, openStandaloneAndClose } from "./lib/popupWindow";
 import { getWindowMode } from "./lib/settings";
-import { runAutofill, getActiveTabUrl, domainsLikelyMatch } from "./lib/autofill";
+import { runAutofill, runCardAutofill, getActiveTabUrl, domainsLikelyMatch } from "./lib/autofill";
 import { getErrorMessage } from "./lib/errors";
 import { copyPasswordWithAutoClear } from "./lib/clipboard";
 import * as entrySharing from "./lib/entrySharing";
@@ -463,6 +463,34 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
     }
   }
 
+  /** Retour utilisateur : "pouvoir l'utiliser avec l'extension pour automatiquement remplir les
+   * champs de la carte bancaire lorsqu'on fait un achat" — même principe que handleFill()
+   * ci-dessus pour une connexion, sur un formulaire de PAIEMENT (voir lib/autofill.ts::
+   * runCardAutofill). Pas d'avertissement de domaine ici (contrairement à handleFill) : une carte
+   * bancaire n'est par nature pas rattachée à un seul site, se resservir d'un site à l'autre est
+   * l'usage normal, pas un signal de phishing. */
+  async function handleFillCard(entry: PlainVaultEntry) {
+    setError(null);
+    try {
+      const result = await runCardAutofill(
+        entry.password, // numéro de carte (voir components/VaultEntryForm.tsx::TYPE_LABELS.card)
+        entry.username, // titulaire
+        entry.extraFields.expiryMonth ?? "",
+        entry.extraFields.expiryYear ?? "",
+        entry.extraFields.cvv ?? "",
+      );
+      if (!result.numberFilled && !result.nameFilled && !result.expiryFilled && !result.cvvFilled) {
+        setError("Aucun champ de paiement trouvé sur cette page.");
+        return;
+      }
+      setFilledId(entry.id);
+      setTimeout(() => setFilledId((id) => (id === entry.id ? null : id)), 1500);
+      recordEntryUse(session.authorizedRequest, entry.id);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }
+
   async function handleToggleFavorite(entry: PlainVaultEntry) {
     setEntries((prev) => (prev ? prev.map((e) => (e.id === entry.id ? { ...e, isFavorite: !e.isFavorite } : e)) : prev));
     try {
@@ -816,13 +844,20 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
               Ouvrir
             </button>
           )}
-          <button
-            onClick={() => void handleFill(entry)}
-            title="Remplir le formulaire de connexion de l'onglet actif"
-            className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700"
-          >
-            {filledId === entry.id ? "Rempli !" : "Remplir"}
-          </button>
+          {/* Retour utilisateur : "pouvoir l'utiliser avec l'extension pour automatiquement
+              remplir les champs de la carte bancaire" — branché sur le bon remplissage selon le
+              type d'entrée. Masqué pour "note"/"identity" : ni l'un ni l'autre n'a de formulaire
+              web correspondant à remplir automatiquement (contrairement à "login"/"card"),
+              l'afficher n'aurait fait qu'échouer silencieusement à chaque clic. */}
+          {(entry.entryType === "login" || entry.entryType === "card") && (
+            <button
+              onClick={() => void (entry.entryType === "card" ? handleFillCard(entry) : handleFill(entry))}
+              title={entry.entryType === "card" ? "Remplir le formulaire de paiement de l'onglet actif" : "Remplir le formulaire de connexion de l'onglet actif"}
+              className="rounded-md bg-indigo-600 px-2 py-1 text-xs font-medium text-white hover:bg-indigo-700"
+            >
+              {filledId === entry.id ? "Rempli !" : "Remplir"}
+            </button>
+          )}
           <button
             onClick={() => void handleCopy(entry)}
             title="Copier le mot de passe"

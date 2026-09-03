@@ -58,6 +58,135 @@ function fillCredentials(usernameOrEmail: string, password: string): FillResult 
   return { passwordFilled, usernameFilled };
 }
 
+/** Retour utilisateur : "pouvoir l'utiliser avec l'extension pour automatiquement remplir les
+ * champs de la carte bancaire lorsqu'on fait un achat" — le formulaire dédié "Carte bancaire"
+ * (voir components/VaultEntryForm.tsx, déjà en place) existait déjà pour STOCKER une carte,
+ * seul le remplissage automatique sur un formulaire de paiement manquait. */
+export interface CardFillResult {
+  numberFilled: boolean;
+  nameFilled: boolean;
+  expiryFilled: boolean;
+  cvvFilled: boolean;
+}
+
+/**
+ * Injectée telle quelle dans la page par chrome.scripting.executeScript — mêmes contraintes que
+ * fillCredentials() ci-dessous (autonome, aucune closure externe). Détection PRIORITAIREMENT par
+ * l'attribut `autocomplete` standard des formulaires de paiement (cc-number/cc-name/cc-exp/
+ * cc-exp-month/cc-exp-year/cc-csc — voir la spec HTML "Autofill field name", déjà respectée par la
+ * plupart des grandes plateformes de paiement — Stripe, Shopify...), avec un repli par mots-clés
+ * dans name/id/placeholder/aria-label pour les formulaires qui ne le déclarent pas. Champ CVV
+ * volontairement rempli comme les autres (aucun password manager grand public ne s'en abstient —
+ * 1Password/Bitwarden/Chrome le font tous — c'est TA donnée, pour TON usage, pas une carte que ce
+ * site conserverait).
+ */
+function fillCardCredentials(cardNumber: string, cardholderName: string, expiryMonth: string, expiryYear: string, cvv: string): CardFillResult {
+  function setNativeValue(el: HTMLInputElement | HTMLSelectElement, value: string) {
+    const proto = el.tagName === "SELECT" ? window.HTMLSelectElement.prototype : window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    setter?.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  function byAutocomplete(values: string[]): HTMLInputElement | HTMLSelectElement | null {
+    for (const value of values) {
+      const el = document.querySelector<HTMLInputElement | HTMLSelectElement>(`input[autocomplete="${value}"], select[autocomplete="${value}"]`);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function byKeyword(keywords: string[]): HTMLInputElement | HTMLSelectElement | null {
+    const candidates = document.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input, select");
+    for (const el of candidates) {
+      const haystack = `${el.name} ${el.id} ${el.getAttribute("placeholder") ?? ""} ${el.getAttribute("aria-label") ?? ""}`.toLowerCase();
+      if (keywords.some((k) => haystack.includes(k))) return el;
+    }
+    return null;
+  }
+
+  // Un <select> (courant pour le mois/année d'expiration) n'accepte pas n'importe quelle chaîne —
+  // cherche l'<option> dont la VALEUR ou le TEXTE correspond à l'une des représentations plausibles
+  // (ex: mois "03" écrit "3", "03" ou parfois le nom du mois) plutôt que de forcer une valeur qui
+  // ne matcherait aucune option et laisserait le select sur son choix par défaut sans le signaler.
+  function fillMonthOrYear(el: HTMLInputElement | HTMLSelectElement, value: string, isMonth: boolean): boolean {
+    if (el instanceof HTMLSelectElement) {
+      const candidates = isMonth
+        ? [value, value.padStart(2, "0"), String(Number(value))]
+        : [value, value.slice(-2), value.padStart(4, "20")];
+      for (const opt of Array.from(el.options)) {
+        if (candidates.includes(opt.value) || candidates.includes(opt.textContent?.trim() ?? "")) {
+          setNativeValue(el, opt.value);
+          return true;
+        }
+      }
+      return false;
+    }
+    setNativeValue(el, isMonth ? value.padStart(2, "0") : value);
+    return true;
+  }
+
+  const result: CardFillResult = { numberFilled: false, nameFilled: false, expiryFilled: false, cvvFilled: false };
+
+  const numberField = byAutocomplete(["cc-number"]) ?? byKeyword(["cardnumber", "card-number", "cc-number", "ccnum", "numerocarte", "numéro de carte"]);
+  if (numberField) {
+    setNativeValue(numberField, cardNumber);
+    result.numberFilled = true;
+  }
+
+  const nameField = byAutocomplete(["cc-name"]) ?? byKeyword(["cardholder", "card-name", "cc-name", "nomcarte", "titulaire"]);
+  if (nameField) {
+    setNativeValue(nameField, cardholderName);
+    result.nameFilled = true;
+  }
+
+  const cvvField = byAutocomplete(["cc-csc", "cc-security-code"]) ?? byKeyword(["cvv", "cvc", "csc", "security-code", "securitycode", "cryptogramme"]);
+  if (cvvField) {
+    setNativeValue(cvvField, cvv);
+    result.cvvFilled = true;
+  }
+
+  // Expiry : un seul champ combiné (format MM/AA le plus courant) d'abord, sinon deux champs
+  // séparés mois/année (texte OU <select>, voir fillMonthOrYear ci-dessus).
+  const combinedExpiry = byAutocomplete(["cc-exp"]);
+  if (combinedExpiry) {
+    setNativeValue(combinedExpiry, `${expiryMonth.padStart(2, "0")}/${expiryYear.slice(-2)}`);
+    result.expiryFilled = true;
+  } else {
+    const monthField = byAutocomplete(["cc-exp-month"]) ?? byKeyword(["exp-month", "expmonth", "expirymonth", "cc-month", "moisexpiration"]);
+    const yearField = byAutocomplete(["cc-exp-year"]) ?? byKeyword(["exp-year", "expyear", "expiryyear", "cc-year", "anneeexpiration"]);
+    if (monthField && fillMonthOrYear(monthField, expiryMonth, true)) result.expiryFilled = true;
+    if (yearField && fillMonthOrYear(yearField, expiryYear, false)) result.expiryFilled = true;
+  }
+
+  return result;
+}
+
+/**
+ * Appelée depuis la popup pour une entrée "Carte bancaire" — voir runAutofill() ci-dessous pour le
+ * même principe côté connexion. `expiryMonth`/`expiryYear` proviennent de `extraFields` (voir
+ * lib/vaultCrypto.ts::EntryType "card"), potentiellement vides si l'utilisateur ne les a pas
+ * renseignés — un champ non trouvé/non rempli ne fait jamais échouer les autres.
+ */
+export async function runCardAutofill(cardNumber: string, cardholderName: string, expiryMonth: string, expiryYear: string, cvv: string): Promise<CardFillResult> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) {
+    throw new Error("Aucun onglet actif trouvé.");
+  }
+
+  try {
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: fillCardCredentials,
+      args: [cardNumber, cardholderName, expiryMonth, expiryYear, cvv],
+    });
+    return injection.result as CardFillResult;
+  } catch {
+    throw new Error("Impossible de remplir sur cette page.");
+  }
+}
+
 /** Extrait le nom d'hôte d'une URL saisie par l'utilisateur, avec ou sans schéma (ex: "example.com"
  * aussi bien que "https://example.com/login") — `null` si la valeur n'est décidément pas une URL. */
 function safeHostname(rawUrl: string): string | null {
