@@ -146,13 +146,17 @@ function ColorRow({
         <span className="w-9 shrink-0 text-right text-[11px] tabular-nums text-neutral-500">{Math.round(saturation)}%</span>
       </div>
       {saturationPresets && (
+        // `flex-1` sur chaque bouton (au lieu d'une largeur au contenu) : les 3 boutons se
+        // partagent toujours la largeur disponible sans jamais déborder, même sur un écran très
+        // étroit — même technique déjà utilisée côté extension (SettingsView.tsx), reprise ici
+        // (retour utilisateur : "affichage du paramètre de personnalisation (petit écran)").
         <div className="ml-[4.5rem] mt-1 flex gap-1.5">
           {saturationPresets.map((preset) => (
             <button
               key={preset.label}
               type="button"
               onClick={() => onChange({ saturation: preset.value })}
-              className={`rounded-lg border px-2 py-0.5 text-[11px] ${
+              className={`flex-1 rounded-lg border px-2 py-0.5 text-[11px] ${
                 saturation === preset.value ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300" : "border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
               }`}
             >
@@ -584,11 +588,17 @@ export default function ThemeSettings() {
               {profiles.map((p) => (
                 <div key={p.id} className="flex flex-col gap-1">
                   <div
-                    className={`flex items-center gap-1 rounded-lg border px-2 py-1 text-xs ${
+                    // CORRECTIF (retour utilisateur : "affichage du paramètre de personnalisation
+                    // (petit écran)") : `flex-wrap` en filet de sécurité — un nom de profil long
+                    // (jusqu'à 60 caractères) combiné à 3-4 boutons texte pouvait déborder la
+                    // largeur de l'écran sur un téléphone étroit ; ça repasse à la ligne au lieu de
+                    // déborder. Le nom lui-même est tronqué juste en dessous, donc ce cas devient
+                    // rare, mais reste possible (accessibilité : taille de police système agrandie).
+                    className={`flex flex-wrap items-center gap-1 rounded-lg border px-2 py-1 text-xs ${
                       p.is_active ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300" : "border-neutral-300 dark:border-neutral-700"
                     }`}
                   >
-                    <button type="button" onClick={() => startEditProfile(p)} className="font-medium hover:underline">
+                    <button type="button" onClick={() => startEditProfile(p)} title={p.name} className="max-w-[7rem] truncate align-bottom font-medium hover:underline">
                       {p.name}
                       {p.is_active ? " ✓" : ""}
                     </button>

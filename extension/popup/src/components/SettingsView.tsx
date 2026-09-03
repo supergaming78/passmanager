@@ -576,11 +576,15 @@ export default function SettingsView({
                 {profiles.map((p) => (
                   <div key={p.id} className="flex flex-col gap-1">
                     <div
-                      className={`flex items-center gap-1 rounded-lg border px-1.5 py-0.5 text-[11px] ${
+                      // CORRECTIF (retour utilisateur : "affichage du paramètre de
+                      // personnalisation (petit écran)") — voir ThemeSettings.tsx côté desktop
+                      // pour le même correctif : `flex-wrap` en filet de sécurité, le popup fait
+                      // seulement 380px de large (App.css), donc particulièrement exposé.
+                      className={`flex flex-wrap items-center gap-1 rounded-lg border px-1.5 py-0.5 text-[11px] ${
                         p.is_active ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300" : "border-neutral-300 dark:border-neutral-700"
                       }`}
                     >
-                      <button type="button" onClick={() => startEditThemeProfile(p)} className="font-medium hover:underline">
+                      <button type="button" onClick={() => startEditThemeProfile(p)} title={p.name} className="max-w-[5rem] truncate align-bottom font-medium hover:underline">
                         {p.name}
                         {p.is_active ? " ✓" : ""}
                       </button>
