@@ -27,7 +27,7 @@
 // fond choisie (voir customTheme.ts::applyBackground). PLUSIEURS profils nommés, synchronisés par
 // COMPTE (voir api/client.ts, state/AuthContext.tsx::establishSession) — pas juste en local comme
 // le reste de ce fichier.
-import { applyCustomTheme, clearCustomTheme, DEFAULT_CUSTOM_THEME, type CustomThemeConfig } from "./customTheme";
+import { applyCustomTheme, clearCustomTheme, sanitizeCustomThemeConfig, DEFAULT_CUSTOM_THEME, type CustomThemeConfig } from "./customTheme";
 
 export type Theme = "dark" | "light" | "system" | "midnight" | "ocean" | "forest" | "sunset" | "rose" | "violet" | "amber" | "slate" | "custom";
 export type { CustomThemeConfig };
@@ -85,7 +85,11 @@ export function getCachedCustomTheme(): CustomThemeConfig {
   if (cachedCustomTheme) return cachedCustomTheme;
   try {
     const stored = localStorage.getItem(CUSTOM_THEME_STORAGE_KEY);
-    cachedCustomTheme = stored ? { ...DEFAULT_CUSTOM_THEME, ...(JSON.parse(stored) as Partial<CustomThemeConfig>) } : DEFAULT_CUSTOM_THEME;
+    // sanitizeCustomThemeConfig() : voir son commentaire dans customTheme.ts — une valeur laissée
+    // par un schéma antérieur (plusieurs versions de ce champ testées le même jour) ne doit jamais
+    // se propager en NaN à travers la génération de palette (retour utilisateur : "ça reste blank
+    // partout, le profil ne s'applique pas").
+    cachedCustomTheme = sanitizeCustomThemeConfig(stored ? (JSON.parse(stored) as Partial<CustomThemeConfig>) : null);
   } catch {
     cachedCustomTheme = DEFAULT_CUSTOM_THEME;
   }
@@ -97,7 +101,12 @@ export function getCachedCustomTheme(): CustomThemeConfig {
  * réactivité immédiate) et par establishSession() (valeur fraîchement récupérée du serveur, voir
  * plus haut). Ne touche PAS `passmanager.theme` (voir setTheme() ci-dessous) : choisir "custom"
  * reste un choix séparé du contenu de la personnalisation elle-même. */
-export function setCachedCustomTheme(config: CustomThemeConfig): void {
+export function setCachedCustomTheme(rawConfig: CustomThemeConfig): void {
+  // sanitizeCustomThemeConfig() : garantit que ce qui est PERSISTÉ (pas seulement ce qui est
+  // appliqué à l'écran, déjà protégé dans applyCustomTheme lui-même) reste toujours valide — sinon
+  // une valeur invalide écrite ici serait relue telle quelle par theme-init.js (anti-FOUC, en JS
+  // brut) au prochain démarrage, avant même que ce fichier n'ait la moindre chance de la nettoyer.
+  const config = sanitizeCustomThemeConfig(rawConfig);
   cachedCustomTheme = config;
   try {
     localStorage.setItem(CUSTOM_THEME_STORAGE_KEY, JSON.stringify(config));

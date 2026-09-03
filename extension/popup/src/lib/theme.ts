@@ -18,7 +18,7 @@
 // (contrairement aux presets ci-dessus, purement locaux) — voir App.tsx pour le point de
 // récupération (session active/juste après connexion, PAS un "établissement de session" dédié
 // comme côté desktop : la popup n'en a pas, voir lib/session.ts).
-import { applyCustomTheme, clearCustomTheme, DEFAULT_CUSTOM_THEME, type CustomThemeConfig } from "./customTheme";
+import { applyCustomTheme, clearCustomTheme, sanitizeCustomThemeConfig, DEFAULT_CUSTOM_THEME, type CustomThemeConfig } from "./customTheme";
 
 export type Theme = "dark" | "light" | "system" | "midnight" | "ocean" | "forest" | "sunset" | "rose" | "violet" | "amber" | "slate" | "custom";
 export type { CustomThemeConfig };
@@ -63,14 +63,18 @@ export function getCachedCustomTheme(): CustomThemeConfig {
   if (cachedCustomTheme) return cachedCustomTheme;
   try {
     const stored = localStorage.getItem(CUSTOM_THEME_STORAGE_KEY);
-    cachedCustomTheme = stored ? { ...DEFAULT_CUSTOM_THEME, ...(JSON.parse(stored) as Partial<CustomThemeConfig>) } : DEFAULT_CUSTOM_THEME;
+    // sanitizeCustomThemeConfig() : voir son commentaire dans customTheme.ts — une valeur laissée
+    // par un schéma antérieur ne doit jamais se propager en NaN (retour utilisateur : "ça reste
+    // blank partout, le profil ne s'applique pas").
+    cachedCustomTheme = sanitizeCustomThemeConfig(stored ? (JSON.parse(stored) as Partial<CustomThemeConfig>) : null);
   } catch {
     cachedCustomTheme = DEFAULT_CUSTOM_THEME;
   }
   return cachedCustomTheme;
 }
 
-export function setCachedCustomTheme(config: CustomThemeConfig): void {
+export function setCachedCustomTheme(rawConfig: CustomThemeConfig): void {
+  const config = sanitizeCustomThemeConfig(rawConfig);
   cachedCustomTheme = config;
   try {
     localStorage.setItem(CUSTOM_THEME_STORAGE_KEY, JSON.stringify(config));

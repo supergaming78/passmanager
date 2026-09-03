@@ -37,7 +37,23 @@
         var storedCfg = localStorage.getItem("passmanager.customTheme");
         if (storedCfg) {
           var parsed = JSON.parse(storedCfg);
-          for (var k in cfg) if (Object.prototype.hasOwnProperty.call(parsed, k)) cfg[k] = parsed[k];
+          // CORRECTIF (retour utilisateur : "ça reste blank partout, le profil ne s'applique pas") :
+          // une valeur non-numérique/hors-plage se propage en NaN plus bas (`NaN.toFixed(1)` renvoie
+          // la CHAÎNE "NaN", pas une exception — d'où une interface sans couleur mais qui ne plante
+          // jamais). N'accepte un champ de `parsed` que s'il est un nombre fini dans la bonne plage
+          // (booléen pour backgroundNeutral) — sinon garde la valeur par défaut de `cfg` telle
+          // quelle. Voir lib/customTheme.ts::sanitizeCustomThemeConfig, dupliqué ici à la main pour
+          // la même raison que le reste de ce fichier (autonomie, pas d'import).
+          for (var k in cfg) {
+            if (!Object.prototype.hasOwnProperty.call(parsed, k)) continue;
+            var v = parsed[k];
+            if (k === "backgroundNeutral") {
+              if (typeof v === "boolean") cfg[k] = v;
+            } else if (typeof v === "number" && isFinite(v)) {
+              var max = k.indexOf("Hue") !== -1 ? 359 : 100;
+              cfg[k] = Math.min(max, Math.max(0, v));
+            }
+          }
         }
       } catch (e2) {}
 

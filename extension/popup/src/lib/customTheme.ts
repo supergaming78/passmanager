@@ -139,6 +139,45 @@ function clampL(l: number): number {
   return Math.min(100, Math.max(0, l));
 }
 
+function clampHue(h: number): number {
+  return Math.min(359, Math.max(0, h));
+}
+
+/** CORRECTIF (retour utilisateur : "ça reste blank partout, le profil ne s'applique pas") : une
+ * valeur non-numérique/hors-plage (localStorage corrompu, valeur laissée par une version antérieure
+ * de ce schéma en cours de mise au point aujourd'hui même, un champ oublié...) se propage en NaN à
+ * travers applyFamily()/applyBackground() ci-dessous (`NaN.toFixed(1)` renvoie la CHAÎNE "NaN", pas
+ * une exception — l'app ne plante donc jamais, mais chaque `oklch(NaN% ...)` posé est une valeur
+ * CSS invalide : la propriété qui l'utilise (ex: `background-color: var(--color-neutral-950)`)
+ * retombe alors sur sa valeur INITIALE — `transparent` pour un fond — ce qui donne exactement une
+ * interface "sans aucune couleur" alors que la mise en page reste normale). Cette fonction
+ * garantit qu'AUCUNE valeur invalide ne peut jamais atteindre applyCustomTheme(), quelle que soit
+ * la provenance de la config (cache local, réponse serveur) — retombe champ par champ sur
+ * DEFAULT_CUSTOM_THEME plutôt que de faire échouer toute la config d'un coup pour UN SEUL champ
+ * corrompu. */
+export function sanitizeCustomThemeConfig(config: Partial<CustomThemeConfig> | null | undefined): CustomThemeConfig {
+  function hue(value: unknown, fallback: number): number {
+    return typeof value === "number" && Number.isFinite(value) ? clampHue(value) : fallback;
+  }
+  function lightness(value: unknown, fallback: number): number {
+    return typeof value === "number" && Number.isFinite(value) ? clampL(value) : fallback;
+  }
+  const c = config ?? {};
+  return {
+    backgroundHue: hue(c.backgroundHue, DEFAULT_CUSTOM_THEME.backgroundHue),
+    backgroundLightness: lightness(c.backgroundLightness, DEFAULT_CUSTOM_THEME.backgroundLightness),
+    backgroundNeutral: typeof c.backgroundNeutral === "boolean" ? c.backgroundNeutral : DEFAULT_CUSTOM_THEME.backgroundNeutral,
+    accentHue: hue(c.accentHue, DEFAULT_CUSTOM_THEME.accentHue),
+    accentLightness: lightness(c.accentLightness, DEFAULT_CUSTOM_THEME.accentLightness),
+    dangerHue: hue(c.dangerHue, DEFAULT_CUSTOM_THEME.dangerHue),
+    dangerLightness: lightness(c.dangerLightness, DEFAULT_CUSTOM_THEME.dangerLightness),
+    successHue: hue(c.successHue, DEFAULT_CUSTOM_THEME.successHue),
+    successLightness: lightness(c.successLightness, DEFAULT_CUSTOM_THEME.successLightness),
+    favoriteHue: hue(c.favoriteHue, DEFAULT_CUSTOM_THEME.favoriteHue),
+    favoriteLightness: lightness(c.favoriteLightness, DEFAULT_CUSTOM_THEME.favoriteLightness),
+  };
+}
+
 function applyFamily(el: HTMLElement, family: string, steps: Record<string, Step>, hue: number, lightness: number, anchorNativeL: number): void {
   const offset = lightness - anchorNativeL;
   for (const [step, { l, c }] of Object.entries(steps)) {
@@ -189,8 +228,12 @@ const ALL_FAMILY_PROPERTIES = [
 /** Applique la personnalisation sur `<html>` — appelée quand `getTheme() === "custom"` (voir
  * theme.ts::applyTheme). Renvoie `isDark` (déduit de la luminosité de fond, voir applyBackground
  * ci-dessus) — c'est applyTheme() qui pose la classe `dark`/`color-scheme`, PAS cette fonction :
- * elle ne touche qu'aux propriétés de couleur elles-mêmes. */
-export function applyCustomTheme(config: CustomThemeConfig): boolean {
+ * elle ne touche qu'aux propriétés de couleur elles-mêmes. `sanitizeCustomThemeConfig()` en tout
+ * premier : dernier filet de sécurité, même si l'appelant a déjà normalement sanitizé (voir
+ * getCachedCustomTheme() dans theme.ts) — voir le commentaire de sanitizeCustomThemeConfig pour ce
+ * que ça évite (interface qui perd toute couleur sans planter). */
+export function applyCustomTheme(rawConfig: CustomThemeConfig): boolean {
+  const config = sanitizeCustomThemeConfig(rawConfig);
   const el = document.documentElement;
   applyFamily(el, "indigo", INDIGO_STEPS, config.accentHue, config.accentLightness, INDIGO_ANCHOR_L);
   applyFamily(el, "red", RED_STEPS, config.dangerHue, config.dangerLightness, RED_ANCHOR_L);
