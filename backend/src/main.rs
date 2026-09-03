@@ -376,24 +376,27 @@ fn build_router(state: Arc<AppState>) -> Router {
     let ip_key_extractor = ConfigurableIpKeyExtractor {
         trust_proxy_headers: state.config.trust_proxy_headers,
     };
-    // CORRECTIF (retour utilisateur, 2026-09-02) : burst=8 restait trop strict en usage réel —
-    // cette clé est PARTAGÉE par IP (voir ip_key_extractor ci-dessus), donc plusieurs appareils
-    // personnels (téléphone, tablette, PC, extension) derrière la MÊME box internet consomment le
-    // même budget, pas un budget par appareil. Le vrai garde-fou contre le brute-force d'un compte
-    // PRÉCIS reste le verrou par compte (5 échecs, voir account_login_lockout) et le coût Argon2
-    // lui-même — ce limiteur-ci protège surtout contre l'épuisement de RAM/CPU d'un abus massif,
-    // pas la première ligne de défense anti-brute-force. burst=20/per_second=6 laisse largement
-    // plus de marge à un usage multi-appareils normal. INCHANGÉ lors du second passage de retours
-    // (même jour) sur les autres paliers ci-dessous : les routes protégées ICI (login, register,
-    // 2FA, reset de mot de passe...) ne sont normalement PAS sollicitées en usage courant après
-    // connexion (pas de re-login répété) — le signalement "trop de tentatives en usage normal"
-    // pointait donc vers auth_governor/global_governor (refresh, sync, chargement de pages), pas
-    // celui-ci. Le garder strict évite d'élargir sans raison la fenêtre d'un burst d'Argon2
-    // concurrents (~46 Mo chacun, voir crypto.rs::hash_password) qu'un burst plus large permettrait.
+    // CORRECTIF (retour utilisateur, 2026-09-02, x2) puis TROISIÈME PASSAGE (retour utilisateur :
+    // "en utilisant tout l'environnement les conditions sont trop limitées, j'ai très souvent trop
+    // de tentative") : les deux précédents assouplissements (burst 8 -> 20, un jour plus tôt) ne
+    // suffisaient toujours pas en usage réel — plutôt qu'un troisième petit pas qui reviendrait
+    // probablement une 4e fois, geste plus décisif cette fois. Cette clé reste PARTAGÉE par IP
+    // (voir ip_key_extractor ci-dessus) : plusieurs appareils personnels (téléphone, tablette, PC,
+    // extension) derrière la MÊME box internet consomment le même budget, pas un budget par
+    // appareil — c'est la cause structurelle de ces signalements répétés, pas un réglage isolé à
+    // corriger une fois pour toutes avec un petit ajustement. Le vrai garde-fou contre le
+    // brute-force d'un compte PRÉCIS reste le verrou par compte (5 échecs, voir
+    // account_login_lockout) et le coût Argon2 lui-même — ce limiteur-ci protège surtout contre
+    // l'épuisement de RAM/CPU d'un abus massif, pas la première ligne de défense anti-brute-force :
+    // pour un déploiement auto-hébergé personnel/familial (pas une cible multi-locataire publique),
+    // le tolérer plus large ici est un compromis raisonnable. per_second 6->10 (recharge plus
+    // rapide entre deux usages légitimes), burst 20->30 (pic simultané encore raisonnable côté RAM :
+    // 30 hachages Argon2 en pire cas ~1,4 Go, voir crypto.rs::hash_password — pas 40+, qui
+    // deviendrait risqué sur un petit serveur/VPS).
     let sensitive_governor = Arc::new(
         tower_governor::governor::GovernorConfigBuilder::default()
-            .per_second(6)
-            .burst_size(20)
+            .per_second(10)
+            .burst_size(30)
             .key_extractor(ip_key_extractor)
             .finish()
             .unwrap()
@@ -414,31 +417,39 @@ fn build_router(state: Arc<AppState>) -> Router {
             .finish()
             .unwrap()
     );
-    // CORRECTIF (retour utilisateur, 2026-09-02) : 15/s, burst 30 se vidait trop vite en usage
-    // multi-appareils normal — /auth/refresh (~toutes les 10 min PAR appareil connecté, voir
-    // AuthContext.tsx) et la reconnexion WebSocket (échange d'un ticket, voir sync.rs) partagent
-    // ce palier, sur le même budget IP que les autres appareils du foyer.
+    // CORRECTIF (retour utilisateur, 2026-09-02) puis TROISIÈME PASSAGE (voir sensitive_governor
+    // ci-dessus pour le contexte complet) : 30/s, burst 60 se vidait encore trop vite en usage
+    // multi-appareils réel — /auth/refresh (~toutes les 10 min PAR appareil connecté, voir
+    // AuthContext.tsx) ET la reconnexion WebSocket (échange d'un ticket, voir sync.rs) partagent ce
+    // palier, sur le même budget IP que les autres appareils du foyer ; depuis la synchronisation
+    // du thème par compte (retour utilisateur : "que le thème soit appliqué partout"), chaque
+    // établissement de session (app ET extension, à chaque ouverture) ajoute encore un peu de
+    // trafic régulier sur ce même budget. Pas de contrainte RAM/CPU particulière ici (contrairement
+    // à sensitive_governor et son coût Argon2) — doublé largement (60/s, burst 150) sans le
+    // compromis de sécurité que ça impliquerait sur le palier ci-dessus.
     let auth_governor = Arc::new(
         tower_governor::governor::GovernorConfigBuilder::default()
-            .per_second(30)
-            .burst_size(60)
+            .per_second(60)
+            .burst_size(150)
             .key_extractor(ip_key_extractor)
             .finish()
             .unwrap()
     );
-    // CORRECTIF (retour utilisateur, 2026-09-02) : 40/s, burst 80 se vidait trop vite en usage
-    // normal, encore pire à plusieurs appareils ouverts en même temps — une seule modification
-    // (édition, favori...) sur UN appareil rediffuse un événement de sync à TOUS les autres
-    // appareils connectés du même compte (voir sync.rs::broadcast_to_*), qui rechargent alors
-    // chacun plusieurs endpoints en parallèle (coffre, membres, entrées...) sur ce même palier —
-    // et ouvrir un écran avec plusieurs sections (ex: Réglages) déclenche déjà plusieurs requêtes
-    // parallèles à lui seul. Ce palier n'est PAS une défense anti-brute-force (voir sensitive_governor
-    // ci-dessus pour ça) : juste un garde-fou contre un abus massif/DoS, largement au-dessus de tout
-    // usage légitime même multi-appareils.
+    // CORRECTIF (retour utilisateur, 2026-09-02) puis TROISIÈME PASSAGE (voir sensitive_governor
+    // ci-dessus pour le contexte complet) : 100/s, burst 200 se vidait encore trop vite à plusieurs
+    // appareils ouverts en même temps — une seule modification (édition, favori...) sur UN appareil
+    // rediffuse un événement de sync à TOUS les autres appareils connectés du même compte (voir
+    // sync.rs::broadcast_to_*), qui rechargent alors chacun plusieurs endpoints en parallèle
+    // (coffre, membres, entrées...) sur ce même palier — et ouvrir un écran avec plusieurs sections
+    // (ex: Réglages) déclenche déjà plusieurs requêtes parallèles à lui seul. Ce palier n'est PAS
+    // une défense anti-brute-force (voir sensitive_governor ci-dessus pour ça) : juste un garde-fou
+    // contre un abus massif/DoS — doublé largement (200/s, burst 500) reste très en-dessous de ce
+    // qu'un abus délibéré produirait, tout en couvrant confortablement un usage familial
+    // multi-appareils avec l'app, l'extension et le nouveau thème synchronisé par compte.
     let global_governor = Arc::new(
         tower_governor::governor::GovernorConfigBuilder::default()
-            .per_second(100)
-            .burst_size(200)
+            .per_second(200)
+            .burst_size(500)
             .key_extractor(ip_key_extractor)
             .finish()
             .unwrap()
@@ -1164,13 +1175,13 @@ mod tests {
         let state = build_test_state().await;
         let app = build_router(state);
 
-        // global_governor : 100/s, burst 200 (voir build_router()) — un lot de 220 requêtes
+        // global_governor : 200/s, burst 500 (voir build_router()) — un lot de 520 requêtes
         // rapides sur une route SANS gouverneur dédié (/health, en dehors de /auth) doit épuiser
         // le burst et déclencher au moins un 429 avant que le token bucket n'ait le temps de se
         // recharger (toutes ces requêtes s'exécutent en mémoire via oneshot(), sans latence réseau
         // réelle).
         let mut saw_429_with_cors_header = false;
-        for _ in 0..220 {
+        for _ in 0..520 {
             let mut request = Request::builder()
                 .method("GET")
                 .uri("/health")

@@ -76,10 +76,10 @@ explicitement déclaré derrière un reverse proxy de confiance) :
 
 | Palier | Routes concernées | Limite |
 |---|---|---|
-| Sensible | `POST /auth/register`, `/login`, `/verify-email`, `/resend-verification`, `/forgot-password`, `/reset-password`, `/verify-device` ; `PUT /auth/email`, `/auth/password` ; `PUT /admin/users/{email}/role`, `/admin/users/{email}/email`, `/admin/users/{email}/extension-email-change`, `/admin/users/extension-email-change-all`, `/admin/users/{email}/server-choice`, `/admin/users/server-choice-all`, `/admin/server-choice-at-login` ; `POST /admin/users/{email}/revoke-sessions` ; `DELETE /admin/users/{email}` | 4 req/s, rafale de 8 |
+| Sensible | `POST /auth/register`, `/login`, `/verify-email`, `/resend-verification`, `/forgot-password`, `/reset-password`, `/verify-device` ; `PUT /auth/email`, `/auth/password` ; `PUT /admin/users/{email}/role`, `/admin/users/{email}/email`, `/admin/users/{email}/extension-email-change`, `/admin/users/extension-email-change-all`, `/admin/users/{email}/server-choice`, `/admin/users/server-choice-all`, `/admin/server-choice-at-login` ; `POST /admin/users/{email}/revoke-sessions` ; `DELETE /admin/users/{email}` | 10 req/s, rafale de 30 |
 | Signalement de bug | `POST /bug-reports` | 8 req/s, rafale de 16 — palier dédié, plus permissif que "Sensible" (pas de risque de brute-force ici, juste éviter qu'une famille derrière la même IP se bloque mutuellement) mais toujours en deçà du palier Global |
-| Auth (reste) | `POST /auth/logout`, `/refresh` | 15 req/s, rafale de 30 |
-| Global | Toutes les autres routes (`/vault/*`, `/devices/*`, `/ws/*`, `/me`, `/audit`, `GET /admin/users`...) | 40 req/s, rafale de 80 |
+| Auth (reste) | `POST /auth/logout`, `/refresh` | 60 req/s, rafale de 150 |
+| Global | Toutes les autres routes (`/vault/*`, `/devices/*`, `/ws/*`, `/me`, `/audit`, `GET /admin/users`, `/theme-profiles*`, `/theme-preference`...) | 200 req/s, rafale de 500 |
 
 Un dépassement renvoie `429 Too Many Requests` avec un en-tête `Retry-After` (secondes avant que
 la rafale se recharge — voir la crate `governor`, ce n'est PAS un blocage permanent : il n'y a
