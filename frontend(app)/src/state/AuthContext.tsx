@@ -675,8 +675,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let reconnectAttempt = 0;
 
+    // CORRECTIF (retour utilisateur : "j'ai rien fait [...] trop de tentatives" — diagnostiqué via
+    // le nouveau journal de requêtes côté backend, voir main.rs::log_requests) : cette boucle
+    // n'avait jusqu'ici AUCUNE limite — un WebSocket qui échoue de façon STRUCTURELLE (ex: un
+    // reverse proxy qui ne relaie pas les connexions WebSocket, cas réel rencontré) retentait
+    // indéfiniment toutes les 30s, POUR TOUJOURS, tant que l'app restait ouverte — silencieusement,
+    // sans jamais prévenir l'utilisateur, en consommant à chaque tentative deux requêtes
+    // (POST /ws/ticket + GET /ws) sur le même compteur de débit partagé par IP que le reste de
+    // l'app (voir backend/src/main.rs). Sur une session de plusieurs heures, ça épuisait ce
+    // compteur en arrière-plan, avant même que l'utilisateur ne fasse quoi que ce soit lui-même.
+    // Abandonne après un nombre raisonnable de tentatives consécutives plutôt que de retenter à
+    // l'infini un cas structurellement cassé — sans perte de fonctionnalité grave : ce canal n'est
+    // qu'un SIGNAL DE RÉVEIL pour la synchro (voir handlers/sync.rs), jamais la seule voie de
+    // synchronisation (les routes REST habituelles restent pleinement fonctionnelles). Réinitialisé
+    // naturellement à la prochaine connexion (ce useEffect entier se redéclenche sur un changement
+    // de state.email) — une repartie plus tard, une fois la vraie cause corrigée côté serveur/
+    // proxy, retrouve un comportement normal sans action supplémentaire.
+    const MAX_RECONNECT_ATTEMPTS = 10;
+
     function scheduleReconnect() {
       if (cancelled) return;
+      if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) return;
       const delay = Math.min(30_000, 1000 * 2 ** reconnectAttempt);
       reconnectAttempt += 1;
       reconnectTimer = setTimeout(connect, delay);
