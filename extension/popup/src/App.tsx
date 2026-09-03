@@ -752,7 +752,7 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
    * groupée par dossier (voir groupedSections ci-dessus) sans dupliquer ce balisage. */
   function renderEntryRow(entry: PlainVaultEntry) {
     return (
-      <li key={entry.id} className="flex items-center justify-between gap-2 px-4 py-2">
+      <li key={entry.id} className="vault-row-cv flex items-center justify-between gap-2 px-4 py-2">
         <div className="flex min-w-0 items-center gap-2">
           <button
             onClick={() => void handleToggleFavorite(entry)}

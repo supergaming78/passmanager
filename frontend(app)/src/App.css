@@ -261,3 +261,36 @@ body {
    * donc sans effet là où ce n'est pas nécessaire. */
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
+
+/* OPTIMISATION PERF (retour utilisateur : "cherche les optimisations possibles pour toute l'app")
+ * — pages/Vault.tsx rend CHAQUE entrée filtrée en une seule fois (`filteredEntries.map(...)`,
+ * jusqu'à MAX_VAULT_ENTRIES_PER_USER = 5000 côté backend, voir handlers/vault.rs) : sans rien de
+ * spécial, le navigateur calcule quand même la mise en page ET peint chaque carte, y compris
+ * celles très loin sous le pli qu'aucun humain ne voit avant d'avoir scrollé. `content-visibility:
+ * auto` dit au navigateur de sauter le calcul de mise en page/peinture des cartes hors écran —
+ * réduit fortement le travail au premier rendu ET pendant le défilement sur un grand coffre, SANS
+ * retirer les éléments du DOM (contrairement à une VRAIE virtualisation façon react-window) : la
+ * sélection multiple, la navigation clavier, le focus continuent de fonctionner exactement comme
+ * avant, aucun risque de régression sur ces comportements déjà bien réglés. `contain-intrinsic-
+ * size: auto <estimation>` : hauteur RÉSERVÉE tant qu'une carte n'a jamais encore été affichée (le
+ * "auto" la remplace ensuite par la VRAIE hauteur mesurée, dès que la carte devient visible au
+ * moins une fois — jamais figée) — sans ça, une carte jamais encore vue vaudrait une hauteur de 0,
+ * ce qui ferait sauter la barre de défilement de façon visible tant que le coffre n'a pas été
+ * entièrement parcouru une fois. Valeurs approximatives (la hauteur réelle varie légèrement selon
+ * le nombre de badges affichés) — l'auto-correction ci-dessus rend la précision exacte inutile.
+ * Support navigateur : Chromium (WebView2 desktop, WebView Android, extension) depuis longtemps ;
+ * Safari (WKWebView iOS) depuis la version 18 — propriété purement additive, un navigateur qui ne
+ * la reconnaît pas encore l'ignore simplement et affiche tout normalement (aucune régression
+ * possible, juste un gain de perf qui ne s'applique pas encore sur ces versions-là). */
+.vault-row-cv {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 96px;
+}
+.vault-compact-cv {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
+}
+.vault-card-cv {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 168px;
+}

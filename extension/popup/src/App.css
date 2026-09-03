@@ -181,3 +181,15 @@ body {
   --color-neutral-900: oklch(19% 0.008 75);
   --color-neutral-800: oklch(29% 0.01 75);
 }
+
+/* OPTIMISATION PERF (retour utilisateur : "cherche les optimisations possibles pour toute l'app")
+ * — voir le commentaire équivalent dans frontend(app)/src/App.css pour le raisonnement complet
+ * (identique ici) : App.tsx rend chaque entrée filtrée en une seule fois, sans virtualisation.
+ * `content-visibility: auto` saute le calcul de mise en page/peinture des lignes hors écran, sans
+ * retirer d'éléments du DOM (aucun risque sur la sélection/le focus). `contain-intrinsic-size:
+ * auto <estimation>` évite un saut visible de la barre de défilement tant qu'une ligne n'a jamais
+ * encore été affichée — remplacé par la VRAIE hauteur mesurée dès la première apparition. */
+.vault-row-cv {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 52px;
+}

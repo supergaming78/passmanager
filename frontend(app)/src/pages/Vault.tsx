@@ -558,7 +558,7 @@ export default function Vault() {
         // ont enfin la place de se disposer sur 1-2 lignes au lieu d'être écrasés à droite du nom
         // du site dans l'espace restant. CSS pur (aucune logique JS) : rendu strictement identique
         // sur iPhone (même WebView, mêmes classes Tailwind) sans rien à adapter côté iOS.
-        className={`flex flex-col gap-3 rounded-xl border p-4 transition sm:flex-row sm:items-start sm:justify-between ${
+        className={`vault-row-cv flex flex-col gap-3 rounded-xl border p-4 transition sm:flex-row sm:items-start sm:justify-between ${
           isSelecting ? "cursor-pointer" : ""
         } ${
           isSelecting && selectedIds.has(entry.id)
@@ -748,7 +748,7 @@ export default function Vault() {
         // le mot de passe révélé (voir tout en bas) retomber sur sa PROPRE ligne plutôt que de se
         // faire comprimer dans la même ligne que le reste — nécessaire depuis que "Voir" est
         // devenu un bouton visible ici (voir le commentaire de la fonction).
-        className={`flex flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 transition ${isSelecting ? "cursor-pointer" : ""} ${
+        className={`vault-compact-cv flex flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 transition ${isSelecting ? "cursor-pointer" : ""} ${
           isSelecting && selectedIds.has(entry.id)
             ? "border-indigo-300 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950"
             : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
@@ -841,7 +841,7 @@ export default function Vault() {
       <div
         key={entry.id}
         onClick={() => isSelecting && toggleSelected(entry.id)}
-        className={`flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition ${isSelecting ? "cursor-pointer" : ""} ${
+        className={`vault-card-cv flex flex-col items-center gap-2 rounded-xl border p-4 text-center transition ${isSelecting ? "cursor-pointer" : ""} ${
           isSelecting && selectedIds.has(entry.id)
             ? "border-indigo-300 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950"
             : "border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900"
