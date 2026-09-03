@@ -60,6 +60,49 @@ function EntryTypeIcon({ entryType }: { entryType: PlainVaultEntry["entryType"] 
  * toujours active dès qu'il y a plus d'un type dans le coffre. Ordre d'affichage fixe (mots de
  * passe d'abord, le contenu le plus consulté) plutôt qu'alphabétique. Mêmes 4 types que
  * components/VaultEntryForm.tsx::TYPE_LABELS, ici seulement le nom au pluriel pour un en-tête. */
+/** RENDU PROGRESSIF de la liste du coffre.
+ *
+ * `content-visibility: auto` (voir App.css) empêche déjà le navigateur de METTRE EN PAGE et de
+ * PEINDRE les lignes hors écran, mais il ne change rien au coût en amont : React construit quand
+ * même un composant et des nœuds DOM pour CHAQUE entrée, et les recompare à chaque rendu. Sur un
+ * coffre proche du plafond serveur (5000 entrées), c'est ce travail-là qui rend le premier
+ * affichage lourd, pas la peinture.
+ *
+ * On ne monte donc qu'un budget d'entrées, augmenté par paliers quand le bas de la liste approche
+ * (voir le sentinelle plus bas). Choisi plutôt qu'une virtualisation "fenêtrée" classique : la
+ * liste vit dans le défilement de la PAGE (pas un conteneur à hauteur fixe), s'affiche en grilles
+ * multi-colonnes dont le nombre de colonnes dépend de la largeur, et s'imbrique en sections
+ * (type -> dossier). Fenêtrer tout ça demanderait de mesurer hauteurs de lignes et colonnes par
+ * section — beaucoup de fragilité pour un gain qui ne se manifeste qu'au-delà de quelques
+ * milliers d'entrées. Le budget, lui, borne le coût réel sans toucher aux dispositions, au
+ * regroupement ni à la sélection.
+ *
+ * Compromis assumé : après avoir déroulé tout un très grand coffre, les entrées déjà atteintes
+ * restent montées (une vraie virtualisation les démonterait). `content-visibility` les garde
+ * néanmoins hors du coût de mise en page. */
+const INITIAL_RENDER_BUDGET = 150;
+const RENDER_BUDGET_STEP = 150;
+
+/** Compteur d'entrées restant à monter pour CE passage de rendu. Volontairement un objet mutable
+ * plutôt qu'une valeur : le budget est PARTAGÉ entre toutes les sections (type, puis dossier), qui
+ * sont rendues les unes après les autres — chacune doit consommer ce que la précédente a laissé.
+ * Recréé à chaque rendu (voir son instanciation juste avant le `return` du composant), donc jamais
+ * d'état qui traîne d'un rendu à l'autre. */
+interface RenderBudget {
+  remaining: number;
+}
+
+/** Prélève sur le budget partagé les entrées à monter pour une section, dans l'ordre. Une section
+ * dont le budget est déjà épuisé rend une grille vide (son en-tête, lui, reste affiché avec son
+ * VRAI compteur — voir renderFolderSections) : l'utilisateur voit donc que la section existe et
+ * combien elle contient, et son contenu se remplit dès qu'il descend jusqu'à elle. */
+function takeFromBudget(entries: PlainVaultEntry[], budget: RenderBudget): PlainVaultEntry[] {
+  if (budget.remaining <= 0) return [];
+  const taken = entries.slice(0, budget.remaining);
+  budget.remaining -= taken.length;
+  return taken;
+}
+
 const TYPE_ORDER: EntryType[] = ["login", "card", "identity", "note"];
 const TYPE_SECTION_LABELS: Record<EntryType, string> = { login: "Mots de passe", card: "Cartes bancaires", identity: "Identités", note: "Notes sécurisées" };
 
@@ -287,6 +330,38 @@ export default function Vault() {
           fuzzyIncludes(e.loginEmail, query),
       );
   }, [entries, debouncedSearch, folderFilter, sortBy, quickFilter, reusedPasswordIds]);
+
+  // Rendu progressif (voir INITIAL_RENDER_BUDGET en tête de fichier).
+  const [renderBudget, setRenderBudget] = useState(INITIAL_RENDER_BUDGET);
+
+  // Repart du budget initial dès que la liste AFFICHÉE change (recherche, filtre, tri,
+  // rechargement après une action) : sans ça, revenir d'un gros coffre déroulé vers une recherche
+  // très sélective garderait un budget devenu inutilement grand.
+  useEffect(() => {
+    setRenderBudget(INITIAL_RENDER_BUDGET);
+  }, [filteredEntries]);
+
+  // Sentinelle placée après la liste : dès qu'elle approche du champ de vision, on monte un palier
+  // de plus. `rootMargin` généreux pour que le palier suivant soit prêt AVANT que l'utilisateur
+  // n'atteigne réellement le bas — le défilement reste continu, sans à-coup ni indicateur de
+  // chargement. La garde `budget < total` évite de re-rendre pour rien quand tout est déjà monté
+  // (renvoyer la même valeur d'état est un no-op côté React).
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = loadMoreRef.current;
+    if (!node) return;
+    const total = filteredEntries.length;
+    const observer = new IntersectionObserver(
+      (observed) => {
+        if (observed.some((e) => e.isIntersecting)) {
+          setRenderBudget((current) => (current < total ? current + RENDER_BUDGET_STEP : current));
+        }
+      },
+      { rootMargin: "800px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [filteredEntries, renderBudget]);
 
   // Types d'entrée distincts déjà présents dans le coffre — détermine si un regroupement par type
   // a un intérêt (voir typeSections plus bas) : inutile d'afficher un unique en-tête "Mots de passe"
@@ -1027,16 +1102,33 @@ export default function Vault() {
         : "grid grid-cols-1 gap-2 @6xl:grid-cols-2";
   const EntryListContainer = listLayout === "cards" ? "div" : "ul";
 
+  // Budget partagé par TOUTES les sections de ce passage de rendu (voir RenderBudget). Recréé ici
+  // à chaque rendu, donc toujours reparti de `renderBudget` — les sections le consomment ensuite
+  // dans leur ordre d'affichage.
+  const budget: RenderBudget = { remaining: renderBudget };
+  const hasMoreToRender = renderBudget < filteredEntries.length;
+
   /** Rendu d'une liste de sections "par dossier" (voir groupedSections/typeSections) — factorisé
    * pour être appelé soit directement (coffre pas séparé par type), soit UNE fois par section de
    * type (coffre séparé par type — voir le bloc principal plus bas). */
-  function renderFolderSections(sections: { name: string; entries: PlainVaultEntry[] }[]) {
+  function renderFolderSections(sections: { name: string; entries: PlainVaultEntry[] }[], budget: RenderBudget) {
+    // Le budget est prélevé ICI, dans l'ordre d'affichage, PUIS les sections qui n'ont rien reçu
+    // sont écartées. Sans ce filtre, un coffre à beaucoup de dossiers afficherait, sous les
+    // sections remplies, une longue traînée d'en-têtes de dossiers VIDES — la liste s'arrête
+    // maintenant net, et la suite apparaît en descendant.
+    const visible = sections
+      .map((section) => ({ section, entries: takeFromBudget(section.entries, budget) }))
+      .filter((slice) => slice.entries.length > 0);
+
     return (
       <div className="flex flex-col gap-5">
-        {sections.map((section) => (
+        {visible.map(({ section, entries: visibleEntries }) => (
           <div key={section.name}>
             <div className="mb-2 flex items-center gap-2">
               <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                {/* Compteur VRAI (section.entries.length), jamais le nombre réellement monté :
+                    l'en-tête doit annoncer ce que contient le dossier, pas où en est le rendu
+                    progressif. */}
                 {section.name} <span className="font-normal normal-case text-neutral-400">({section.entries.length})</span>
               </h2>
               {section.name !== "Sans dossier" && (
@@ -1053,7 +1145,7 @@ export default function Vault() {
             {/* @container : voir le commentaire de entryListContainerClass ci-dessus. */}
             <div className="@container">
               <EntryListContainer className={entryListContainerClass}>
-                {section.entries.map((entry) => renderEntry(entry, { hideFolderBadge: true }))}
+                {visibleEntries.map((entry) => renderEntry(entry, { hideFolderBadge: true }))}
               </EntryListContainer>
             </div>
           </div>
@@ -1396,29 +1488,47 @@ export default function Vault() {
             // TOUJOURS séparée (pas de filtre à activer), voir typeSections ci-dessus.
             <div className="flex flex-col gap-8">
               {typeSections.map((section) => (
+                // Budget épuisé : on n'affiche RIEN pour cette section (pas même son en-tête) —
+                // les sections étant parcourues dans l'ordre, toutes celles qui suivent sont
+                // écartées de la même façon, et réapparaîtront au palier suivant.
+                budget.remaining <= 0 ? null : (
                 <div key={section.type}>
                   <h2 className="mb-3 border-b border-neutral-200 pb-1.5 text-sm font-semibold text-neutral-700 dark:border-neutral-800 dark:text-neutral-200">
                     {section.label} <span className="font-normal text-neutral-400">({section.entries.length})</span>
                   </h2>
                   {section.folderGroups ? (
-                    renderFolderSections(section.folderGroups)
+                    renderFolderSections(section.folderGroups, budget)
                   ) : (
                     <div className="@container">
                       <EntryListContainer className={entryListContainerClass}>
-                        {section.entries.map((entry) => renderEntry(entry))}
+                        {takeFromBudget(section.entries, budget).map((entry) => renderEntry(entry))}
                       </EntryListContainer>
                     </div>
                   )}
                 </div>
+                )
               ))}
             </div>
           ) : groupedSections ? (
-            renderFolderSections(groupedSections)
+            renderFolderSections(groupedSections, budget)
           ) : (
             <div className="@container">
-              <EntryListContainer className={entryListContainerClass}>{filteredEntries.map((entry) => renderEntry(entry))}</EntryListContainer>
+              <EntryListContainer className={entryListContainerClass}>
+                {takeFromBudget(filteredEntries, budget).map((entry) => renderEntry(entry))}
+              </EntryListContainer>
             </div>
           )
+        )}
+
+        {/* Sentinelle du rendu progressif (voir INITIAL_RENDER_BUDGET) : montée seulement s'il
+            reste des entrées à afficher. Son apparition dans le champ de vision — anticipée de
+            800px — déclenche le palier suivant. Le texte sert d'accusé de réception discret pour
+            l'utilisateur d'un très gros coffre ; il n'apparaît jamais en usage courant, où tout
+            tient dans le premier budget. */}
+        {hasMoreToRender && (
+          <div ref={loadMoreRef} className="py-6 text-center text-xs text-neutral-400">
+            {renderBudget} entrée(s) affichée(s) sur {filteredEntries.length} — la suite se charge en descendant…
+          </div>
         )}
       </div>
 
