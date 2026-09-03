@@ -565,17 +565,20 @@ export default function SettingsView({
                           Activer
                         </button>
                       )}
-                      <button type="button" onClick={() => startShareThemeProfile(p)} className="text-neutral-500 hover:text-indigo-600 dark:hover:text-indigo-400" title="Partager">
-                        ↗
+                      {/* CORRECTIF (retour utilisateur : "je vois toujours pas comment partager") :
+                          remplace les symboles "↗"/"⧉" (repérés uniquement au survol, voir
+                          ThemeSettings.tsx côté desktop pour le même correctif) par du texte,
+                          comme "Activer" juste au-dessus. */}
+                      <button type="button" onClick={() => startShareThemeProfile(p)} className="text-neutral-500 hover:text-indigo-600 dark:hover:text-indigo-400">
+                        Partager
                       </button>
                       <button
                         type="button"
                         onClick={() => duplicateThemeProfile(p)}
                         disabled={!isAdmin && (profiles?.length ?? 0) >= MAX_PROFILES}
                         className="text-neutral-500 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:text-indigo-400"
-                        title="Dupliquer"
                       >
-                        ⧉
+                        Dupliquer
                       </button>
                       <button type="button" onClick={() => void handleDeleteThemeProfile(p)} className="text-neutral-500 hover:text-red-600 dark:hover:text-red-400">
                         ✕

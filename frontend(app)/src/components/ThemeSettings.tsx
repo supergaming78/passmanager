@@ -567,17 +567,21 @@ export default function ThemeSettings() {
                         Activer
                       </button>
                     )}
-                    <button type="button" onClick={() => startShareProfile(p)} className="text-neutral-500 hover:text-indigo-600 dark:hover:text-indigo-400" title="Partager">
-                      ↗
+                    {/* CORRECTIF (retour utilisateur : "je vois toujours pas comment partager") :
+                        remplace le symbole "↗" (repéré uniquement au survol, invisible au
+                        toucher — tablette/mobile) par un vrai texte, comme "Activer" juste
+                        au-dessus. */}
+                    <button type="button" onClick={() => startShareProfile(p)} className="text-neutral-500 hover:text-indigo-600 dark:hover:text-indigo-400">
+                      Partager
                     </button>
                     <button
                       type="button"
                       onClick={() => duplicateProfile(p)}
                       disabled={atLimit}
                       className="text-neutral-500 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:text-indigo-400"
-                      title={atLimit ? `Limite de ${MAX_PROFILES} profils atteinte` : "Dupliquer"}
+                      title={atLimit ? `Limite de ${MAX_PROFILES} profils atteinte` : undefined}
                     >
-                      ⧉
+                      Dupliquer
                     </button>
                     <button type="button" onClick={() => void handleDelete(p)} className="text-neutral-500 hover:text-red-600 dark:hover:text-red-400" title="Supprimer">
                       ✕
