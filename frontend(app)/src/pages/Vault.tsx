@@ -52,9 +52,41 @@ function EntryTypeIcon({ entryType }: { entryType: PlainVaultEntry["entryType"] 
   );
 }
 
-/** Libellés du filtre par type d'entrée (voir typeFilter plus bas) — mêmes 4 types que
- * components/VaultEntryForm.tsx::TYPE_LABELS, ici seulement le nom au pluriel pour une liste. */
-const TYPE_FILTER_LABELS: Record<EntryType, string> = { login: "Identifiants", card: "Cartes bancaires", identity: "Identités", note: "Notes sécurisées" };
+/** Regroupement AUTOMATIQUE de l'affichage par type d'entrée (voir typeSections plus bas) — retour
+ * utilisateur : "je ne veux pas un filtre [...], je ne veux juste pas que les cartes bancaires
+ * soient avec les mots de passe, et la même chose avec les cartes d'identité" — pas un filtre à
+ * activer à la main (première tentative, écartée), une séparation systématique de l'affichage,
+ * toujours active dès qu'il y a plus d'un type dans le coffre. Ordre d'affichage fixe (mots de
+ * passe d'abord, le contenu le plus consulté) plutôt qu'alphabétique. Mêmes 4 types que
+ * components/VaultEntryForm.tsx::TYPE_LABELS, ici seulement le nom au pluriel pour un en-tête. */
+const TYPE_ORDER: EntryType[] = ["login", "card", "identity", "note"];
+const TYPE_SECTION_LABELS: Record<EntryType, string> = { login: "Identifiants", card: "Cartes bancaires", identity: "Identités", note: "Notes sécurisées" };
+
+/** Regroupe une liste d'entrées par dossier (nom du dossier en en-tête) — factorisé pour être
+ * appelé soit UNE fois sur tout le coffre (pas de séparation par type, voir groupedSections),
+ * soit une fois PAR section de type (voir typeSections) : même logique dans les deux cas, y
+ * compris le tri des dossiers eux-mêmes par usage agrégé quand `sortBy === "usage"`. */
+function groupEntriesByFolder(entries: PlainVaultEntry[], sortBy: "name" | "updated" | "strength" | "usage") {
+  const groups = new Map<string, PlainVaultEntry[]>();
+  for (const entry of entries) {
+    const key = entry.folder;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(entry);
+  }
+  const named = Array.from(groups.keys())
+    .filter((k) => k !== "")
+    .sort((a, b) => {
+      if (sortBy === "usage") {
+        const usageA = groups.get(a)!.reduce((sum, e) => sum + e.useCount, 0);
+        const usageB = groups.get(b)!.reduce((sum, e) => sum + e.useCount, 0);
+        if (usageA !== usageB) return usageB - usageA;
+      }
+      return a.localeCompare(b);
+    })
+    .map((name) => ({ name, entries: groups.get(name)! }));
+  const withoutFolder = groups.get("");
+  return withoutFolder ? [...named, { name: "Sans dossier", entries: withoutFolder }] : named;
+}
 
 type ModalState = { mode: "add"; prefill?: VaultEntryFormValues } | { mode: "edit"; entry: PlainVaultEntry } | null;
 
@@ -77,10 +109,6 @@ export default function Vault() {
   }, [search]);
   // "" = tous les dossiers, "__none__" = sans dossier assigné, sinon le nom exact du dossier.
   const [folderFilter, setFolderFilter] = useState("");
-  // Retour utilisateur : "je souhaite que les infos des cartes bancaires et carte d'identité ne
-  // soient pas mélangées avec les mots de passe" — filtre par type d'entrée, même principe que le
-  // filtre par dossier ci-dessus ("" = tous les types).
-  const [typeFilter, setTypeFilter] = useState<"" | EntryType>("");
   // Filtre rapide directement dans le coffre — un raccourci vers ce que le tableau de bord "Santé
   // du coffre" détaille déjà (VaultHealthModal), pour ne pas avoir à l'ouvrir juste pour retrouver
   // ces entrées-là. Un seul actif à la fois, se combine avec la recherche/le dossier/le tri.
@@ -215,7 +243,6 @@ export default function Vault() {
         if (folderFilter === "__none__") return !e.folder;
         return e.folder === folderFilter;
       })
-      .filter((e) => !typeFilter || e.entryType === typeFilter)
       .filter((e) => {
         switch (quickFilter) {
           // "faible"/"réutilisé"/"ancien" : uniquement pertinents pour un vrai mot de passe (type
@@ -258,13 +285,11 @@ export default function Vault() {
           fuzzyIncludes(e.username, query) ||
           fuzzyIncludes(e.loginEmail, query),
       );
-  }, [entries, debouncedSearch, folderFilter, typeFilter, sortBy, quickFilter, reusedPasswordIds]);
+  }, [entries, debouncedSearch, folderFilter, sortBy, quickFilter, reusedPasswordIds]);
 
-  // Types d'entrée distincts déjà présents dans le coffre — même principe qu'existingFolders
-  // ci-dessous : le sélecteur de type ne s'affiche que s'il y a effectivement plus d'un type à
-  // distinguer (retour utilisateur : "je souhaite que les infos des cartes bancaires et carte
-  // d'identité ne soient pas mélangées avec les mots de passe"). Voir TYPE_FILTER_LABELS en tête
-  // de fichier pour les libellés.
+  // Types d'entrée distincts déjà présents dans le coffre — détermine si un regroupement par type
+  // a un intérêt (voir typeSections plus bas) : inutile d'afficher un unique en-tête "Identifiants"
+  // au-dessus de tout le coffre pour quelqu'un qui n'a que des mots de passe.
   const existingTypes = useMemo(() => Array.from(new Set(entries.map((e) => e.entryType))), [entries]);
 
   // Dossiers distincts déjà utilisés dans le coffre — triés, pour le filtre et l'autocomplétion
@@ -276,36 +301,40 @@ export default function Vault() {
 
   // Regroupe l'affichage par dossier (nom du dossier en en-tête, ses entrées en dessous) — SEULEMENT
   // si l'utilisateur a effectivement commencé à utiliser des dossiers (sinon on ne change rien à
-  // l'affichage plat habituel) et qu'aucun filtre de dossier n'est déjà actif (le filtre réduit
-  // déjà à un seul dossier, un en-tête répété par-dessus serait redondant avec le sélecteur).
+  // l'affichage plat habituel), qu'aucun filtre de dossier n'est déjà actif (le filtre réduit
+  // déjà à un seul dossier, un en-tête répété par-dessus serait redondant avec le sélecteur), ET
+  // qu'aucun regroupement par type n'est déjà en jeu (voir typeSections ci-dessous — dans ce cas
+  // le regroupement par dossier se fait DANS chaque section de type, pas ici).
   const groupedSections = useMemo(() => {
-    if (folderFilter || existingFolders.length === 0) return null;
-
-    const groups = new Map<string, PlainVaultEntry[]>();
-    for (const entry of filteredEntries) {
-      const key = entry.folder;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(entry);
-    }
-
+    if (folderFilter || existingFolders.length === 0 || existingTypes.length > 1) return null;
     // Retour utilisateur (2026-09-02) : quand le tri actif est "le plus utilisé", les DOSSIERS
     // eux-mêmes remontent aussi par usage (somme des use_count de leurs entrées) — le dossier le
     // plus utilisé en haut, pas juste les entrées à l'intérieur d'un dossier resté à sa place
-    // alphabétique. Pour tout autre tri, comportement inchangé (alphabétique).
-    const named = Array.from(groups.keys())
-      .filter((k) => k !== "")
-      .sort((a, b) => {
-        if (sortBy === "usage") {
-          const usageA = groups.get(a)!.reduce((sum, e) => sum + e.useCount, 0);
-          const usageB = groups.get(b)!.reduce((sum, e) => sum + e.useCount, 0);
-          if (usageA !== usageB) return usageB - usageA;
-        }
-        return a.localeCompare(b);
+    // alphabétique. Pour tout autre tri, comportement inchangé (alphabétique). Voir
+    // groupEntriesByFolder en tête de fichier.
+    return groupEntriesByFolder(filteredEntries, sortBy);
+  }, [filteredEntries, folderFilter, existingFolders, existingTypes, sortBy]);
+
+  // Regroupement AUTOMATIQUE de l'affichage par type d'entrée — voir le commentaire de TYPE_ORDER
+  // en tête de fichier pour le retour utilisateur à l'origine. `null` quand il n'y a qu'un seul
+  // type dans le coffre (rien à séparer). Dans chaque section de type, le regroupement par dossier
+  // continue de s'appliquer normalement (même logique que groupedSections ci-dessus, juste scopée
+  // à ce type) — un dossier peut très bien contenir un mélange de mots de passe et de cartes, par
+  // exemple, et doit rester visible comme tel à l'intérieur de chaque section.
+  const typeSections = useMemo(() => {
+    if (existingTypes.length <= 1) return null;
+    return TYPE_ORDER.filter((type) => existingTypes.includes(type))
+      .map((type) => {
+        const entriesOfType = filteredEntries.filter((e) => e.entryType === type);
+        return {
+          type,
+          label: TYPE_SECTION_LABELS[type],
+          entries: entriesOfType,
+          folderGroups: folderFilter || existingFolders.length === 0 ? null : groupEntriesByFolder(entriesOfType, sortBy),
+        };
       })
-      .map((name) => ({ name, entries: groups.get(name)! }));
-    const withoutFolder = groups.get("");
-    return withoutFolder ? [...named, { name: "Sans dossier", entries: withoutFolder }] : named;
-  }, [filteredEntries, folderFilter, existingFolders, sortBy]);
+      .filter((section) => section.entries.length > 0);
+  }, [filteredEntries, existingTypes, folderFilter, existingFolders, sortBy]);
 
   async function handleAdd(values: VaultEntryFormValues) {
     const encrypted = await encryptEntry(values);
@@ -993,6 +1022,41 @@ export default function Vault() {
         : "grid grid-cols-1 gap-2 @6xl:grid-cols-2";
   const EntryListContainer = listLayout === "cards" ? "div" : "ul";
 
+  /** Rendu d'une liste de sections "par dossier" (voir groupedSections/typeSections) — factorisé
+   * pour être appelé soit directement (coffre pas séparé par type), soit UNE fois par section de
+   * type (coffre séparé par type — voir le bloc principal plus bas). */
+  function renderFolderSections(sections: { name: string; entries: PlainVaultEntry[] }[]) {
+    return (
+      <div className="flex flex-col gap-5">
+        {sections.map((section) => (
+          <div key={section.name}>
+            <div className="mb-2 flex items-center gap-2">
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                {section.name} <span className="font-normal normal-case text-neutral-400">({section.entries.length})</span>
+              </h2>
+              {section.name !== "Sans dossier" && (
+                <button
+                  type="button"
+                  disabled={isBulkBusy}
+                  onClick={() => void handleRenameFolder(section.name)}
+                  className="text-xs font-normal normal-case text-indigo-600 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-indigo-400"
+                >
+                  Renommer
+                </button>
+              )}
+            </div>
+            {/* @container : voir le commentaire de entryListContainerClass ci-dessus. */}
+            <div className="@container">
+              <EntryListContainer className={entryListContainerClass}>
+                {section.entries.map((entry) => renderEntry(entry, { hideFolderBadge: true }))}
+              </EntryListContainer>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   return (
     <main className="min-h-screen bg-neutral-50 px-4 py-8 dark:bg-neutral-950">
       {/* CORRECTIF (retour utilisateur, 2026-09-01, puis ÉLARGI le 2026-09-02 — captures d'écran
@@ -1065,23 +1129,6 @@ export default function Vault() {
                 {existingFolders.map((folder) => (
                   <option key={folder} value={folder}>
                     {folder}
-                  </option>
-                ))}
-              </select>
-            )}
-            {/* Retour utilisateur : "je souhaite que les infos des cartes bancaires et carte
-                d'identité ne soient pas mélangées avec les mots de passe" — filtre dédié, même
-                principe que le filtre par dossier juste au-dessus. */}
-            {existingTypes.length > 1 && (
-              <select
-                value={typeFilter}
-                onChange={(e) => setTypeFilter(e.target.value as "" | EntryType)}
-                className="shrink-0 rounded-lg border border-neutral-300 px-2 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
-              >
-                <option value="">Tous les types</option>
-                {existingTypes.map((type) => (
-                  <option key={type} value={type}>
-                    {TYPE_FILTER_LABELS[type]}
                   </option>
                 ))}
               </select>
@@ -1338,34 +1385,30 @@ export default function Vault() {
               : "Aucune entrée ne correspond à la recherche ou aux filtres actifs."}
           </p>
         ) : (
-          groupedSections ? (
-            <div className="flex flex-col gap-5">
-              {groupedSections.map((section) => (
-                <div key={section.name}>
-                  <div className="mb-2 flex items-center gap-2">
-                    <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-                      {section.name} <span className="font-normal normal-case text-neutral-400">({section.entries.length})</span>
-                    </h2>
-                    {section.name !== "Sans dossier" && (
-                      <button
-                        type="button"
-                        disabled={isBulkBusy}
-                        onClick={() => void handleRenameFolder(section.name)}
-                        className="text-xs font-normal normal-case text-indigo-600 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-indigo-400"
-                      >
-                        Renommer
-                      </button>
-                    )}
-                  </div>
-                  {/* @container : voir le commentaire de entryListContainerClass ci-dessus. */}
-                  <div className="@container">
-                    <EntryListContainer className={entryListContainerClass}>
-                      {section.entries.map((entry) => renderEntry(entry, { hideFolderBadge: true }))}
-                    </EntryListContainer>
-                  </div>
+          typeSections ? (
+            // Retour utilisateur : "je ne veux juste pas que les cartes bancaires soient avec les
+            // mots de passe et la même chose avec les cartes d'identité" — une section par type,
+            // TOUJOURS séparée (pas de filtre à activer), voir typeSections ci-dessus.
+            <div className="flex flex-col gap-8">
+              {typeSections.map((section) => (
+                <div key={section.type}>
+                  <h2 className="mb-3 border-b border-neutral-200 pb-1.5 text-sm font-semibold text-neutral-700 dark:border-neutral-800 dark:text-neutral-200">
+                    {section.label} <span className="font-normal text-neutral-400">({section.entries.length})</span>
+                  </h2>
+                  {section.folderGroups ? (
+                    renderFolderSections(section.folderGroups)
+                  ) : (
+                    <div className="@container">
+                      <EntryListContainer className={entryListContainerClass}>
+                        {section.entries.map((entry) => renderEntry(entry))}
+                      </EntryListContainer>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
+          ) : groupedSections ? (
+            renderFolderSections(groupedSections)
           ) : (
             <div className="@container">
               <EntryListContainer className={entryListContainerClass}>{filteredEntries.map((entry) => renderEntry(entry))}</EntryListContainer>
