@@ -14,6 +14,18 @@
 // ces tables changent là-bas. Contrairement aux presets, "custom" pose des propriétés CSS INLINE
 // (pas une classe) puisque teinte/luminosité choisies peuvent être n'importe quelle valeur ; le
 // mode clair/sombre se DÉDUIT de la luminosité de fond choisie (pas une bascule séparée).
+//
+// CORRECTIF (retour utilisateur : "ça reste très noir même les cases des mots de passe") — ce
+// fichier était resté sur l'ANCIEN schéma "backgroundStyle" (3 valeurs discrètes Neutre/Fondu/
+// Couleur) alors que lib/customTheme.ts est passé depuis à une saturation CONTINUE (0-100) par
+// couleur, fond ET accents compris (voir la migration
+// backend/migrations/20260903040000_theme_profile_saturation.sql) — jamais mis à jour ici lors de
+// ce changement. Conséquence concrète : `parsed.backgroundStyle` n'existe plus jamais dans le JSON
+// réellement stocké (remplacé par `backgroundSaturation`), donc cfg.backgroundStyle restait figé
+// sur son défaut "neutral" (chroma nulle, gris pur) pour TOUT LE MONDE, quelle que soit la
+// saturation réellement choisie — et les couleurs d'accent/danger/succès/favoris ignoraient
+// carrément la saturation (jamais lue du tout), toujours affichées à 100%. Corrigé en portant
+// EXACTEMENT la même logique que backgroundColors()/applyFamily() dans lib/customTheme.ts.
 (function () {
   try {
     var stored = localStorage.getItem("passmanager.theme");
@@ -25,6 +37,9 @@
     function clampL(l) {
       return Math.min(100, Math.max(0, l));
     }
+    function clampSaturation(s) {
+      return Math.min(100, Math.max(0, s));
+    }
 
     // CORRECTIF (retour utilisateur : "au milieu du curseur luminosité tout est déjà blanc") : voir
     // le commentaire de lib/theme.ts::applyTheme pour le raisonnement complet (`.bg-white` en dur
@@ -33,12 +48,14 @@
     html.classList.toggle("theme-custom", theme === "custom");
 
     if (theme === "custom") {
+      // Mêmes valeurs que lib/customTheme.ts::DEFAULT_CUSTOM_THEME (identique visuellement au
+      // preset "Sombre").
       var cfg = {
-        backgroundHue: 0, backgroundLightness: 15, backgroundStyle: "neutral",
-        accentHue: 277, accentLightness: 59,
-        dangerHue: 27, dangerLightness: 64,
-        successHue: 163, successLightness: 70,
-        favoriteHue: 75, favoriteLightness: 77,
+        backgroundHue: 0, backgroundLightness: 15, backgroundSaturation: 0,
+        accentHue: 277, accentLightness: 59, accentSaturation: 100,
+        dangerHue: 27, dangerLightness: 64, dangerSaturation: 100,
+        successHue: 163, successLightness: 70, successSaturation: 100,
+        favoriteHue: 75, favoriteLightness: 77, favoriteSaturation: 100,
       };
       try {
         var storedCfg = localStorage.getItem("passmanager.customTheme");
@@ -47,19 +64,16 @@
           // CORRECTIF (retour utilisateur : "ça reste blank partout, le profil ne s'applique pas") :
           // une valeur non-numérique/hors-plage se propage en NaN plus bas (`NaN.toFixed(1)` renvoie
           // la CHAÎNE "NaN", pas une exception — d'où une interface sans couleur mais qui ne plante
-          // jamais). N'accepte un champ de `parsed` que s'il est un nombre fini dans la bonne plage
-          // (une des trois valeurs de backgroundStyle) — sinon garde la valeur par défaut de `cfg`
-          // telle quelle. Voir lib/customTheme.ts::sanitizeCustomThemeConfig, dupliqué ici à la main
-          // pour la même raison que le reste de ce fichier (autonomie, pas d'import).
+          // jamais). N'accepte un champ de `parsed` que s'il est un nombre fini dans la bonne plage —
+          // sinon garde la valeur par défaut de `cfg` telle quelle. Voir
+          // lib/customTheme.ts::sanitizeCustomThemeConfig, dupliqué ici à la main pour la même
+          // raison que le reste de ce fichier (autonomie, pas d'import).
           for (var k in cfg) {
             if (!Object.prototype.hasOwnProperty.call(parsed, k)) continue;
             var v = parsed[k];
-            if (k === "backgroundStyle") {
-              if (v === "neutral" || v === "subtle" || v === "vivid") cfg[k] = v;
-            } else if (typeof v === "number" && isFinite(v)) {
-              var max = k.indexOf("Hue") !== -1 ? 359 : 100;
-              cfg[k] = Math.min(max, Math.max(0, v));
-            }
+            if (typeof v !== "number" || !isFinite(v)) continue;
+            var max = k.indexOf("Hue") !== -1 ? 359 : 100;
+            cfg[k] = Math.min(max, Math.max(0, v));
           }
         }
       } catch (e2) {}
@@ -75,38 +89,44 @@
       var GREEN = { "400": [79.2, ".209"], "600": [62.7, ".194"] };
       var INDIGO_ANCHOR = 58.5, RED_ANCHOR = 63.7, AMBER_ANCHOR = 76.9, EMERALD_ANCHOR = 69.6;
 
-      function applyFamily(family, steps, hue, lightness, anchor) {
+      // `saturation` : même formule que lib/customTheme.ts::stepColor (chroma native × saturation
+      // choisie / 100) — auparavant absente ici, chaque famille s'affichait donc toujours à 100%
+      // de saturation quel que soit le réglage réel.
+      function applyFamily(family, steps, hue, lightness, saturation, anchor) {
         var offset = lightness - anchor;
+        var sRatio = clampSaturation(saturation) / 100;
         for (var step in steps) {
-          html.style.setProperty("--color-" + family + "-" + step, "oklch(" + clampL(steps[step][0] + offset).toFixed(1) + "% " + steps[step][1] + " " + hue + ")");
+          var chroma = (parseFloat(steps[step][1]) * sRatio).toFixed(3);
+          html.style.setProperty("--color-" + family + "-" + step, "oklch(" + clampL(steps[step][0] + offset).toFixed(1) + "% " + chroma + " " + hue + ")");
         }
       }
-      applyFamily("indigo", INDIGO, cfg.accentHue, cfg.accentLightness, INDIGO_ANCHOR);
-      applyFamily("red", RED, cfg.dangerHue, cfg.dangerLightness, RED_ANCHOR);
-      applyFamily("amber", AMBER, cfg.favoriteHue, cfg.favoriteLightness, AMBER_ANCHOR);
-      applyFamily("emerald", EMERALD, cfg.successHue, cfg.successLightness, EMERALD_ANCHOR);
-      applyFamily("green", GREEN, cfg.successHue, cfg.successLightness, EMERALD_ANCHOR);
+      applyFamily("indigo", INDIGO, cfg.accentHue, cfg.accentLightness, cfg.accentSaturation, INDIGO_ANCHOR);
+      applyFamily("red", RED, cfg.dangerHue, cfg.dangerLightness, cfg.dangerSaturation, RED_ANCHOR);
+      applyFamily("amber", AMBER, cfg.favoriteHue, cfg.favoriteLightness, cfg.favoriteSaturation, AMBER_ANCHOR);
+      applyFamily("emerald", EMERALD, cfg.successHue, cfg.successLightness, cfg.successSaturation, EMERALD_ANCHOR);
+      applyFamily("green", GREEN, cfg.successHue, cfg.successLightness, cfg.successSaturation, EMERALD_ANCHOR);
 
       var tintDark = ["--color-neutral-950", "--color-neutral-900", "--color-neutral-800"];
       var tintLight = ["--color-neutral-50", "--color-neutral-100", "--color-neutral-200"];
       for (var t = 0; t < tintDark.length; t++) html.style.removeProperty(tintDark[t]);
       for (var t2 = 0; t2 < tintLight.length; t2++) html.style.removeProperty(tintLight[t2]);
 
-      // Trois intensités de chroma — voir lib/customTheme.ts::applyBackground pour le raisonnement
-      // complet (neutral/subtle/vivid).
-      var CHROMA_DARK = { neutral: ["0", "0", "0"], subtle: [".006", ".008", ".01"], vivid: [".05", ".06", ".07"] };
-      var CHROMA_LIGHT = { neutral: ["0", "0", "0"], subtle: [".008", ".01", ".015"], vivid: [".02", ".025", ".03"] };
-      var cd = CHROMA_DARK[cfg.backgroundStyle], cl = CHROMA_LIGHT[cfg.backgroundStyle];
+      // Chroma MAX par palier (page/carte/bordure), multipliée par la saturation choisie — voir
+      // lib/customTheme.ts::backgroundColors pour la même formule (saturation 0 = gris pur, 100 =
+      // chroma maximale). Remplace l'ancien système à 3 styles discrets.
+      var BG_MAX_DARK = [0.05, 0.06, 0.07];
+      var BG_MAX_LIGHT = [0.02, 0.025, 0.03];
+      var bgSRatio = clampSaturation(cfg.backgroundSaturation) / 100;
 
       var isDarkCustom = cfg.backgroundLightness < 50;
       if (isDarkCustom) {
-        html.style.setProperty("--color-neutral-950", "oklch(" + clampL(cfg.backgroundLightness).toFixed(1) + "% " + cd[0] + " " + cfg.backgroundHue + ")");
-        html.style.setProperty("--color-neutral-900", "oklch(" + clampL(cfg.backgroundLightness + 6).toFixed(1) + "% " + cd[1] + " " + cfg.backgroundHue + ")");
-        html.style.setProperty("--color-neutral-800", "oklch(" + clampL(cfg.backgroundLightness + 12.4).toFixed(1) + "% " + cd[2] + " " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-950", "oklch(" + clampL(cfg.backgroundLightness).toFixed(1) + "% " + (BG_MAX_DARK[0] * bgSRatio).toFixed(3) + " " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-900", "oklch(" + clampL(cfg.backgroundLightness + 6).toFixed(1) + "% " + (BG_MAX_DARK[1] * bgSRatio).toFixed(3) + " " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-800", "oklch(" + clampL(cfg.backgroundLightness + 12.4).toFixed(1) + "% " + (BG_MAX_DARK[2] * bgSRatio).toFixed(3) + " " + cfg.backgroundHue + ")");
       } else {
-        html.style.setProperty("--color-neutral-50", "oklch(" + clampL(cfg.backgroundLightness).toFixed(1) + "% " + cl[0] + " " + cfg.backgroundHue + ")");
-        html.style.setProperty("--color-neutral-100", "oklch(" + clampL(cfg.backgroundLightness - 1.5).toFixed(1) + "% " + cl[1] + " " + cfg.backgroundHue + ")");
-        html.style.setProperty("--color-neutral-200", "oklch(" + clampL(cfg.backgroundLightness - 6.3).toFixed(1) + "% " + cl[2] + " " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-50", "oklch(" + clampL(cfg.backgroundLightness).toFixed(1) + "% " + (BG_MAX_LIGHT[0] * bgSRatio).toFixed(3) + " " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-100", "oklch(" + clampL(cfg.backgroundLightness - 1.5).toFixed(1) + "% " + (BG_MAX_LIGHT[1] * bgSRatio).toFixed(3) + " " + cfg.backgroundHue + ")");
+        html.style.setProperty("--color-neutral-200", "oklch(" + clampL(cfg.backgroundLightness - 6.3).toFixed(1) + "% " + (BG_MAX_LIGHT[2] * bgSRatio).toFixed(3) + " " + cfg.backgroundHue + ")");
       }
 
       html.classList.toggle("dark", isDarkCustom);
