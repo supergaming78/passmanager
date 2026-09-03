@@ -1114,6 +1114,41 @@ pub struct ThemeProfileView {
     pub is_active: bool,
 }
 
+/// Partage d'un profil avec un AUTRE utilisateur (retour utilisateur : "savoir le partager avec
+/// d'autres utilisateurs") — voir migration 20260903050000_shared_theme_profiles.sql. PAS de
+/// crypto (contrairement à ShareEntryPayload pour le coffre) : une personnalisation de thème n'a
+/// rien à protéger.
+#[derive(Deserialize, Validate)]
+pub struct ShareThemeProfilePayload {
+    #[validate(email(message = "Format d'email invalide"))]
+    pub shared_with_email: String,
+}
+
+/// Un partage EN ATTENTE reçu, tel que vu par le DESTINATAIRE (voir
+/// handlers/theme_customization.rs::list_shared_theme_profiles) — jamais `to_email` (déjà celui
+/// de l'appelant, inutile de le renvoyer).
+#[derive(Serialize, sqlx::FromRow)]
+pub struct SharedThemeProfileView {
+    pub id: String,
+    pub from_email: String,
+    pub name: String,
+    pub background_hue: i64,
+    pub background_lightness: i64,
+    pub background_saturation: i64,
+    pub accent_hue: i64,
+    pub accent_lightness: i64,
+    pub accent_saturation: i64,
+    pub danger_hue: i64,
+    pub danger_lightness: i64,
+    pub danger_saturation: i64,
+    pub success_hue: i64,
+    pub success_lightness: i64,
+    pub success_saturation: i64,
+    pub favorite_hue: i64,
+    pub favorite_lightness: i64,
+    pub favorite_saturation: i64,
+}
+
 // =========================================================================
 // 6. STRUCTURES DIVERSES (PAGINATION & RÉPONSES API)
 // =========================================================================

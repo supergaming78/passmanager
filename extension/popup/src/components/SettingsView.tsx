@@ -33,11 +33,19 @@ import {
   encodeThemeCode,
   decodeThemeCode,
 } from "../lib/customTheme";
-import type { TrustedDevice, ThemeProfileView } from "../api/types";
+import type { TrustedDevice, ThemeProfileView, SharedThemeProfileView } from "../api/types";
 import { getErrorMessage } from "../lib/errors";
 
 const LOCK_MINUTES_OPTIONS = [1, 5, 15, 30];
 const CLIPBOARD_SECONDS_OPTIONS = [0, 10, 20, 60];
+
+/** Retour utilisateur : "tu as aussi enlevé les options de fondu et autre" — raccourcis
+ * Neutre/Fondu/Couleur restaurés pour le fond, voir ThemeSettings.tsx côté desktop. */
+const SATURATION_PRESETS: { value: number; label: string }[] = [
+  { value: 0, label: "Neutre" },
+  { value: 30, label: "Fondu" },
+  { value: 80, label: "Couleur" },
+];
 
 function inputClass() {
   return "w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900";
@@ -113,6 +121,12 @@ export default function SettingsView({
   const [profileSaveState, setProfileSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [themeCodeInput, setThemeCodeInput] = useState("");
   const [themeCodeMessage, setThemeCodeMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  // Retour utilisateur : "au lieu de uniquement copier le code, il faudrait plutôt savoir le
+  // partager avec d'autres utilisateurs" — voir handleShareProfile/handleAcceptShare plus bas.
+  const [sharingProfileId, setSharingProfileId] = useState<string | null>(null);
+  const [shareEmailInput, setShareEmailInput] = useState("");
+  const [shareMessage, setShareMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [receivedShares, setReceivedShares] = useState<SharedThemeProfileView[] | null>(null);
 
   const [newEmail, setNewEmail] = useState("");
   const [emailPassword, setEmailPassword] = useState("");
@@ -193,6 +207,11 @@ export default function SettingsView({
           }
         })
         .catch((err) => setProfilesLoadError(getErrorMessage(err)));
+      session.authorizedRequest((token) => api.listSharedThemeProfiles(token))
+        .then(setReceivedShares)
+        .catch(() => {
+          // best-effort — les profils reçus sont une commodité, pas la fonctionnalité principale.
+        });
     }
   }
 
@@ -373,6 +392,44 @@ export default function SettingsView({
     }
   }
 
+  function startShareThemeProfile(p: ThemeProfileView) {
+    setSharingProfileId((current) => (current === p.id ? null : p.id));
+    setShareEmailInput("");
+    setShareMessage(null);
+  }
+
+  async function handleShareThemeProfile(profileId: string) {
+    const emailTo = shareEmailInput.trim();
+    if (!emailTo) return;
+    try {
+      await session.authorizedRequest((token) => api.shareThemeProfile(token, profileId, { shared_with_email: emailTo }));
+      setShareMessage({ ok: true, text: `Partagé avec ${emailTo}.` });
+      setShareEmailInput("");
+    } catch (err) {
+      setShareMessage({ ok: false, text: getErrorMessage(err) });
+    }
+  }
+
+  async function handleAcceptThemeShare(share: SharedThemeProfileView) {
+    setProfileActionError(null);
+    try {
+      const created = await session.authorizedRequest((token) => api.acceptSharedThemeProfile(token, share.id));
+      setProfiles((prev) => [...(prev ?? []), created]);
+      setReceivedShares((prev) => (prev ?? []).filter((s) => s.id !== share.id));
+    } catch (err) {
+      setProfileActionError(getErrorMessage(err));
+    }
+  }
+
+  async function handleDeclineThemeShare(share: SharedThemeProfileView) {
+    try {
+      await session.authorizedRequest((token) => api.declineSharedThemeProfile(token, share.id));
+      setReceivedShares((prev) => (prev ?? []).filter((s) => s.id !== share.id));
+    } catch (err) {
+      setProfileActionError(getErrorMessage(err));
+    }
+  }
+
   async function handleChangeEmail(e: FormEvent) {
     e.preventDefault();
     setEmailError(null);
@@ -468,43 +525,91 @@ export default function SettingsView({
             {profilesLoadError && <p className="text-xs text-red-600 dark:text-red-400">{profilesLoadError}</p>}
             {profileActionError && <p className="text-xs text-red-600 dark:text-red-400">{profileActionError}</p>}
 
+            {/* Retour utilisateur : "savoir le partager avec d'autres utilisateurs". */}
+            {receivedShares && receivedShares.length > 0 && (
+              <div className="space-y-1 rounded-lg border border-indigo-200 bg-indigo-50/50 p-1.5 dark:border-indigo-900 dark:bg-indigo-950/30">
+                <p className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300">Profils reçus</p>
+                {receivedShares.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="truncate text-neutral-600 dark:text-neutral-400">
+                      <span className="font-medium text-neutral-900 dark:text-neutral-100">{s.name}</span> — {s.from_email}
+                    </span>
+                    <div className="flex shrink-0 gap-1.5">
+                      <button type="button" onClick={() => void handleAcceptThemeShare(s)} className="text-indigo-600 hover:underline dark:text-indigo-400">
+                        Accepter
+                      </button>
+                      <button type="button" onClick={() => void handleDeclineThemeShare(s)} className="text-neutral-500 hover:underline">
+                        Refuser
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {profiles && (
               <div className="flex flex-wrap gap-1.5">
                 {profiles.map((p) => (
-                  <div
-                    key={p.id}
-                    className={`flex items-center gap-1 rounded-lg border px-1.5 py-0.5 text-[11px] ${
-                      p.is_active ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300" : "border-neutral-300 dark:border-neutral-700"
-                    }`}
-                  >
-                    <button type="button" onClick={() => startEditThemeProfile(p)} className="font-medium hover:underline">
-                      {p.name}
-                      {p.is_active ? " ✓" : ""}
-                    </button>
-                    {!p.is_active && (
-                      <button type="button" onClick={() => void handleActivateThemeProfile(p)} className="text-neutral-500 hover:text-indigo-600 dark:hover:text-indigo-400">
-                        Activer
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => duplicateThemeProfile(p)}
-                      disabled={!isAdmin && (profiles?.length ?? 0) >= MAX_PROFILES}
-                      className="text-neutral-500 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:text-indigo-400"
-                      title="Dupliquer"
+                  <div key={p.id} className="flex flex-col gap-1">
+                    <div
+                      className={`flex items-center gap-1 rounded-lg border px-1.5 py-0.5 text-[11px] ${
+                        p.is_active ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300" : "border-neutral-300 dark:border-neutral-700"
+                      }`}
                     >
-                      ⧉
-                    </button>
-                    <button type="button" onClick={() => void handleDeleteThemeProfile(p)} className="text-neutral-500 hover:text-red-600 dark:hover:text-red-400">
-                      ✕
-                    </button>
+                      <button type="button" onClick={() => startEditThemeProfile(p)} className="font-medium hover:underline">
+                        {p.name}
+                        {p.is_active ? " ✓" : ""}
+                      </button>
+                      {!p.is_active && (
+                        <button type="button" onClick={() => void handleActivateThemeProfile(p)} className="text-neutral-500 hover:text-indigo-600 dark:hover:text-indigo-400">
+                          Activer
+                        </button>
+                      )}
+                      <button type="button" onClick={() => startShareThemeProfile(p)} className="text-neutral-500 hover:text-indigo-600 dark:hover:text-indigo-400" title="Partager">
+                        ↗
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => duplicateThemeProfile(p)}
+                        disabled={!isAdmin && (profiles?.length ?? 0) >= MAX_PROFILES}
+                        className="text-neutral-500 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:text-indigo-400"
+                        title="Dupliquer"
+                      >
+                        ⧉
+                      </button>
+                      <button type="button" onClick={() => void handleDeleteThemeProfile(p)} className="text-neutral-500 hover:text-red-600 dark:hover:text-red-400">
+                        ✕
+                      </button>
+                    </div>
+                    {sharingProfileId === p.id && (
+                      <div className="flex items-center gap-1 rounded-lg border border-neutral-200 p-1 dark:border-neutral-800">
+                        <input
+                          type="email"
+                          value={shareEmailInput}
+                          onChange={(e) => setShareEmailInput(e.target.value)}
+                          placeholder="Email du destinataire"
+                          className="w-full rounded border border-neutral-300 px-1.5 py-0.5 text-[10px] outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void handleShareThemeProfile(p.id)}
+                          disabled={!shareEmailInput.trim()}
+                          className="shrink-0 rounded bg-indigo-600 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+                        >
+                          Envoyer
+                        </button>
+                      </div>
+                    )}
+                    {sharingProfileId === p.id && shareMessage && (
+                      <p className={`text-[10px] ${shareMessage.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>{shareMessage.text}</p>
+                    )}
                   </div>
                 ))}
                 <button
                   type="button"
                   onClick={startNewThemeProfile}
                   disabled={!isAdmin && (profiles?.length ?? 0) >= MAX_PROFILES}
-                  className="rounded-lg border border-dashed border-neutral-300 px-1.5 py-0.5 text-[11px] text-neutral-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-400"
+                  className="self-start rounded-lg border border-dashed border-neutral-300 px-1.5 py-0.5 text-[11px] text-neutral-600 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-400"
                 >
                   + Nouveau
                 </button>
@@ -547,6 +652,21 @@ export default function SettingsView({
                           aria-hidden="true"
                         />
                       </div>
+                      {/* Retour utilisateur : "je veux aussi que la suggestion de couleur soit
+                          au-dessus du curseur de teinte" — voir ThemeSettings.tsx côté desktop. */}
+                      <div className="mb-0.5 flex flex-wrap gap-1">
+                        {HUE_PRESETS.map((preset) => (
+                          <button
+                            key={preset.hue}
+                            type="button"
+                            onClick={() => updateDraftProfile({ [hueKey]: preset.hue } as Partial<CustomThemeConfig>)}
+                            title={preset.label}
+                            aria-label={`${label} — ${preset.label}`}
+                            className={`h-3 w-3 rounded-full border ${hue === preset.hue ? "border-neutral-900 dark:border-white" : "border-neutral-300 dark:border-neutral-700"}`}
+                            style={{ backgroundColor: `oklch(65% .2 ${preset.hue})` }}
+                          />
+                        ))}
+                      </div>
                       {/* Retour utilisateur : "améliore [...] la sélection de couleur, rends-la
                           plus complète" — dégradé arc-en-ciel + valeur numérique, voir
                           ThemeSettings.tsx côté desktop pour le même raisonnement. */}
@@ -563,22 +683,7 @@ export default function SettingsView({
                         />
                         <span className="w-7 shrink-0 text-right text-[10px] tabular-nums text-neutral-500">{Math.round(hue)}°</span>
                       </div>
-                      {/* Retour utilisateur : "améliore la sélection de couleur" — voir
-                          ThemeSettings.tsx côté desktop pour le même raisonnement. */}
-                      <div className="mt-0.5 flex flex-wrap gap-1">
-                        {HUE_PRESETS.map((preset) => (
-                          <button
-                            key={preset.hue}
-                            type="button"
-                            onClick={() => updateDraftProfile({ [hueKey]: preset.hue } as Partial<CustomThemeConfig>)}
-                            title={preset.label}
-                            aria-label={`${label} — ${preset.label}`}
-                            className={`h-3 w-3 rounded-full border ${hue === preset.hue ? "border-neutral-900 dark:border-white" : "border-neutral-300 dark:border-neutral-700"}`}
-                            style={{ backgroundColor: `oklch(65% .2 ${preset.hue})` }}
-                          />
-                        ))}
-                      </div>
-                      <div className="flex items-center gap-1.5">
+                      <div className="mt-0.5 flex items-center gap-1.5">
                         <input
                           type="range"
                           min={0}
@@ -606,6 +711,31 @@ export default function SettingsView({
                         />
                         <span className="w-7 shrink-0 text-right text-[10px] tabular-nums text-neutral-500">{Math.round(saturation)}%</span>
                       </div>
+                      {/* Retour utilisateur : "tu as aussi enlevé les options de fondu et autre" —
+                          raccourcis restaurés pour le fond, en plus du curseur continu. */}
+                      {hueKey === "backgroundHue" && (
+                        <div className="mt-1 flex gap-1">
+                          {SATURATION_PRESETS.map((preset) => (
+                            <button
+                              key={preset.label}
+                              type="button"
+                              onClick={() => updateDraftProfile({ backgroundSaturation: preset.value })}
+                              className={`flex-1 rounded-lg border px-1.5 py-0.5 text-[10px] ${
+                                saturation === preset.value
+                                  ? "border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"
+                                  : "border-neutral-300 text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+                              }`}
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {hueKey === "backgroundHue" && (
+                        <p className="mt-1 text-[10px] text-neutral-500">
+                          Luminosité &lt; 50% = interface sombre, au-delà = claire — bascule aussi les boutons/textes, pas que le fond.
+                        </p>
+                      )}
                     </div>
                   );
                 })}
@@ -628,8 +758,11 @@ export default function SettingsView({
                   {profileSaveState === "saved" && <span className="text-[11px] text-emerald-600 dark:text-emerald-400">Synchronisé.</span>}
                 </div>
 
-                {/* Retour utilisateur : "exporter/partager un profil avec un code". */}
+                {/* Retour utilisateur : "exporter/partager un profil avec un code" — pour partager
+                    HORS de l'app. Le bouton "↗" sur chaque profil, plus haut, envoie directement
+                    le profil à un autre compte de ce serveur. */}
                 <div className="space-y-1.5 border-t border-neutral-200 pt-2 dark:border-neutral-800">
+                  <p className="text-[10px] text-neutral-500">Ou par un autre moyen (SMS, email…) :</p>
                   <button type="button" onClick={() => void handleCopyThemeCode()} className="rounded-lg border border-neutral-300 px-2 py-1 text-[10px] text-neutral-700 dark:border-neutral-700 dark:text-neutral-300">
                     Copier le code de ce profil
                   </button>

@@ -1470,6 +1470,58 @@ connecté, de façon atomique (jamais deux profils actifs en même temps).
 **Réponse** : `204 No Content`.
 **Erreurs** : `404` si `id` n'existe pas ou n'appartient pas au compte connecté.
 
+### Partage d'un profil avec un autre utilisateur
+
+Retour utilisateur (2026-09-03) : "savoir le partager avec d'autres utilisateurs" plutôt qu'un
+simple code copiable-collable (toujours disponible côté client, voir
+`lib/customTheme.ts::encodeThemeCode`). PAS de chiffrement — une personnalisation de thème n'a
+rien à protéger, contrairement au partage d'entrées du coffre.
+
+### `POST /theme-profiles/{id}/share`
+
+*Authentification requise.* Partage UN des profils du compte connecté avec un autre utilisateur de
+ce serveur — copie ses valeurs telles quelles au moment du partage (pas un lien live : modifier le
+profil source ensuite n'affecte pas ce qui a été partagé).
+
+| Champ | Type | Contrainte |
+|---|---|---|
+| `shared_with_email` | string | email valide, différent du compte appelant |
+
+**Réponse** : `201 Created { "id": "..." }`.
+**Erreurs** : `400` si l'email est invalide ou identique au compte appelant. `404` si `id`
+n'appartient pas au compte connecté, OU si `shared_with_email` ne correspond à aucun compte de ce
+serveur.
+
+### `GET /theme-profiles/shared`
+
+*Authentification requise.* Liste tous les partages EN ATTENTE reçus par le compte connecté (pas
+encore acceptés/déclinés), du plus récent au plus ancien.
+
+**Réponse** : `200 OK`, tableau (vide si personne n'a rien partagé) — chaque élément a la même
+forme qu'un profil (voir `GET /theme-profiles`), plus `from_email` (l'expéditeur), sans `id` de
+profil ni `is_active` (ce n'est pas encore un profil).
+
+### `POST /theme-profiles/shared/{id}/accept`
+
+*Authentification requise.* Accepte un partage reçu — le copie dans les PROPRES profils du compte
+connecté (soumis au même plafond de 3 profils que `POST /theme-profiles`) puis retire le partage
+de la liste d'attente.
+
+**Réponse** : `201 Created`, le nouveau profil créé (même forme que `POST /theme-profiles`).
+**Erreurs** : `400` si le plafond de profils est atteint — le partage reste alors EN ATTENTE
+(non supprimé), réessayable après avoir supprimé un profil existant. `404` si `id` n'existe pas ou
+n'est pas adressé au compte connecté.
+
+### `DELETE /theme-profiles/shared/{id}`
+
+*Authentification requise.* Refuse/retire un partage — l'expéditeur peut annuler avant
+acceptation, le destinataire peut décliner (les deux côtés acceptés, comme la révocation d'un
+partage d'entrée du coffre).
+
+**Réponse** : `204 No Content`.
+**Erreurs** : `404` si `id` n'existe pas ou n'implique le compte connecté ni comme expéditeur ni
+comme destinataire.
+
 ## Endpoints — Divers
 
 ### `GET /health`

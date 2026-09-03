@@ -1,6 +1,6 @@
 use sqlx::SqlitePool;
 use crate::{models::{VaultEntry, VaultEntryInput, TrashedVaultEntry, PasswordHistoryEntry, ReencryptedHistoryEntry, VaultAttachment, VaultAttachmentInput, VaultAttachmentMeta, UserKeysInput, UserPublicKey, EmergencyContact, VaultShare, SharedWithMeEntry, SharedEntryView, SharedVaultView, SharedVaultMemberView, SharedVaultEntry, SharedVaultEntryInput, VaultBlindShare, BlindShareReceivedView, BlindShareCredentialsView, CreateBugReportPayload, BugReportView, CreateFeatureSuggestionPayload, FeatureSuggestionView,
-ThemeProfilePayload, ThemeProfileView}, error::AppError};
+ThemeProfilePayload, ThemeProfileView, SharedThemeProfileView}, error::AppError};
 
 /// Historique des mots de passe : garde au plus ce nombre de versions PAR ENTRÉE — au-delà, les
 /// plus anciennes sont purgées automatiquement (voir VaultRepository::archive_password_history).
@@ -1950,5 +1950,160 @@ impl ThemeProfileRepository {
 
         tx.commit().await?;
         Ok(true)
+    }
+}
+
+// =========================================================================
+// PARTAGE DE PROFIL AVEC UN AUTRE UTILISATEUR — voir migration
+// 20260903050000_shared_theme_profiles.sql et models.rs pour le détail du modèle. PAS de crypto
+// (contrairement à SharingRepository pour le coffre) : une personnalisation de thème n'a rien à
+// protéger, un partage est juste une ligne EN CLAIR en attente d'acceptation.
+// =========================================================================
+
+pub struct ThemeShareRepository;
+
+impl ThemeShareRepository {
+    /// Partage UN des profils du compte appelant (vérifie D'ABORD qu'il lui appartient bien,
+    /// comme ThemeProfileRepository::update/delete) avec `to_email` — copie ses valeurs telles
+    /// quelles au moment du partage (pas un lien live vers le profil source, voir le commentaire
+    /// de la migration). `false` si `profile_id` n'appartient pas au compte appelant, OU si
+    /// `to_email` ne correspond à aucun compte existant (vérifié explicitement plutôt que de
+    /// laisser échouer la contrainte FK — message d'erreur clair côté handler dans les deux cas,
+    /// jamais une erreur SQL brute).
+    pub async fn share(db: &SqlitePool, from_email: &str, profile_id: &str, to_email: &str) -> Result<Option<String>, AppError> {
+        let profile: Option<ThemeProfileView> = sqlx::query_as(
+            "SELECT id, name, background_hue, background_lightness, background_saturation, accent_hue, accent_lightness, accent_saturation,
+                    danger_hue, danger_lightness, danger_saturation, success_hue, success_lightness, success_saturation,
+                    favorite_hue, favorite_lightness, favorite_saturation, is_active
+             FROM theme_customization_profiles WHERE id = ? AND user_email = ?",
+        )
+        .bind(profile_id)
+        .bind(from_email)
+        .fetch_optional(db)
+        .await?;
+        let Some(profile) = profile else { return Ok(None) };
+
+        let recipient_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM users WHERE email = ?")
+            .bind(to_email)
+            .fetch_optional(db)
+            .await?;
+        if recipient_exists.is_none() {
+            return Ok(None);
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO shared_theme_profiles
+                (id, from_email, to_email, name, background_hue, background_lightness, background_saturation,
+                 accent_hue, accent_lightness, accent_saturation, danger_hue, danger_lightness, danger_saturation,
+                 success_hue, success_lightness, success_saturation, favorite_hue, favorite_lightness, favorite_saturation)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(from_email)
+        .bind(to_email)
+        .bind(&profile.name)
+        .bind(profile.background_hue)
+        .bind(profile.background_lightness)
+        .bind(profile.background_saturation)
+        .bind(profile.accent_hue)
+        .bind(profile.accent_lightness)
+        .bind(profile.accent_saturation)
+        .bind(profile.danger_hue)
+        .bind(profile.danger_lightness)
+        .bind(profile.danger_saturation)
+        .bind(profile.success_hue)
+        .bind(profile.success_lightness)
+        .bind(profile.success_saturation)
+        .bind(profile.favorite_hue)
+        .bind(profile.favorite_lightness)
+        .bind(profile.favorite_saturation)
+        .execute(db)
+        .await?;
+
+        Ok(Some(id))
+    }
+
+    /// Tous les partages EN ATTENTE reçus par le compte appelant, du plus récent au plus ancien.
+    pub async fn list_received(db: &SqlitePool, to_email: &str) -> Result<Vec<SharedThemeProfileView>, AppError> {
+        sqlx::query_as::<_, SharedThemeProfileView>(
+            "SELECT id, from_email, name, background_hue, background_lightness, background_saturation,
+                    accent_hue, accent_lightness, accent_saturation, danger_hue, danger_lightness, danger_saturation,
+                    success_hue, success_lightness, success_saturation, favorite_hue, favorite_lightness, favorite_saturation
+             FROM shared_theme_profiles WHERE to_email = ? ORDER BY created_at DESC",
+        )
+        .bind(to_email)
+        .fetch_all(db)
+        .await
+        .map_err(AppError::from)
+    }
+
+    /// Un partage précis reçu par le compte appelant — utilisé par accept_shared_theme_profile
+    /// pour ne créer le nouveau profil qu'à partir d'un partage RÉELLEMENT adressé à cet appelant
+    /// (jamais celui d'un tiers).
+    async fn get_received(db: &SqlitePool, id: &str, to_email: &str) -> Result<Option<SharedThemeProfileView>, AppError> {
+        sqlx::query_as::<_, SharedThemeProfileView>(
+            "SELECT id, from_email, name, background_hue, background_lightness, background_saturation,
+                    accent_hue, accent_lightness, accent_saturation, danger_hue, danger_lightness, danger_saturation,
+                    success_hue, success_lightness, success_saturation, favorite_hue, favorite_lightness, favorite_saturation
+             FROM shared_theme_profiles WHERE id = ? AND to_email = ?",
+        )
+        .bind(id)
+        .bind(to_email)
+        .fetch_optional(db)
+        .await
+        .map_err(AppError::from)
+    }
+
+    /// Accepte un partage reçu : le copie dans les PROPRES profils du destinataire (soumis au même
+    /// plafond que ThemeProfileRepository::create — `is_admin_caller`, même raison), puis supprime
+    /// la ligne d'attente. `None` si le partage n'existe pas / n'appartient pas au destinataire
+    /// (voir get_received) ; `Some(Err(...))` si le plafond de profils est atteint (le partage reste
+    /// alors en attente, pas supprimé — le destinataire peut réessayer après avoir libéré de la
+    /// place, voir handlers/theme_customization.rs).
+    pub async fn accept(db: &SqlitePool, id: &str, to_email: &str, is_admin_caller: bool) -> Result<Option<ThemeProfileView>, AppError> {
+        let Some(shared) = Self::get_received(db, id, to_email).await? else { return Ok(None) };
+
+        let payload = ThemeProfilePayload {
+            name: shared.name,
+            background_hue: shared.background_hue,
+            background_lightness: shared.background_lightness,
+            background_saturation: shared.background_saturation,
+            accent_hue: shared.accent_hue,
+            accent_lightness: shared.accent_lightness,
+            accent_saturation: shared.accent_saturation,
+            danger_hue: shared.danger_hue,
+            danger_lightness: shared.danger_lightness,
+            danger_saturation: shared.danger_saturation,
+            success_hue: shared.success_hue,
+            success_lightness: shared.success_lightness,
+            success_saturation: shared.success_saturation,
+            favorite_hue: shared.favorite_hue,
+            favorite_lightness: shared.favorite_lightness,
+            favorite_saturation: shared.favorite_saturation,
+        };
+        let created = ThemeProfileRepository::create(db, to_email, &payload, is_admin_caller).await?;
+
+        sqlx::query("DELETE FROM shared_theme_profiles WHERE id = ? AND to_email = ?")
+            .bind(id)
+            .bind(to_email)
+            .execute(db)
+            .await?;
+
+        Ok(Some(created))
+    }
+
+    /// Refuse/retire un partage — L'UN OU L'AUTRE côté peut y mettre fin (l'expéditeur annule, ou
+    /// le destinataire décline), même raisonnement que SharingRepository::revoke_share pour le
+    /// coffre. `false` si `id` n'existe pas ou n'implique ni `caller_email` comme expéditeur NI
+    /// comme destinataire.
+    pub async fn decline(db: &SqlitePool, id: &str, caller_email: &str) -> Result<bool, AppError> {
+        let result = sqlx::query("DELETE FROM shared_theme_profiles WHERE id = ? AND (from_email = ? OR to_email = ?)")
+            .bind(id)
+            .bind(caller_email)
+            .bind(caller_email)
+            .execute(db)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 }

@@ -582,6 +582,16 @@ export interface ThemeProfileView {
 
 export type ThemeProfilePayload = Omit<ThemeProfileView, "id" | "is_active">;
 
+/** Partage d'un profil avec un autre utilisateur (retour utilisateur : "savoir le partager avec
+ * d'autres utilisateurs") — voir handlers/theme_customization.rs côté backend. */
+export interface ShareThemeProfilePayload {
+  shared_with_email: string;
+}
+
+/** Un partage EN ATTENTE reçu — mêmes champs qu'un profil, `from_email` en plus, sans `id` de
+ * profil ni `is_active` (ce n'est pas encore un profil, voir GET /theme-profiles/shared). */
+export type SharedThemeProfileView = Omit<ThemeProfileView, "is_active"> & { from_email: string };
+
 /** Erreur générique renvoyée par le backend, voir error.rs::AppError::into_response(). */
 export interface ApiErrorBody {
   error: string;

@@ -13,7 +13,7 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
-use crate::{AppState, error::AppError, middleware::AuthUser, repository::ThemeProfileRepository, models::ThemeProfilePayload};
+use crate::{AppState, error::AppError, middleware::AuthUser, repository::{ThemeProfileRepository, ThemeShareRepository}, models::{ThemeProfilePayload, ShareThemeProfilePayload}};
 use validator::Validate;
 
 /// Tous les profils du compte connecté (voir ThemeProfileView pour `is_active`) — liste vide, pas
@@ -70,6 +70,65 @@ pub async fn delete_theme_profile(State(state): State<Arc<AppState>>, user: Auth
 pub async fn activate_theme_profile(State(state): State<Arc<AppState>>, user: AuthUser, Path(id): Path<String>) -> Result<impl IntoResponse, AppError> {
     let activated = ThemeProfileRepository::activate(&state.db, &user.email, &id).await?;
     if !activated {
+        return Err(AppError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// =========================================================================
+// PARTAGE AVEC UN AUTRE UTILISATEUR — retour utilisateur : "au lieu de uniquement copier le code,
+// il faudrait plutôt savoir le partager avec d'autres utilisateurs". PAS de crypto (voir
+// repository.rs::ThemeShareRepository) — une personnalisation de thème n'a rien à protéger.
+// =========================================================================
+
+/// Partage UN des profils du compte connecté avec un autre utilisateur — copie ses valeurs telles
+/// quelles au moment du partage (voir ThemeShareRepository::share, pas un lien live). `false`
+/// (renvoyé comme 404) si `id` n'appartient pas au compte connecté OU si l'email destinataire ne
+/// correspond à aucun compte de ce serveur.
+pub async fn share_theme_profile(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(payload): Json<ShareThemeProfilePayload>,
+) -> Result<impl IntoResponse, AppError> {
+    payload.validate()?;
+    let shared_with_email = payload.shared_with_email.to_lowercase();
+    if shared_with_email == user.email {
+        return Err(AppError::ValidationError("Impossible de partager un profil avec soi-même.".to_string()));
+    }
+
+    let shared_id = ThemeShareRepository::share(&state.db, &user.email, &id, &shared_with_email).await?;
+    let Some(shared_id) = shared_id else {
+        return Err(AppError::NotFound);
+    };
+    Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": shared_id }))))
+}
+
+/// Tous les partages EN ATTENTE reçus par le compte connecté (à afficher/accepter/refuser côté
+/// client) — liste vide, pas une erreur, si personne n'a rien partagé avec ce compte.
+pub async fn list_shared_theme_profiles(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
+    let shares = ThemeShareRepository::list_received(&state.db, &user.email).await?;
+    Ok(Json(shares))
+}
+
+/// Accepte un partage reçu — le copie dans les PROPRES profils du compte connecté (soumis au même
+/// plafond que create_theme_profile) puis retire le partage de la liste d'attente. `404` si le
+/// partage n'existe pas / n'est pas adressé à ce compte (voir ThemeShareRepository::accept).
+pub async fn accept_shared_theme_profile(State(state): State<Arc<AppState>>, user: AuthUser, Path(id): Path<String>) -> Result<impl IntoResponse, AppError> {
+    let is_admin = user.is_admin(&state);
+    let created = ThemeShareRepository::accept(&state.db, &id, &user.email, is_admin).await?;
+    let Some(created) = created else {
+        return Err(AppError::NotFound);
+    };
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// Refuse/retire un partage — l'expéditeur peut annuler AVANT acceptation, le destinataire peut
+/// décliner (voir ThemeShareRepository::decline, les deux côtés confondus). `404` si `id` n'existe
+/// pas ou n'implique le compte connecté ni comme expéditeur ni comme destinataire.
+pub async fn decline_shared_theme_profile(State(state): State<Arc<AppState>>, user: AuthUser, Path(id): Path<String>) -> Result<impl IntoResponse, AppError> {
+    let declined = ThemeShareRepository::decline(&state.db, &id, &user.email).await?;
+    if !declined {
         return Err(AppError::NotFound);
     }
     Ok(StatusCode::NO_CONTENT)
@@ -315,5 +374,207 @@ mod tests {
         let state = build_test_state(None).await;
         let result = delete_theme_profile(State(state), auth("user6@example.com"), Path("id-inexistant".to_string())).await;
         assert!(matches!(result, Err(AppError::NotFound)));
+    }
+
+    // -----------------------------------------------------------------
+    // PARTAGE AVEC UN AUTRE UTILISATEUR
+    // -----------------------------------------------------------------
+
+    /// Cycle de vie complet : partage -> visible côté destinataire -> acceptation -> devient un
+    /// profil à part entière chez le destinataire -> le partage en attente a disparu.
+    #[tokio::test]
+    async fn test_share_accept_lifecycle() {
+        let state = build_test_state(None).await;
+        register_test_user(&state, "sender@example.com").await;
+        register_test_user(&state, "recipient@example.com").await;
+
+        let created = create_theme_profile(State(state.clone()), auth("sender@example.com"), Json(sample_payload("Mon thème"))).await.unwrap();
+        let profile_id = read_json_body(created.into_response()).await["id"].as_str().unwrap().to_string();
+
+        let share_result = share_theme_profile(
+            State(state.clone()),
+            auth("sender@example.com"),
+            Path(profile_id),
+            Json(ShareThemeProfilePayload { shared_with_email: "recipient@example.com".to_string() }),
+        )
+        .await
+        .expect("le partage doit réussir");
+        let share_id = read_json_body(share_result.into_response()).await["id"].as_str().unwrap().to_string();
+
+        // Visible côté destinataire.
+        let received = list_shared_theme_profiles(State(state.clone()), auth("recipient@example.com")).await.unwrap();
+        let received_body = read_json_body(received.into_response()).await;
+        let received_rows = received_body.as_array().unwrap();
+        assert_eq!(received_rows.len(), 1);
+        assert_eq!(received_rows[0]["from_email"], "sender@example.com");
+        assert_eq!(received_rows[0]["name"], "Mon thème");
+
+        // Acceptation -> devient un profil chez le destinataire.
+        let accepted = accept_shared_theme_profile(State(state.clone()), auth("recipient@example.com"), Path(share_id)).await.unwrap();
+        let accepted_body = read_json_body(accepted.into_response()).await;
+        assert_eq!(accepted_body["name"], "Mon thème");
+        assert_eq!(accepted_body["accent_hue"], 180);
+
+        let recipient_profiles = list_theme_profiles(State(state.clone()), auth("recipient@example.com")).await.unwrap();
+        let recipient_body = read_json_body(recipient_profiles.into_response()).await;
+        assert_eq!(recipient_body.as_array().unwrap().len(), 1, "le partage accepté doit apparaître dans les propres profils du destinataire");
+
+        // Le partage en attente a disparu après acceptation.
+        let received_after = list_shared_theme_profiles(State(state.clone()), auth("recipient@example.com")).await.unwrap();
+        let received_after_body = read_json_body(received_after.into_response()).await;
+        assert_eq!(received_after_body.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cannot_share_with_self() {
+        let state = build_test_state(None).await;
+        register_test_user(&state, "solo@example.com").await;
+        let created = create_theme_profile(State(state.clone()), auth("solo@example.com"), Json(sample_payload("Profil"))).await.unwrap();
+        let profile_id = read_json_body(created.into_response()).await["id"].as_str().unwrap().to_string();
+
+        let result = share_theme_profile(
+            State(state.clone()),
+            auth("solo@example.com"),
+            Path(profile_id),
+            Json(ShareThemeProfilePayload { shared_with_email: "solo@example.com".to_string() }),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::ValidationError(_))));
+    }
+
+    /// RÉGRESSION SÉCURITÉ : impossible de partager le profil d'un AUTRE utilisateur.
+    #[tokio::test]
+    async fn test_cannot_share_another_users_profile() {
+        let state = build_test_state(None).await;
+        register_test_user(&state, "realowner3@example.com").await;
+        register_test_user(&state, "attacker3@example.com").await;
+        register_test_user(&state, "victim3@example.com").await;
+        let created = create_theme_profile(State(state.clone()), auth("realowner3@example.com"), Json(sample_payload("Profil"))).await.unwrap();
+        let profile_id = read_json_body(created.into_response()).await["id"].as_str().unwrap().to_string();
+
+        let result = share_theme_profile(
+            State(state.clone()),
+            auth("attacker3@example.com"),
+            Path(profile_id),
+            Json(ShareThemeProfilePayload { shared_with_email: "victim3@example.com".to_string() }),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_share_with_nonexistent_recipient_fails() {
+        let state = build_test_state(None).await;
+        register_test_user(&state, "sender2@example.com").await;
+        let created = create_theme_profile(State(state.clone()), auth("sender2@example.com"), Json(sample_payload("Profil"))).await.unwrap();
+        let profile_id = read_json_body(created.into_response()).await["id"].as_str().unwrap().to_string();
+
+        let result = share_theme_profile(
+            State(state.clone()),
+            auth("sender2@example.com"),
+            Path(profile_id),
+            Json(ShareThemeProfilePayload { shared_with_email: "personne@example.com".to_string() }),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::NotFound)));
+    }
+
+    /// RÉGRESSION SÉCURITÉ : ni un tiers étranger, ni même l'expéditeur, ne peuvent ACCEPTER un
+    /// partage qui ne leur est pas adressé (seul le destinataire désigné le peut).
+    #[tokio::test]
+    async fn test_only_recipient_can_accept_share() {
+        let state = build_test_state(None).await;
+        register_test_user(&state, "sender3@example.com").await;
+        register_test_user(&state, "recipient3@example.com").await;
+        register_test_user(&state, "stranger3@example.com").await;
+        let created = create_theme_profile(State(state.clone()), auth("sender3@example.com"), Json(sample_payload("Profil"))).await.unwrap();
+        let profile_id = read_json_body(created.into_response()).await["id"].as_str().unwrap().to_string();
+        let share_result = share_theme_profile(
+            State(state.clone()),
+            auth("sender3@example.com"),
+            Path(profile_id),
+            Json(ShareThemeProfilePayload { shared_with_email: "recipient3@example.com".to_string() }),
+        )
+        .await
+        .unwrap();
+        let share_id = read_json_body(share_result.into_response()).await["id"].as_str().unwrap().to_string();
+
+        let stranger_attempt = accept_shared_theme_profile(State(state.clone()), auth("stranger3@example.com"), Path(share_id.clone())).await;
+        assert!(matches!(stranger_attempt, Err(AppError::NotFound)));
+
+        let sender_attempt = accept_shared_theme_profile(State(state.clone()), auth("sender3@example.com"), Path(share_id)).await;
+        assert!(matches!(sender_attempt, Err(AppError::NotFound)));
+    }
+
+    /// L'expéditeur ET le destinataire peuvent tous les deux décliner/annuler un partage en
+    /// attente — mais pas un tiers étranger.
+    #[tokio::test]
+    async fn test_decline_share_either_side() {
+        let state = build_test_state(None).await;
+        register_test_user(&state, "sender4@example.com").await;
+        register_test_user(&state, "recipient4@example.com").await;
+        register_test_user(&state, "stranger4@example.com").await;
+        let created = create_theme_profile(State(state.clone()), auth("sender4@example.com"), Json(sample_payload("Profil"))).await.unwrap();
+        let profile_id = read_json_body(created.into_response()).await["id"].as_str().unwrap().to_string();
+
+        async fn make_share(state: &Arc<AppState>, profile_id: &str) -> String {
+            let result = share_theme_profile(
+                State(state.clone()),
+                auth("sender4@example.com"),
+                Path(profile_id.to_string()),
+                Json(ShareThemeProfilePayload { shared_with_email: "recipient4@example.com".to_string() }),
+            )
+            .await
+            .unwrap();
+            read_json_body(result.into_response()).await["id"].as_str().unwrap().to_string()
+        }
+
+        // Un tiers étranger ne peut pas décliner.
+        let share_id_1 = make_share(&state, &profile_id).await;
+        let stranger_attempt = decline_shared_theme_profile(State(state.clone()), auth("stranger4@example.com"), Path(share_id_1.clone())).await;
+        assert!(matches!(stranger_attempt, Err(AppError::NotFound)));
+
+        // Le destinataire peut décliner.
+        decline_shared_theme_profile(State(state.clone()), auth("recipient4@example.com"), Path(share_id_1)).await.unwrap();
+
+        // L'expéditeur peut annuler.
+        let share_id_2 = make_share(&state, &profile_id).await;
+        decline_shared_theme_profile(State(state.clone()), auth("sender4@example.com"), Path(share_id_2)).await.unwrap();
+
+        let received = list_shared_theme_profiles(State(state.clone()), auth("recipient4@example.com")).await.unwrap();
+        let received_body = read_json_body(received.into_response()).await;
+        assert_eq!(received_body.as_array().unwrap().len(), 0, "les deux partages déclinés/annulés ne doivent plus apparaître");
+    }
+
+    /// RÉGRESSION : accepter un partage alors que le destinataire a déjà 3 profils (plafond non-
+    /// admin) échoue — le partage reste EN ATTENTE (pas perdu), le destinataire peut réessayer
+    /// après avoir supprimé un profil.
+    #[tokio::test]
+    async fn test_accept_share_respects_profile_limit() {
+        let state = build_test_state(None).await;
+        register_test_user(&state, "sender5@example.com").await;
+        register_test_user(&state, "recipient5@example.com").await;
+        for i in 0..3 {
+            create_theme_profile(State(state.clone()), auth("recipient5@example.com"), Json(sample_payload(&format!("Profil {i}")))).await.unwrap();
+        }
+        let created = create_theme_profile(State(state.clone()), auth("sender5@example.com"), Json(sample_payload("Cadeau"))).await.unwrap();
+        let profile_id = read_json_body(created.into_response()).await["id"].as_str().unwrap().to_string();
+        let share_result = share_theme_profile(
+            State(state.clone()),
+            auth("sender5@example.com"),
+            Path(profile_id),
+            Json(ShareThemeProfilePayload { shared_with_email: "recipient5@example.com".to_string() }),
+        )
+        .await
+        .unwrap();
+        let share_id = read_json_body(share_result.into_response()).await["id"].as_str().unwrap().to_string();
+
+        let accept_result = accept_shared_theme_profile(State(state.clone()), auth("recipient5@example.com"), Path(share_id.clone())).await;
+        assert!(matches!(accept_result, Err(AppError::ValidationError(_))));
+
+        // Toujours en attente, pas perdu.
+        let received = list_shared_theme_profiles(State(state.clone()), auth("recipient5@example.com")).await.unwrap();
+        let received_body = read_json_body(received.into_response()).await;
+        assert_eq!(received_body.as_array().unwrap().len(), 1);
     }
 }

@@ -658,6 +658,15 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/theme-profiles/{id}", put(handlers::update_theme_profile).delete(handlers::delete_theme_profile))
         .route("/theme-profiles/{id}/activate", post(handlers::activate_theme_profile))
 
+        // Partage d'un profil avec un AUTRE utilisateur (retour utilisateur : "savoir le partager
+        // avec d'autres utilisateurs") — voir handlers/theme_customization.rs. `/theme-profiles/
+        // shared*` sont des segments STATIQUES, prioritaires sur `/theme-profiles/{id}` ci-dessus
+        // à la même position (axum route les segments littéraux avant les paramètres nommés).
+        .route("/theme-profiles/{id}/share", post(handlers::share_theme_profile))
+        .route("/theme-profiles/shared", get(handlers::list_shared_theme_profiles))
+        .route("/theme-profiles/shared/{id}/accept", post(handlers::accept_shared_theme_profile))
+        .route("/theme-profiles/shared/{id}", delete(handlers::decline_shared_theme_profile))
+
         // Application des middlewares globaux de Tower
         // CORRECTIF SÉCURITÉ (voir rewrite_client_ip_from_proxy_headers ci-dessus) : ajoutée EN
         // PREMIER (donc la couche la plus INTERNE, la plus proche des routes/handlers) pour que

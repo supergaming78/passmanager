@@ -53,6 +53,8 @@ import {
   type BlindShareCredentialsView,
   type ThemeProfileView,
   type ThemeProfilePayload,
+  type ShareThemeProfilePayload,
+  type SharedThemeProfileView,
 } from "./types";
 
 /**
@@ -687,6 +689,36 @@ export function deleteThemeProfile(accessToken: string, id: string): Promise<voi
 export function activateThemeProfile(accessToken: string, id: string): Promise<void> {
   return request<void>(`/theme-profiles/${encodeURIComponent(id)}/activate`, {
     method: "POST",
+    headers: authHeaders(accessToken),
+  });
+}
+
+// --- Partage d'un profil avec un autre utilisateur (voir api/types.ts) — retour utilisateur :
+// "savoir le partager avec d'autres utilisateurs" plutôt qu'uniquement un code copiable-collable.
+export function shareThemeProfile(accessToken: string, id: string, payload: ShareThemeProfilePayload): Promise<{ id: string }> {
+  return request<{ id: string }>(`/theme-profiles/${encodeURIComponent(id)}/share`, {
+    method: "POST",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listSharedThemeProfiles(accessToken: string): Promise<SharedThemeProfileView[]> {
+  return request<SharedThemeProfileView[]>("/theme-profiles/shared", { headers: authHeaders(accessToken) });
+}
+
+/** Accepte un partage reçu — le copie dans les propres profils du compte connecté. */
+export function acceptSharedThemeProfile(accessToken: string, id: string): Promise<ThemeProfileView> {
+  return request<ThemeProfileView>(`/theme-profiles/shared/${encodeURIComponent(id)}/accept`, {
+    method: "POST",
+    headers: authHeaders(accessToken),
+  });
+}
+
+/** Refuse/retire un partage — expéditeur et destinataire peuvent tous deux appeler ceci. */
+export function declineSharedThemeProfile(accessToken: string, id: string): Promise<void> {
+  return request<void>(`/theme-profiles/shared/${encodeURIComponent(id)}`, {
+    method: "DELETE",
     headers: authHeaders(accessToken),
   });
 }
