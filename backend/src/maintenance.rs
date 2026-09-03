@@ -62,6 +62,54 @@ pub async fn cleanup_expired_ws_tickets(db: &sqlx::SqlitePool) {
     }
 }
 
+/// Durée de conservation du journal d'audit EN BASE DE DONNÉES, en jours.
+///
+/// Choisie volontairement courte (demande explicite de l'utilisateur) : sans purge, `audit_logs`
+/// grossissait indéfiniment — chaque connexion, copie de mot de passe, partage... y ajoute une
+/// ligne à vie, alourdissant la base ET chaque sauvegarde.
+///
+/// IMPORTANT — ceci ne détruit PAS la trace d'audit : chaque entrée est AUSSI émise dans le
+/// journal structuré de l'application (voir state.rs::log_audit, `info!(target: "audit", ...)`),
+/// écrit dans les fichiers de log du serveur avec sa propre rotation. Cette purge ne réduit donc
+/// que la fenêtre consultable depuis l'application (`GET /audit` et `GET /audit/me`) ; l'historique
+/// plus ancien reste disponible dans les fichiers de log pour une investigation.
+///
+/// Contrepartie à connaître : au-delà de cette fenêtre, l'écran "Historique" ne montre plus rien —
+/// par exemple, au retour de trois semaines d'absence, impossible d'y vérifier qui s'est connecté
+/// pendant ce temps. Augmenter cette seule constante suffit à allonger la rétention.
+const AUDIT_LOG_RETENTION_DAYS: i64 = 10;
+
+/// Purge les entrées du journal d'audit plus vieilles que `AUDIT_LOG_RETENTION_DAYS`.
+///
+/// `created_at` est écrit par CURRENT_TIMESTAMP (format natif SQLite : "AAAA-MM-JJ HH:MM:SS",
+/// avec une ESPACE) et `DATETIME('now', '-N days')` produit exactement le MÊME format — la
+/// comparaison de chaînes est donc cohérente des deux côtés. C'est précisément le piège qui avait
+/// causé un bug sur `cleanup_expired_tokens` (voir son commentaire) : là-bas `expires_at` est
+/// stocké au format ISO "T...Z", incompatible avec DATETIME(). Ne pas transposer l'un à l'autre.
+pub async fn purge_old_audit_logs(db: &sqlx::SqlitePool) {
+    let cutoff = format!("-{AUDIT_LOG_RETENTION_DAYS} days");
+
+    let result = sqlx::query("DELETE FROM audit_logs WHERE created_at < DATETIME('now', ?)")
+        .bind(&cutoff)
+        .execute(db)
+        .await;
+
+    match result {
+        Ok(res) => {
+            let count = res.rows_affected();
+            if count > 0 {
+                info!(
+                    "Journal d'audit : {} entrée(s) purgée(s) après {} jours de conservation (elles restent dans les fichiers de log).",
+                    count, AUDIT_LOG_RETENTION_DAYS
+                );
+            }
+        }
+        // Volontairement non bloquant, comme les autres nettoyages : un échec ne doit jamais
+        // interrompre le cycle de maintenance, mais ne doit pas non plus passer inaperçu.
+        Err(e) => error!("Échec de la purge du journal d'audit : {:?}", e),
+    }
+}
+
 /// Supprime les comptes jamais vérifiés (voir handlers/auth/register.rs) trop anciens : sans ça,
 /// quelqu'un pourrait s'inscrire avec l'email de quelqu'un d'autre et squatter indéfiniment cette
 /// adresse (le vrai propriétaire se heurterait à un conflit d'inscription pour toujours). 24h
@@ -349,6 +397,53 @@ mod tests {
             remaining,
             vec!["fresh-unverified@example.com".to_string(), "old-but-verified@example.com".to_string()],
             "seul le compte non vérifié ET vieux de plus de 24h doit avoir été supprimé"
+        );
+    }
+
+    /// purge_old_audit_logs() ne doit supprimer QUE les entrées au-delà de la fenêtre de
+    /// conservation, et laisser intactes les récentes (celles que l'écran "Historique" affiche).
+    #[tokio::test]
+    async fn test_purge_old_audit_logs_removes_only_entries_past_retention() {
+        let pool = build_test_pool().await;
+        sqlx::query("INSERT INTO users (email, password_hash) VALUES (?, ?)")
+            .bind("audit-retention@example.com")
+            .bind("hash_non_pertinent")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Une entrée nettement au-delà de la fenêtre, une nettement en deçà, et une pile à la
+        // limite mais du bon côté (la veille de l'échéance) — cette dernière garde le test honnête
+        // si quelqu'un remplace `<` par `<=` ou se trompe d'un jour.
+        let cases: [(&str, i64); 3] = [
+            ("VIEUX", AUDIT_LOG_RETENTION_DAYS + 5),
+            ("LIMITE_OK", AUDIT_LOG_RETENTION_DAYS - 1),
+            ("RECENT", 0),
+        ];
+        for (action, days_ago) in cases {
+            sqlx::query(
+                "INSERT INTO audit_logs (user_email, action, ip_address, created_at)
+                 VALUES (?, ?, ?, DATETIME('now', ?))"
+            )
+            .bind("audit-retention@example.com")
+            .bind(action)
+            .bind("127.0.0.1")
+            .bind(format!("-{days_ago} days"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        purge_old_audit_logs(&pool).await;
+
+        let remaining: Vec<String> = sqlx::query_scalar("SELECT action FROM audit_logs ORDER BY action")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining,
+            vec!["LIMITE_OK".to_string(), "RECENT".to_string()],
+            "seule l'entrée au-delà de la fenêtre de conservation doit être purgée"
         );
     }
 

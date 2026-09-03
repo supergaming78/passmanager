@@ -362,6 +362,13 @@ voir `PUT /theme-preference` plus bas.
 au plus ancien. Même forme de réponse que `GET /audit`. Aucun contenu du coffre là-dedans — juste
 action/IP/user-agent/date en clair.
 
+**Rétention : 10 jours.** Une tâche de maintenance purge les entrées plus anciennes de la base
+(voir `maintenance.rs::AUDIT_LOG_RETENTION_DAYS`) — sans quoi la table grossirait indéfiniment, une
+ligne par action et à vie. La trace elle-même n'est pas perdue pour autant : chaque entrée est
+aussi émise dans le journal structuré du serveur (fichiers de log, avec leur propre rotation), qui
+reste consultable pour une investigation au-delà de cette fenêtre. Seul l'historique affiché par
+l'API est donc limité à 10 jours.
+
 ### `POST /auth/forgot-password`
 
 Initie une réinitialisation de mot de passe oublié.
@@ -1119,6 +1126,9 @@ admins" de chaque endpoint ci-dessous.
 ### `GET /audit`
 
 *Authentification requise, réservé aux administrateurs.*
+
+**Rétention : 10 jours** — même purge que `GET /audit/me` (voir sa section pour le détail et
+pourquoi la trace reste disponible dans les fichiers de log au-delà).
 
 **Réponse** : `200 OK`, les 100 derniers logs d'audit du système (tous utilisateurs confondus),
 triés du plus récent au plus ancien :
