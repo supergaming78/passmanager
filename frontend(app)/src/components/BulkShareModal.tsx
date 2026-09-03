@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { getErrorMessage } from "../lib/errors";
 import { shareEntry } from "../lib/entrySharing";
+import { allSettledWithLimit } from "../lib/concurrency";
 import type { PlainVaultEntry } from "../lib/vaultCrypto";
 
 interface Props {
@@ -34,7 +35,10 @@ export default function BulkShareModal({ entries, authorizedRequest, onClose }: 
     setIsSharing(true);
     setError(null);
     try {
-      const results = await Promise.allSettled(entries.map((entry) => shareEntry(authorizedRequest, entry, recipient)));
+      // Concurrence bornée (voir lib/concurrency.ts) : partager une grande sélection envoyait
+      // auparavant tous les partages d'un seul coup, ce qui saturait le rate limiter du serveur et
+      // faisait échouer une partie d'entre eux pour cette seule raison.
+      const results = await allSettledWithLimit(entries, (entry) => shareEntry(authorizedRequest, entry, recipient));
       const failed = results.filter((r) => r.status === "rejected").length;
       setResult({ succeeded: entries.length - failed, failed });
     } catch (err) {

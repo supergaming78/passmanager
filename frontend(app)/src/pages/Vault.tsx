@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { decryptEntries, encryptEntry, type PlainVaultEntry, type EntryType } from "../lib/vaultCrypto";
+import { allSettledWithLimit } from "../lib/concurrency";
 import { maybeRunAutoBackup } from "../lib/autoBackup";
 import { fuzzyIncludes } from "../lib/fuzzyMatch";
 import { getErrorMessage } from "../lib/errors";
@@ -449,7 +450,10 @@ export default function Vault() {
     setError(null);
     setIsBulkBusy(true);
     try {
-      const results = await Promise.allSettled(ids.map((id) => authorizedRequest((token) => api.deleteVaultEntry(token, id))));
+      // Concurrence bornée (voir lib/concurrency.ts) : "tout sélectionner" puis supprimer envoyait
+      // auparavant une requête par entrée D'UN SEUL COUP, ce qui déclenchait le rate limiter du
+      // serveur et faisait échouer une partie des suppressions pour cette seule raison.
+      const results = await allSettledWithLimit(ids, (id) => authorizedRequest((token) => api.deleteVaultEntry(token, id)));
       const failed = results.filter((r) => r.status === "rejected").length;
       if (failed > 0) setError(`${failed} suppression(s) sur ${ids.length} ont échoué.`);
     } finally {
@@ -472,7 +476,7 @@ export default function Vault() {
     setError(null);
     setIsBulkBusy(true);
     try {
-      const results = await Promise.allSettled(targets.map((e) => authorizedRequest((token) => api.toggleFavorite(token, e.id))));
+      const results = await allSettledWithLimit(targets, (e) => authorizedRequest((token) => api.toggleFavorite(token, e.id)));
       const failed = results.filter((r) => r.status === "rejected").length;
       if (failed > 0) setError(`${failed} mise(s) à jour sur ${targets.length} ont échoué.`);
     } finally {
@@ -488,15 +492,16 @@ export default function Vault() {
    * le dossier — d'où le ré-encryptEntry() complet à partir de l'entrée déjà déchiffrée en
    * mémoire, avec seulement `folder` changé. Renvoie le nombre d'échecs (0 = tout est passé). */
   async function reassignFolder(targets: PlainVaultEntry[], folder: string): Promise<number> {
-    const results = await Promise.allSettled(
-      targets.map(async (e) => {
+    const results = await allSettledWithLimit(
+      targets,
+      async (e) => {
         const { id: _id, ...withoutId } = e;
         const encrypted = await encryptEntry({ ...withoutId, folder }, false, e.version);
         await authorizedRequest((token) => api.updateVaultEntry(token, e.id, encrypted));
         // Même raison que dans handleEdit() : le dossier fait partie du contenu scellé pour un
         // éventuel partage (voir lib/entrySharing.ts), donc lui aussi périmé après ce changement.
         void reseedEntryShares(authorizedRequest, { ...e, folder }).catch(() => {});
-      }),
+      },
     );
     return results.filter((r) => r.status === "rejected").length;
   }

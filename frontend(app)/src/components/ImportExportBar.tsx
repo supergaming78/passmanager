@@ -3,6 +3,7 @@ import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import * as tauri from "../api/tauri";
 import { decryptEntries, encryptEntry, encryptEntries, type PlainVaultEntry } from "../lib/vaultCrypto";
+import { allSettledWithLimit } from "../lib/concurrency";
 import { decryptAndParseImportFile, exportEntriesToFile, pickImportFile, type ExportableEntry, type FileFormat } from "../lib/vaultFile";
 import { detectDuplicateMatch, type DuplicateStatus } from "../lib/importDuplicates";
 import { CRACK_SCENARIOS, estimateCrackTimeSeconds, estimatePasswordEntropyBits, formatCrackTime, rateEntropy } from "../lib/passwordGenerator";
@@ -272,12 +273,13 @@ const ImportExportBar = forwardRef<ImportExportBarHandle, {
         // Ici, passwordChanged: true — remplacer le contenu d'une entrée existante par une valeur
         // importée EST un changement réel de mot de passe, l'ancien doit être archivé (voir
         // handlers/vault.rs côté backend).
-        const results = await Promise.allSettled(
-          toReplace.map(async ({ targetId, entry }) => {
-            const encrypted = await encryptEntry(entry, true);
-            return authorizedRequest((token) => api.updateVaultEntry(token, targetId, encrypted));
-          }),
-        );
+        // Concurrence bornée (voir lib/concurrency.ts) : un import remplaçant beaucoup d'entrées
+        // envoyait auparavant toutes les mises à jour d'un seul coup, ce qui saturait le rate
+        // limiter du serveur et faisait échouer une partie des remplacements pour cette seule raison.
+        const results = await allSettledWithLimit(toReplace, async ({ targetId, entry }) => {
+          const encrypted = await encryptEntry(entry, true);
+          return authorizedRequest((token) => api.updateVaultEntry(token, targetId, encrypted));
+        });
         replacedCount = results.filter((r) => r.status === "fulfilled").length;
         const failed = results.length - replacedCount;
         if (failed > 0) setError(`${failed} remplacement(s) ont échoué.`);
