@@ -112,6 +112,12 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 
 const LOGGED_OUT_STATE: AuthState = { email: null, accessToken: null, refreshToken: null, isModerator: false, isAdmin: false, canChooseServerInSettings: false };
 
+/** Fréquence de vérification du verrouillage automatique par inactivité (voir son useEffect).
+ * C'est la GRANULARITÉ du verrouillage, pas le délai lui-même : le coffre se verrouille donc au
+ * plus 15 s après l'échéance configurée. Assez fin pour un délai qui se compte en minutes, et
+ * assez espacé pour que ce réveil périodique reste négligeable (une comparaison de nombres). */
+const AUTO_LOCK_CHECK_INTERVAL_MS = 15_000;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>(LOGGED_OUT_STATE);
   // Voir la doc de isVaultLocked sur AuthContextValue. Déclaré tôt : establishSession() ci-dessous
@@ -567,26 +573,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Minuteur d'inactivité : réinitialisé à chaque interaction utilisateur, verrouille le coffre
   // s'il expire (délai configurable, voir lib/settings.ts — 0 désactive). Un seul minuteur pour
   // toute la session (pas un par écran), comme la connexion WebSocket ci-dessous.
-  const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastActivityRef = useRef(Date.now());
   useEffect(() => {
     if (!state.email || isVaultLocked) return;
 
-    function resetTimer() {
-      if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
-      const minutes = getAutoLockMinutes();
-      if (minutes <= 0) return;
-      inactivityTimerRef.current = setTimeout(() => {
-        void lockVaultNow();
-      }, minutes * 60_000);
+    // Le gestionnaire d'activité n'écrit plus qu'un horodatage. CORRECTIF (deux défauts d'un
+    // coup, trouvés à l'audit du frontend) :
+    //
+    // 1. PERFORMANCE — il était branché sur `mousemove` et `scroll`, qui se déclenchent des
+    //    dizaines à des centaines de fois par seconde, et faisait à CHAQUE fois un
+    //    `localStorage.getItem` (lecture SYNCHRONE, via getAutoLockMinutes) plus un
+    //    clearTimeout/setTimeout. Autant de travail inutile pendant chaque déplacement de souris
+    //    ou défilement, précisément quand l'interface doit rester fluide.
+    //
+    // 2. SÉCURITÉ — le verrouillage reposait sur un unique `setTimeout`, qui compte le temps
+    //    d'exécution et non le temps RÉEL : après une mise en veille de la machine, le compte à
+    //    rebours ne reflétait plus l'heure murale, et le coffre pouvait rester déverrouillé bien
+    //    au-delà du délai configuré. On compare désormais des horodatages `Date.now()`, donc une
+    //    veille de plusieurs heures est vue comme telle et verrouille dès le premier réveil.
+    //    (Le verrouillage à la perte de focus couvrait déjà ce cas en pratique — mais il est
+    //    désactivable, et cette protection-ci ne doit pas dépendre de l'autre.)
+    function markActivity() {
+      lastActivityRef.current = Date.now();
     }
 
     const activityEvents = ["mousemove", "mousedown", "keydown", "scroll", "touchstart"] as const;
-    activityEvents.forEach((evt) => window.addEventListener(evt, resetTimer));
-    resetTimer();
+    // `passive: true` : ces écouteurs n'appellent jamais preventDefault, l'indiquer laisse le
+    // moteur de rendu poursuivre le défilement sans attendre leur exécution.
+    activityEvents.forEach((evt) => window.addEventListener(evt, markActivity, { passive: true }));
+    markActivity();
+
+    // Le réglage est relu à chaque vérification (et non une seule fois à l'abonnement) : une
+    // modification depuis l'écran Réglages prend effet au tick suivant, comme avant.
+    const interval = setInterval(() => {
+      const minutes = getAutoLockMinutes();
+      if (minutes <= 0) return; // 0 = verrouillage automatique désactivé
+      if (Date.now() - lastActivityRef.current >= minutes * 60_000) {
+        void lockVaultNow();
+      }
+    }, AUTO_LOCK_CHECK_INTERVAL_MS);
 
     return () => {
-      activityEvents.forEach((evt) => window.removeEventListener(evt, resetTimer));
-      if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
+      activityEvents.forEach((evt) => window.removeEventListener(evt, markActivity));
+      clearInterval(interval);
     };
   }, [state.email, isVaultLocked, lockVaultNow]);
 
