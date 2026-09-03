@@ -3,11 +3,13 @@
 // réglages). Pas de routeur : un état local par écran, chaque écran plein remplace le contenu de
 // la popup (voir le plan — cohérent avec la taille modeste de chaque écran, 380×580px).
 
-import { lazy, Suspense, useEffect, useMemo, useState, type FormEvent } from "react";
+import { lazy, memo, Suspense, useEffect, useMemo, useState, type FormEvent } from "react";
 import * as api from "./api/client";
 import * as session from "./lib/session";
 import { decryptEntry, encryptEntry, type PlainVaultEntry, type EntryType } from "./lib/vaultCrypto";
 import { getPreferredIdentifier } from "./lib/entryIdentifier";
+import { fuzzyIncludes } from "./lib/fuzzyMatch";
+import { estimatePasswordEntropyBits, rateEntropy } from "./lib/passwordStrength";
 import { isStandaloneWindow, openStandaloneAndClose } from "./lib/popupWindow";
 import { getWindowMode } from "./lib/settings";
 import { runAutofill, runCardAutofill, getActiveTabUrl, domainsLikelyMatch, isSecurePageUrl } from "./lib/autofill";
@@ -253,6 +255,30 @@ export default function App() {
 function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex min-h-[200px] items-center justify-center p-6 text-sm text-neutral-500">{children}</div>;
 }
+
+/** Pastille de force du mot de passe, à côté du nom du site — même logique et mêmes seuils que
+ * l'app desktop (voir lib/passwordStrength.ts), pour repérer une entrée faible sans avoir à
+ * l'ouvrir une par une.
+ *
+ * UNIQUEMENT pour le type "Mot de passe" : le champ générique contient un NUMÉRO DE CARTE pour une
+ * carte bancaire et un numéro de document pour une identité (voir components/VaultEntryForm.tsx),
+ * qui n'ont aucune notion de "force" — y afficher une pastille rouge serait un contresens, ces
+ * numéros étant imposés, pas choisis.
+ *
+ * `React.memo` : la liste peut afficher beaucoup d'entrées, et cette estimation ne dépend QUE du
+ * mot de passe — inutile de la refaire à chaque rendu du parent (copie, filtre, défilement). */
+const StrengthDot = memo(function StrengthDot({ entry }: { entry: PlainVaultEntry }) {
+  if (entry.entryType !== "login") return null;
+  const bits = estimatePasswordEntropyBits(entry.password);
+  if (bits <= 0) return null;
+  const rating = rateEntropy(bits);
+  return (
+    <span
+      title={`${Math.round(bits)} bits — ${rating.label}`}
+      className={`inline-block h-2 w-2 shrink-0 rounded-full ${rating.barClass}`}
+    />
+  );
+});
 
 /** Enveloppe une vue secondaire chargée à la demande.
  *
@@ -622,7 +648,21 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
         .filter((e) => {
           const q = query.trim().toLowerCase();
           if (!q) return true;
-          return e.siteName.toLowerCase().includes(q) || e.username.toLowerCase().includes(q) || e.loginEmail.toLowerCase().includes(q);
+          if (
+            e.siteName.toLowerCase().includes(q) ||
+            e.username.toLowerCase().includes(q) ||
+            e.loginEmail.toLowerCase().includes(q)
+          ) {
+            return true;
+          }
+          // Repli tolérant aux fautes de frappe (voir lib/fuzzyMatch.ts) — UNIQUEMENT si aucune
+          // correspondance exacte n'a été trouvée ci-dessus : grâce au `return true` anticipé, ce
+          // calcul de distance d'édition n'est même pas évalué dans le cas courant. Dans une popup
+          // de 380px, la recherche EST la navigation (ni menu latéral, ni filtres rapides, ni
+          // dispositions alternatives), donc une faute de frappe y coûte plus cher que dans l'app.
+          // Volontairement limité à site/identifiant/email, comme côté app : une tolérance sur du
+          // texte libre plus long (notes, URL) produirait trop de faux positifs.
+          return fuzzyIncludes(e.siteName, q) || fuzzyIncludes(e.username, q) || fuzzyIncludes(e.loginEmail, q);
         })
         .filter((e) => {
           if (!folderFilter) return true;
@@ -981,7 +1021,10 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
             {entry.isFavorite ? "★" : "☆"}
           </button>
           <div className="min-w-0">
-            <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
+            <p className="flex items-center gap-1.5 truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
+              <span className="truncate">{entry.siteName}</span>
+              <StrengthDot entry={entry} />
+            </p>
             <p className="truncate text-xs text-neutral-500">
               {getPreferredIdentifier(entry)}
             </p>
