@@ -87,8 +87,8 @@
       for (var t2 = 0; t2 < tintLight.length; t2++) html.style.removeProperty(tintLight[t2]);
 
       var isDarkCustom = cfg.backgroundLightness < 50;
-      var bgC1 = cfg.backgroundNeutral ? "0" : ".006", bgC2 = cfg.backgroundNeutral ? "0" : ".008", bgC3 = cfg.backgroundNeutral ? "0" : ".01";
-      var bgLc1 = cfg.backgroundNeutral ? "0" : ".008", bgLc2 = cfg.backgroundNeutral ? "0" : ".01", bgLc3 = cfg.backgroundNeutral ? "0" : ".015";
+      var bgC1 = cfg.backgroundNeutral ? "0" : ".05", bgC2 = cfg.backgroundNeutral ? "0" : ".06", bgC3 = cfg.backgroundNeutral ? "0" : ".07";
+      var bgLc1 = cfg.backgroundNeutral ? "0" : ".02", bgLc2 = cfg.backgroundNeutral ? "0" : ".025", bgLc3 = cfg.backgroundNeutral ? "0" : ".03";
       if (isDarkCustom) {
         html.style.setProperty("--color-neutral-950", "oklch(" + clampL(cfg.backgroundLightness).toFixed(1) + "% " + bgC1 + " " + cfg.backgroundHue + ")");
         html.style.setProperty("--color-neutral-900", "oklch(" + clampL(cfg.backgroundLightness + 6).toFixed(1) + "% " + bgC2 + " " + cfg.backgroundHue + ")");

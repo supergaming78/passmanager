@@ -194,13 +194,20 @@ function applyFamily(el: HTMLElement, family: string, steps: Record<string, Step
  *
  * `neutral` (retour utilisateur, 2026-09-03 : "tu as enlevé une fonctionnalité, le fondu" — un fond
  * parfaitement gris, sans AUCUNE teinte, existait dans la toute première version de cette
- * fonctionnalité et avait disparu) : force la chroma à 0 (donc `hue` sans aucun effet visuel) ;
- * sinon, chroma faible et fixe (indépendante du choix utilisateur, pour ne jamais nuire au
- * contraste du texte par-dessus), seule la teinte suit le choix. */
+ * fonctionnalité et avait disparu) : force la chroma à 0 (donc `hue` sans aucun effet visuel).
+ *
+ * CHROMA (retour utilisateur, 2026-09-03, encore le même jour : "j'ai le choix entre noir et blanc
+ * [...] mais je veux pas ce choix entre blanc et noir, [je veux choisir] entre toutes les couleurs
+ * [teinte + plus foncé ou plus clair]") : la première version gardait une chroma minuscule
+ * (.006-.015, la même recette discrète que les thèmes preset "tintés") — trop faible pour qu'une
+ * teinte se voie vraiment, le fond restait perçu comme un simple dégradé gris quelle que soit la
+ * teinte choisie. Chroma nettement relevée ici pour que le fond soit une VRAIE couleur (comme
+ * l'accent/danger/succès/favoris), tout en restant en-dessous de leur chroma (~.18-.26) — un fond
+ * de page ne doit pas être aussi saturé qu'un bouton, juste clairement teinté. */
 function applyBackground(el: HTMLElement, hue: number, lightness: number, neutral: boolean): boolean {
   const isDark = lightness < 50;
-  const [c1, c2, c3] = neutral ? ["0", "0", "0"] : [".006", ".008", ".01"];
-  const [lc1, lc2, lc3] = neutral ? ["0", "0", "0"] : [".008", ".01", ".015"];
+  const [c1, c2, c3] = neutral ? ["0", "0", "0"] : [".05", ".06", ".07"];
+  const [lc1, lc2, lc3] = neutral ? ["0", "0", "0"] : [".02", ".025", ".03"];
   if (isDark) {
     // Écarts natifs Tailwind neutral 950->900->800 : 14.5 -> 20.5 (+6) -> 26.9 (+12.4).
     el.style.setProperty("--color-neutral-950", `oklch(${clampL(lightness).toFixed(1)}% ${c1} ${hue})`);
