@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
+import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, getCachedThemeProfiles, setCachedThemeProfiles, type Theme, type CustomThemeConfig } from "../lib/theme";
 import {
   DEFAULT_CUSTOM_THEME,
   HUE_PRESETS,
@@ -287,19 +287,49 @@ export default function ThemeSettings() {
   const [shareMessage, setShareMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [receivedShares, setReceivedShares] = useState<SharedThemeProfileView[] | null>(null);
 
+  /** Toute mise à jour de `profiles` passe par ici — garde le cache mémoire de lib/theme.ts
+   * (voir getCachedThemeProfiles) synchronisé avec l'état local, pour qu'un futur montage de ce
+   * composant (revenir sur cet écran plus tard dans la même session) le retrouve à jour au lieu
+   * de retomber sur une valeur déjà périmée par ces mutations locales. */
+  function setProfilesAndCache(update: ThemeProfileView[] | ((prev: ThemeProfileView[]) => ThemeProfileView[])) {
+    setProfiles((prev) => {
+      const next = typeof update === "function" ? update(prev ?? []) : update;
+      setCachedThemeProfiles(next);
+      return next;
+    });
+  }
+
   useEffect(() => {
     if (theme !== "custom" || profiles !== null) return;
-    authorizedRequest((token) => api.listThemeProfiles(token))
-      .then((list) => {
-        setProfiles(list);
-        const active = list.find((p) => p.is_active);
-        if (active) {
-          setEditingId(active.id);
-          setDraftName(active.name);
-          setDraft(profileToConfig(active));
-        }
-      })
-      .catch((err) => setLoadError(getErrorMessage(err)));
+
+    // OPTIMISATION BANDE PASSANTE (retour utilisateur) : establishSession() (voir AuthContext.tsx)
+    // a déjà récupéré cette même liste à la connexion — la réutiliser directement évite un aller-
+    // retour réseau identique quelques instants plus tard, dans le cas de très loin le plus
+    // fréquent (personne d'autre n'a modifié les profils entre-temps). Voir lib/theme.ts pour le
+    // détail du compromis (pas de re-synchronisation automatique en arrière-plan).
+    const cached = getCachedThemeProfiles();
+    if (cached) {
+      setProfiles(cached);
+      const active = cached.find((p) => p.is_active);
+      if (active) {
+        setEditingId(active.id);
+        setDraftName(active.name);
+        setDraft(profileToConfig(active));
+      }
+    } else {
+      authorizedRequest((token) => api.listThemeProfiles(token))
+        .then((list) => {
+          setProfilesAndCache(list);
+          const active = list.find((p) => p.is_active);
+          if (active) {
+            setEditingId(active.id);
+            setDraftName(active.name);
+            setDraft(profileToConfig(active));
+          }
+        })
+        .catch((err) => setLoadError(getErrorMessage(err)));
+    }
+
     authorizedRequest((token) => api.listSharedThemeProfiles(token))
       .then(setReceivedShares)
       .catch(() => {
@@ -412,13 +442,13 @@ export default function ThemeSettings() {
         // ne réserver "activer" qu'aux profils EXISTANTS déjà écartés (voir handleActivate).
         await authorizedRequest((token) => api.activateThemeProfile(token, created.id));
         const createdActive = { ...created, is_active: true };
-        setProfiles((prev) => [...(prev ?? []).map((p) => ({ ...p, is_active: false })), createdActive]);
+        setProfilesAndCache((prev) => [...prev.map((p) => ({ ...p, is_active: false })), createdActive]);
         setEditingId(created.id);
         setCachedCustomTheme(draft);
         setTheme("custom");
       } else if (editingId) {
         await authorizedRequest((token) => api.updateThemeProfile(token, editingId, payload));
-        setProfiles((prev) => (prev ?? []).map((p) => (p.id === editingId ? { ...p, ...payload } : p)));
+        setProfilesAndCache((prev) => prev.map((p) => (p.id === editingId ? { ...p, ...payload } : p)));
       }
       setSaveState("saved");
     } catch (err) {
@@ -431,7 +461,7 @@ export default function ThemeSettings() {
     setActionError(null);
     try {
       await authorizedRequest((token) => api.activateThemeProfile(token, p.id));
-      setProfiles((prev) => (prev ?? []).map((item) => ({ ...item, is_active: item.id === p.id })));
+      setProfilesAndCache((prev) => prev.map((item) => ({ ...item, is_active: item.id === p.id })));
       setCachedCustomTheme(profileToConfig(p));
       setTheme("custom");
       setThemeState("custom");
@@ -445,7 +475,7 @@ export default function ThemeSettings() {
     setActionError(null);
     try {
       await authorizedRequest((token) => api.deleteThemeProfile(token, p.id));
-      setProfiles((prev) => (prev ?? []).filter((item) => item.id !== p.id));
+      setProfilesAndCache((prev) => prev.filter((item) => item.id !== p.id));
       if (editingId === p.id) setEditingId(null);
       // Le profil supprimé était actif : revient à un thème preset plutôt que de laisser un
       // aperçu figé sur des couleurs qui n'existent plus côté serveur (voir DELETE côté backend).
@@ -480,7 +510,7 @@ export default function ThemeSettings() {
     setActionError(null);
     try {
       const created = await authorizedRequest((token) => api.acceptSharedThemeProfile(token, share.id));
-      setProfiles((prev) => [...(prev ?? []), created]);
+      setProfilesAndCache((prev) => [...prev, created]);
       setReceivedShares((prev) => (prev ?? []).filter((s) => s.id !== share.id));
     } catch (err) {
       setActionError(getErrorMessage(err));

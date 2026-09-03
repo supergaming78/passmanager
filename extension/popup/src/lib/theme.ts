@@ -19,6 +19,7 @@
 // récupération (session active/juste après connexion, PAS un "établissement de session" dédié
 // comme côté desktop : la popup n'en a pas, voir lib/session.ts).
 import { applyCustomTheme, clearCustomTheme, sanitizeCustomThemeConfig, DEFAULT_CUSTOM_THEME, type CustomThemeConfig } from "./customTheme";
+import type { ThemeProfileView } from "../api/types";
 
 export type Theme = "dark" | "light" | "system" | "midnight" | "ocean" | "forest" | "sunset" | "rose" | "violet" | "amber" | "slate" | "custom";
 export type { CustomThemeConfig };
@@ -82,6 +83,23 @@ export function setCachedCustomTheme(rawConfig: CustomThemeConfig): void {
     // best-effort.
   }
   if (getTheme() === "custom") applyTheme("custom");
+}
+
+// OPTIMISATION BANDE PASSANTE (retour utilisateur : "optimise [...] la bande passante") — voir le
+// commentaire équivalent côté desktop (frontend(app)/src/lib/theme.ts) pour le raisonnement
+// complet. Ici, réutilisé entre App.tsx::syncThemeCustomization (à l'ouverture de la popup) et
+// SettingsView.tsx (ouverture de l'onglet "Personnalisé…") — utile SEULEMENT si les deux se
+// produisent dans la MÊME ouverture de popup (le module JS entier redémarre à chaque réouverture,
+// contrairement à l'app desktop où la session dure plus longtemps) : reste un cas fréquent (ouvrir
+// la popup puis aller direct dans Réglages), pas la peine de reposer la question au serveur.
+let cachedThemeProfiles: ThemeProfileView[] | null = null;
+
+export function getCachedThemeProfiles(): ThemeProfileView[] | null {
+  return cachedThemeProfiles;
+}
+
+export function setCachedThemeProfiles(profiles: ThemeProfileView[]): void {
+  cachedThemeProfiles = profiles;
 }
 
 /** Applique un thème à la page (classe `dark` + classe de palette éventuelle sur `<html>`) sans le

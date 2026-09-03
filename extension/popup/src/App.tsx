@@ -15,7 +15,7 @@ import { getErrorMessage } from "./lib/errors";
 import { copyPasswordWithAutoClear } from "./lib/clipboard";
 import * as entrySharing from "./lib/entrySharing";
 import { recordEntryUse } from "./lib/vaultUsage";
-import { setTheme, setCachedCustomTheme } from "./lib/theme";
+import { setTheme, setCachedCustomTheme, setCachedThemeProfiles } from "./lib/theme";
 import VaultEntryForm, { type VaultEntryFormValues } from "./components/VaultEntryForm";
 import TrashView from "./components/TrashView";
 import ShareEntryView from "./components/ShareEntryView";
@@ -47,6 +47,9 @@ type Screen =
 async function syncThemeCustomization(accessToken: string): Promise<void> {
   try {
     const profiles = await api.listThemeProfiles(accessToken);
+    // OPTIMISATION BANDE PASSANTE (retour utilisateur) : réutilisé par SettingsView.tsx si
+    // l'utilisateur ouvre "Personnalisé…" pendant la MÊME ouverture de popup — voir lib/theme.ts.
+    setCachedThemeProfiles(profiles);
     const active = profiles.find((p) => p.is_active);
     if (active) {
       setCachedCustomTheme({

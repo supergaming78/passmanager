@@ -13,7 +13,7 @@ import * as tauri from "../api/tauri";
 import { getDeviceId, getDeviceName } from "../lib/deviceId";
 import { getAutoLockMinutes, getBackendUrl, getLockOnFocusLossDelaySeconds } from "../lib/settings";
 import { isFocusLossLockSuppressed } from "../lib/focusLossLockSuppression";
-import { setTheme, setCachedCustomTheme } from "../lib/theme";
+import { setTheme, setCachedCustomTheme, setCachedThemeProfiles } from "../lib/theme";
 import { flattenForReencryption, rebuildAttachments, rebuildEntries, rebuildHistory } from "../lib/passwordChangeCrypto";
 import { reseedAllContacts } from "../lib/emergencyAccess";
 import { ApiError, type SyncEvent } from "../api/types";
@@ -226,14 +226,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Une nouvelle connexion vient de dériver la clé côté Rust (voir login()) : le coffre
       // redémarre forcément déverrouillé, même si la session précédente avait été verrouillée.
       setIsVaultLocked(false);
-      try {
-        const me = await api.getMe(accessToken);
+
+      // OPTIMISATION (retour utilisateur : "optimise l'utilisation [...] de la bande passante") :
+      // GET /me et GET /theme-profiles sont deux appels INDÉPENDANTS (aucun n'a besoin du résultat
+      // de l'autre) — les lancer en parallèle (Promise.allSettled, pas Promise.all : chacun reste
+      // best-effort, l'échec de l'un ne doit jamais empêcher de traiter le résultat de l'autre)
+      // évite d'attendre deux allers-retours réseau l'un après l'autre à CHAQUE connexion, pour un
+      // seul temps d'attente au lieu de deux.
+      const [meResult, profilesResult] = await Promise.allSettled([api.getMe(accessToken), api.listThemeProfiles(accessToken)]);
+
+      if (meResult.status === "fulfilled") {
+        const me = meResult.value;
         setTokens({ email: userEmail, accessToken, refreshToken, isModerator: me.is_moderator, isAdmin: me.is_admin, canChooseServerInSettings: me.can_choose_server_in_settings });
-      } catch {
-        // best-effort, voir la doc ci-dessus.
       }
-      try {
-        const profiles = await api.listThemeProfiles(accessToken);
+      // sinon best-effort, voir la doc ci-dessus.
+
+      if (profilesResult.status === "fulfilled") {
+        const profiles = profilesResult.value;
+        // Réutilisé par ThemeSettings.tsx (voir lib/theme.ts::getCachedThemeProfiles) pour éviter
+        // de reposer la même question GET /theme-profiles au serveur quelques instants plus tard.
+        setCachedThemeProfiles(profiles);
         const active = profiles.find((p) => p.is_active);
         if (active) {
           // Un profil est actif côté serveur : ce compte utilise "custom" sur AU MOINS un
@@ -260,9 +272,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           });
           setTheme("custom");
         }
-      } catch {
-        // best-effort — voir la doc ci-dessus.
       }
+      // sinon best-effort, voir la doc ci-dessus.
     },
     [setTokens],
   );

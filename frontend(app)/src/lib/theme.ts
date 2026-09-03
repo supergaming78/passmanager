@@ -28,6 +28,7 @@
 // COMPTE (voir api/client.ts, state/AuthContext.tsx::establishSession) — pas juste en local comme
 // le reste de ce fichier.
 import { applyCustomTheme, clearCustomTheme, sanitizeCustomThemeConfig, DEFAULT_CUSTOM_THEME, type CustomThemeConfig } from "./customTheme";
+import type { ThemeProfileView } from "../api/types";
 
 export type Theme = "dark" | "light" | "system" | "midnight" | "ocean" | "forest" | "sunset" | "rose" | "violet" | "amber" | "slate" | "custom";
 export type { CustomThemeConfig };
@@ -114,6 +115,29 @@ export function setCachedCustomTheme(rawConfig: CustomThemeConfig): void {
     // best-effort — au pire, pas de cache anti-FOUC au prochain démarrage, rien de grave.
   }
   if (getTheme() === "custom") applyTheme("custom");
+}
+
+// -------------------------------------------------------------------------
+// OPTIMISATION BANDE PASSANTE (retour utilisateur : "optimise [...] la bande passante [...] du
+// côté app") — establishSession() (voir AuthContext.tsx) récupère déjà la liste COMPLÈTE des
+// profils à CHAQUE connexion pour trouver le profil actif. ThemeSettings.tsx, en ouvrant l'onglet
+// "Personnalisé…" peu après, refaisait le MÊME appel GET /theme-profiles pour la même donnée —
+// un aller-retour réseau entièrement redondant dans l'immense majorité des cas (il faudrait qu'un
+// AUTRE appareil modifie les profils dans l'intervalle pour que ça change quoi que ce soit). Ce
+// cache mémoire (PAS localStorage : cette liste n'a pas besoin de survivre à un redémarrage,
+// contrairement à passmanager.customTheme ci-dessus — un survol vite obsolète serait pire qu'un
+// simple re-fetch) permet à ThemeSettings.tsx de réutiliser directement ce qu'establishSession()
+// vient de récupérer, sans reposer la question au serveur. Écrit UNIQUEMENT par establishSession ;
+// ThemeSettings.tsx écrit aussi dedans après ses propres mutations (créer/modifier/supprimer un
+// profil), pour que le cache ne redevienne pas immédiatement obsolète après la première utilisation.
+let cachedThemeProfiles: ThemeProfileView[] | null = null;
+
+export function getCachedThemeProfiles(): ThemeProfileView[] | null {
+  return cachedThemeProfiles;
+}
+
+export function setCachedThemeProfiles(profiles: ThemeProfileView[]): void {
+  cachedThemeProfiles = profiles;
 }
 
 /** Applique un thème à la page (classe `dark` + classe de palette éventuelle sur `<html>`) sans le

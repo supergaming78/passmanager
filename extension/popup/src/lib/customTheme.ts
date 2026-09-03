@@ -334,6 +334,29 @@ const ALL_FAMILY_PROPERTIES = [
   ...Object.keys(GREEN_STEPS).map((s) => `--color-green-${s}`),
 ];
 
+/** OPTIMISATION CPU (retour utilisateur : "optimise l'utilisation du processeur [...] pendant les
+ * changements qu'on vient de faire") — applyCustomTheme() est appelée à CHAQUE tick d'un curseur
+ * pendant qu'on le fait glisser (voir updateDraft() dans ThemeSettings.tsx, plusieurs fois par
+ * seconde), mais un seul curseur à la fois change réellement — recalculer ET réécrire les 5
+ * familles de couleurs (40 propriétés CSS au total) à chaque tick alors que 4 d'entre elles sont
+ * IDENTIQUES à l'appel précédent est du travail perdu (recalcul OKLCH + écriture DOM, qui
+ * déclenche un recalcul de style navigateur). Retient la dernière teinte/luminosité/saturation
+ * RÉELLEMENT appliquée par famille ; applyFamily()/applyBackground() ne sont appelées que pour
+ * les familles dont au moins une des 3 valeurs a changé depuis le dernier appel. RESET impératif
+ * dans clearCustomTheme() ci-dessous : sans ça, ressortir de "custom" (qui EFFACE ces propriétés)
+ * puis y revenir avec une config identique laisserait ce cache croire à tort que rien n'a besoin
+ * d'être réécrit, alors que le DOM a été vidé entre-temps. */
+type ColorTuple = readonly [hue: number, lightness: number, saturation: number];
+let lastAppliedAccent: ColorTuple | null = null;
+let lastAppliedDanger: ColorTuple | null = null;
+let lastAppliedSuccess: ColorTuple | null = null;
+let lastAppliedFavorite: ColorTuple | null = null;
+let lastAppliedBackground: ColorTuple | null = null;
+
+function tupleChanged(previous: ColorTuple | null, next: ColorTuple): boolean {
+  return previous === null || previous[0] !== next[0] || previous[1] !== next[1] || previous[2] !== next[2];
+}
+
 /** Applique la personnalisation sur `<html>` — appelée quand `getTheme() === "custom"` (voir
  * theme.ts::applyTheme). Renvoie `isDark` (déduit de la luminosité de fond, voir applyBackground
  * ci-dessus) — c'est applyTheme() qui pose la classe `dark`/`color-scheme`, PAS cette fonction :
@@ -344,26 +367,60 @@ const ALL_FAMILY_PROPERTIES = [
 export function applyCustomTheme(rawConfig: CustomThemeConfig): boolean {
   const config = sanitizeCustomThemeConfig(rawConfig);
   const el = document.documentElement;
-  applyFamily(el, "indigo", INDIGO_STEPS, config.accentHue, config.accentLightness, config.accentSaturation, INDIGO_ANCHOR_L);
-  applyFamily(el, "red", RED_STEPS, config.dangerHue, config.dangerLightness, config.dangerSaturation, RED_ANCHOR_L);
-  applyFamily(el, "amber", AMBER_STEPS, config.favoriteHue, config.favoriteLightness, config.favoriteSaturation, AMBER_ANCHOR_L);
-  applyFamily(el, "emerald", EMERALD_STEPS, config.successHue, config.successLightness, config.successSaturation, EMERALD_ANCHOR_L);
-  applyFamily(el, "green", GREEN_STEPS, config.successHue, config.successLightness, config.successSaturation, EMERALD_ANCHOR_L);
 
-  // Retire l'éventuel jeu de propriétés de fond de l'AUTRE régime (ex: on vient de passer d'un
-  // fond sombre à un fond clair) avant d'appliquer celui du régime courant.
-  for (const prop of [...TINT_PROPERTIES_DARK, ...TINT_PROPERTIES_LIGHT]) el.style.removeProperty(prop);
-  return applyBackground(el, config.backgroundHue, config.backgroundLightness, config.backgroundSaturation);
+  const accentTuple: ColorTuple = [config.accentHue, config.accentLightness, config.accentSaturation];
+  if (tupleChanged(lastAppliedAccent, accentTuple)) {
+    applyFamily(el, "indigo", INDIGO_STEPS, ...accentTuple, INDIGO_ANCHOR_L);
+    lastAppliedAccent = accentTuple;
+  }
+  const dangerTuple: ColorTuple = [config.dangerHue, config.dangerLightness, config.dangerSaturation];
+  if (tupleChanged(lastAppliedDanger, dangerTuple)) {
+    applyFamily(el, "red", RED_STEPS, ...dangerTuple, RED_ANCHOR_L);
+    lastAppliedDanger = dangerTuple;
+  }
+  const favoriteTuple: ColorTuple = [config.favoriteHue, config.favoriteLightness, config.favoriteSaturation];
+  if (tupleChanged(lastAppliedFavorite, favoriteTuple)) {
+    applyFamily(el, "amber", AMBER_STEPS, ...favoriteTuple, AMBER_ANCHOR_L);
+    lastAppliedFavorite = favoriteTuple;
+  }
+  const successTuple: ColorTuple = [config.successHue, config.successLightness, config.successSaturation];
+  if (tupleChanged(lastAppliedSuccess, successTuple)) {
+    applyFamily(el, "emerald", EMERALD_STEPS, ...successTuple, EMERALD_ANCHOR_L);
+    applyFamily(el, "green", GREEN_STEPS, ...successTuple, EMERALD_ANCHOR_L);
+    lastAppliedSuccess = successTuple;
+  }
+
+  const backgroundTuple: ColorTuple = [config.backgroundHue, config.backgroundLightness, config.backgroundSaturation];
+  if (tupleChanged(lastAppliedBackground, backgroundTuple)) {
+    // Retire l'éventuel jeu de propriétés de fond de l'AUTRE régime (ex: on vient de passer d'un
+    // fond sombre à un fond clair) avant d'appliquer celui du régime courant.
+    for (const prop of [...TINT_PROPERTIES_DARK, ...TINT_PROPERTIES_LIGHT]) el.style.removeProperty(prop);
+    const isDark = applyBackground(el, ...backgroundTuple);
+    lastAppliedBackground = backgroundTuple;
+    return isDark;
+  }
+  // Fond inchangé depuis le dernier appel : le régime clair/sombre ne peut pas avoir changé non
+  // plus (il ne dépend QUE de backgroundLightness, déjà comparé ci-dessus) — recalculé ici sans
+  // toucher le DOM plutôt que de mémoriser une 4e valeur.
+  return config.backgroundLightness < 50;
 }
 
 /** Retire toute personnalisation inline posée par applyCustomTheme() — appelée en quittant
  * "custom" pour un thème preset (voir theme.ts::applyTheme), pour laisser les classes `.theme-X`
  * (elles, statiques dans App.css) reprendre la main sans qu'une ancienne valeur inline ne les
- * masque (spécificité inline > classe, voir le commentaire d'en-tête). */
+ * masque (spécificité inline > classe, voir le commentaire d'en-tête). Réinitialise aussi le cache
+ * "dernière valeur appliquée" de applyCustomTheme() ci-dessus — voir son commentaire : sans ça, un
+ * retour à "custom" avec une config identique à celle d'avant cette sortie croirait à tort n'avoir
+ * rien à réécrire, alors que ces propriétés viennent d'être effacées juste en dessous. */
 export function clearCustomTheme(): void {
   const el = document.documentElement;
   for (const prop of ALL_FAMILY_PROPERTIES) el.style.removeProperty(prop);
   for (const prop of [...TINT_PROPERTIES_DARK, ...TINT_PROPERTIES_LIGHT]) el.style.removeProperty(prop);
+  lastAppliedAccent = null;
+  lastAppliedDanger = null;
+  lastAppliedSuccess = null;
+  lastAppliedFavorite = null;
+  lastAppliedBackground = null;
 }
 
 // -------------------------------------------------------------------------

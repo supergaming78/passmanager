@@ -19,7 +19,7 @@ import {
   setWindowMode,
   type WindowMode,
 } from "../lib/settings";
-import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
+import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, getCachedThemeProfiles, setCachedThemeProfiles, type Theme, type CustomThemeConfig } from "../lib/theme";
 import {
   DEFAULT_CUSTOM_THEME,
   HUE_PRESETS,
@@ -196,23 +196,47 @@ export default function SettingsView({
     setThemeState(value);
     setTheme(value);
     if (value === "custom" && profiles === null) {
-      session.authorizedRequest((token) => api.listThemeProfiles(token))
-        .then((list) => {
-          setProfiles(list);
-          const active = list.find((p) => p.is_active);
-          if (active) {
-            setEditingProfileId(active.id);
-            setDraftProfileName(active.name);
-            setDraftProfile(profileToConfig(active));
-          }
-        })
-        .catch((err) => setProfilesLoadError(getErrorMessage(err)));
+      // OPTIMISATION BANDE PASSANTE (retour utilisateur) : App.tsx a déjà récupéré cette même
+      // liste à l'ouverture de la popup — la réutiliser directement si elle est encore là plutôt
+      // que de reposer la même question au serveur, voir lib/theme.ts.
+      const cached = getCachedThemeProfiles();
+      if (cached) {
+        setProfiles(cached);
+        const active = cached.find((p) => p.is_active);
+        if (active) {
+          setEditingProfileId(active.id);
+          setDraftProfileName(active.name);
+          setDraftProfile(profileToConfig(active));
+        }
+      } else {
+        session.authorizedRequest((token) => api.listThemeProfiles(token))
+          .then((list) => {
+            setProfilesAndCache(list);
+            const active = list.find((p) => p.is_active);
+            if (active) {
+              setEditingProfileId(active.id);
+              setDraftProfileName(active.name);
+              setDraftProfile(profileToConfig(active));
+            }
+          })
+          .catch((err) => setProfilesLoadError(getErrorMessage(err)));
+      }
       session.authorizedRequest((token) => api.listSharedThemeProfiles(token))
         .then(setReceivedShares)
         .catch(() => {
           // best-effort — les profils reçus sont une commodité, pas la fonctionnalité principale.
         });
     }
+  }
+
+  /** Voir ThemeSettings.tsx côté desktop pour le même raisonnement — garde le cache mémoire de
+   * lib/theme.ts synchronisé avec l'état local à chaque mutation. */
+  function setProfilesAndCache(update: ThemeProfileView[] | ((prev: ThemeProfileView[]) => ThemeProfileView[])) {
+    setProfiles((prev) => {
+      const next = typeof update === "function" ? update(prev ?? []) : update;
+      setCachedThemeProfiles(next);
+      return next;
+    });
   }
 
   function profileToConfig(p: ThemeProfileView): CustomThemeConfig {
@@ -348,13 +372,13 @@ export default function SettingsView({
         // le premier profil créé (retour utilisateur : "je ne peux pas activer le profil").
         await session.authorizedRequest((token) => api.activateThemeProfile(token, created.id));
         const createdActive = { ...created, is_active: true };
-        setProfiles((prev) => [...(prev ?? []).map((p) => ({ ...p, is_active: false })), createdActive]);
+        setProfilesAndCache((prev) => [...prev.map((p) => ({ ...p, is_active: false })), createdActive]);
         setEditingProfileId(created.id);
         setCachedCustomTheme(draftProfile);
         setTheme("custom");
       } else if (editingProfileId) {
         await session.authorizedRequest((token) => api.updateThemeProfile(token, editingProfileId, payload));
-        setProfiles((prev) => (prev ?? []).map((p) => (p.id === editingProfileId ? { ...p, ...payload } : p)));
+        setProfilesAndCache((prev) => prev.map((p) => (p.id === editingProfileId ? { ...p, ...payload } : p)));
       }
       setProfileSaveState("saved");
     } catch (err) {
@@ -367,7 +391,7 @@ export default function SettingsView({
     setProfileActionError(null);
     try {
       await session.authorizedRequest((token) => api.activateThemeProfile(token, p.id));
-      setProfiles((prev) => (prev ?? []).map((item) => ({ ...item, is_active: item.id === p.id })));
+      setProfilesAndCache((prev) => prev.map((item) => ({ ...item, is_active: item.id === p.id })));
       setCachedCustomTheme(profileToConfig(p));
       setTheme("custom");
       setThemeState("custom");
@@ -381,7 +405,7 @@ export default function SettingsView({
     setProfileActionError(null);
     try {
       await session.authorizedRequest((token) => api.deleteThemeProfile(token, p.id));
-      setProfiles((prev) => (prev ?? []).filter((item) => item.id !== p.id));
+      setProfilesAndCache((prev) => prev.filter((item) => item.id !== p.id));
       if (editingProfileId === p.id) setEditingProfileId(null);
       if (p.is_active) {
         setTheme("dark");
@@ -414,7 +438,7 @@ export default function SettingsView({
     setProfileActionError(null);
     try {
       const created = await session.authorizedRequest((token) => api.acceptSharedThemeProfile(token, share.id));
-      setProfiles((prev) => [...(prev ?? []), created]);
+      setProfilesAndCache((prev) => [...prev, created]);
       setReceivedShares((prev) => (prev ?? []).filter((s) => s.id !== share.id));
     } catch (err) {
       setProfileActionError(getErrorMessage(err));
