@@ -10,7 +10,7 @@ import { decryptEntry, encryptEntry, type PlainVaultEntry, type EntryType } from
 import { getPreferredIdentifier } from "./lib/entryIdentifier";
 import { isStandaloneWindow, openStandaloneAndClose } from "./lib/popupWindow";
 import { getWindowMode } from "./lib/settings";
-import { runAutofill, runCardAutofill, getActiveTabUrl, domainsLikelyMatch } from "./lib/autofill";
+import { runAutofill, runCardAutofill, getActiveTabUrl, domainsLikelyMatch, isSecurePageUrl } from "./lib/autofill";
 import { getErrorMessage } from "./lib/errors";
 import { copyPasswordWithAutoClear } from "./lib/clipboard";
 import * as entrySharing from "./lib/entrySharing";
@@ -472,14 +472,21 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
       // Avertit avant de remplir sur un domaine différent de celui enregistré pour cette entrée
       // (ex: page de phishing sur un domaine voisin) — voir domainsLikelyMatch() pour le détail.
       // N'a rien à comparer (entrée sans URL, ou onglet sans URL exploitable) -> ne bloque pas.
-      if (entry.url) {
-        const tabUrl = await getActiveTabUrl();
-        if (tabUrl && !domainsLikelyMatch(entry.url, tabUrl)) {
-          const proceed = window.confirm(
-            `Cette entrée est enregistrée pour "${entry.url}", mais l'onglet actif ne correspond pas à ce domaine. Remplir quand même ?`,
-          );
-          if (!proceed) return;
-        }
+      const tabUrl = await getActiveTabUrl();
+      if (entry.url && tabUrl && !domainsLikelyMatch(entry.url, tabUrl)) {
+        const proceed = window.confirm(
+          `Cette entrée est enregistrée pour "${entry.url}", mais l'onglet actif ne correspond pas à ce domaine. Remplir quand même ?`,
+        );
+        if (!proceed) return;
+      }
+      // Contrôle du CANAL, indépendant du domaine ci-dessus : un mot de passe injecté dans une
+      // page http publique part en clair sur le réseau. Voir isSecurePageUrl() pour les exceptions
+      // (localhost, réseau local) qui évitent d'avertir à tort sur un routeur ou un NAS.
+      if (tabUrl && !isSecurePageUrl(tabUrl)) {
+        const proceed = window.confirm(
+          "Cette page n'est pas sécurisée (pas de HTTPS). Le mot de passe y serait transmis en clair sur le réseau. Remplir quand même ?",
+        );
+        if (!proceed) return;
       }
 
       const usernameOrEmail = getPreferredIdentifier(entry);
@@ -507,6 +514,18 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
   async function handleFillCard(entry: PlainVaultEntry) {
     setError(null);
     try {
+      // Une carte n'est liée à AUCUN domaine : impossible de vérifier une correspondance comme
+      // pour un identifiant (voir handleFill). Le contrôle pertinent ici est donc le CANAL —
+      // injecter un numéro de carte et son CVV dans une page http publique les ferait transiter
+      // en clair sur le réseau. Voir isSecurePageUrl() pour les exceptions (réseau local, etc.).
+      const tabUrl = await getActiveTabUrl();
+      if (tabUrl && !isSecurePageUrl(tabUrl)) {
+        const proceed = window.confirm(
+          "Cette page n'est pas sécurisée (pas de HTTPS). Le numéro de carte et le CVV y seraient transmis en clair sur le réseau. Remplir quand même ?",
+        );
+        if (!proceed) return;
+      }
+
       const result = await runCardAutofill(
         entry.password, // numéro de carte (voir components/VaultEntryForm.tsx::TYPE_LABELS.card)
         entry.username, // titulaire

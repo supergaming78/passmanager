@@ -187,6 +187,40 @@ export async function runCardAutofill(cardNumber: string, cardholderName: string
   }
 }
 
+/** Vrai si la page est servie sur un canal où un secret n'est PAS exposé en clair sur le réseau.
+ *
+ * CORRECTIF SÉCURITÉ : remplir un mot de passe — et plus encore un numéro de carte accompagné de
+ * son CVV — dans une page `http://` publique fait transiter ces valeurs EN CLAIR, lisibles par
+ * n'importe quel intermédiaire réseau. Le remplissage de carte n'avait, lui, aucun garde-fou du
+ * tout (contrairement au login, qui vérifie au moins la correspondance de domaine).
+ *
+ * Les exceptions ci-dessous évitent l'usure des alertes, qui est elle-même un problème de sécurité
+ * (une alerte qui se déclenche à tort finit par être cliquée sans être lue) :
+ * - localhost / boucle locale : traités comme contexte sécurisé par les navigateurs eux-mêmes ;
+ * - adresses privées et noms .local : un routeur, un NAS ou une imprimante en http sur le réseau
+ *   domestique est un usage courant et délibéré, jamais exposé à Internet.
+ * Reste donc signalé le seul cas réellement dangereux : une page http PUBLIQUE. */
+export function isSecurePageUrl(rawUrl: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return false; // URL inexploitable : mieux vaut avertir que supposer (voir l'appelant)
+  }
+  if (parsed.protocol === "https:") return true;
+  if (parsed.protocol !== "http:") return false;
+
+  const host = parsed.hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "[::1]") return true;
+  if (host.endsWith(".local")) return true;
+  // Plages privées IPv4 (RFC 1918) : 10.x, 192.168.x, et 172.16.x à 172.31.x
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+
+  return false;
+}
+
 /** Extrait le nom d'hôte d'une URL saisie par l'utilisateur, avec ou sans schéma (ex: "example.com"
  * aussi bien que "https://example.com/login") — `null` si la valeur n'est décidément pas une URL. */
 function safeHostname(rawUrl: string): string | null {
