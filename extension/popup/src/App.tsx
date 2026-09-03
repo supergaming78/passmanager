@@ -3,7 +3,7 @@
 // réglages). Pas de routeur : un état local par écran, chaque écran plein remplace le contenu de
 // la popup (voir le plan — cohérent avec la taille modeste de chaque écran, 380×580px).
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import * as api from "./api/client";
 import * as session from "./lib/session";
 import { decryptEntry, encryptEntry, type PlainVaultEntry } from "./lib/vaultCrypto";
@@ -482,42 +482,57 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
     await reload();
   }
 
+  // OPTIMISATION CPU (retour utilisateur : "optimise aussi tout l'extension") — CORRECTIF : ces
+  // trois calculs (filtre+tri, dossiers distincts, regroupement) étaient recalculés à CHAQUE rendu
+  // du composant, y compris pour des changements d'état totalement étrangers au résultat (copier
+  // un mot de passe -> copiedId change -> tout le tableau était refiltré/retrié/reregroupé pour
+  // rien). `useMemo` (déjà en place côté app desktop, voir pages/Vault.tsx::filteredEntries —
+  // écart entre les deux codebases jamais reporté ici) : ne recalcule que si une des dépendances
+  // listées a réellement changé.
+  //
   // Favoris toujours épinglés en premier (même comportement que côté app desktop, voir
   // pages/Vault.tsx) — le tri choisi ne s'applique QU'À L'INTÉRIEUR de chaque groupe.
-  const filtered = (entries ?? [])
-    .filter((e) => {
-      const q = query.trim().toLowerCase();
-      if (!q) return true;
-      return e.siteName.toLowerCase().includes(q) || e.username.toLowerCase().includes(q) || e.loginEmail.toLowerCase().includes(q);
-    })
-    .filter((e) => {
-      if (!folderFilter) return true;
-      if (folderFilter === "__none__") return !e.folder;
-      return e.folder === folderFilter;
-    })
-    .sort((a, b) => {
-      if (a.isFavorite !== b.isFavorite) return Number(b.isFavorite) - Number(a.isFavorite);
-      switch (sortBy) {
-        case "updated":
-          return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(); // plus récent d'abord
-        case "usage":
-          return b.useCount - a.useCount || a.siteName.localeCompare(b.siteName);
-        case "name":
-        default:
-          return a.siteName.localeCompare(b.siteName);
-      }
-    });
+  const filtered = useMemo(
+    () =>
+      (entries ?? [])
+        .filter((e) => {
+          const q = query.trim().toLowerCase();
+          if (!q) return true;
+          return e.siteName.toLowerCase().includes(q) || e.username.toLowerCase().includes(q) || e.loginEmail.toLowerCase().includes(q);
+        })
+        .filter((e) => {
+          if (!folderFilter) return true;
+          if (folderFilter === "__none__") return !e.folder;
+          return e.folder === folderFilter;
+        })
+        .sort((a, b) => {
+          if (a.isFavorite !== b.isFavorite) return Number(b.isFavorite) - Number(a.isFavorite);
+          switch (sortBy) {
+            case "updated":
+              return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(); // plus récent d'abord
+            case "usage":
+              return b.useCount - a.useCount || a.siteName.localeCompare(b.siteName);
+            case "name":
+            default:
+              return a.siteName.localeCompare(b.siteName);
+          }
+        }),
+    [entries, query, folderFilter, sortBy],
+  );
 
   // Dossiers distincts déjà utilisés dans le coffre — même principe que
   // pages/Vault.tsx::existingFolders côté app desktop.
-  const existingFolders = Array.from(new Set((entries ?? []).map((e) => e.folder).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  const existingFolders = useMemo(
+    () => Array.from(new Set((entries ?? []).map((e) => e.folder).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
+    [entries],
+  );
 
   // Regroupe l'affichage par dossier — SEULEMENT si aucun filtre de dossier n'est déjà actif (le
   // filtre réduit déjà à un seul dossier) et qu'il existe au moins un dossier. Même retour
   // utilisateur que côté app desktop : quand le tri actif est "le plus utilisé", les DOSSIERS
   // eux-mêmes remontent aussi par usage agrégé (somme des use_count de leurs entrées), pas
   // seulement les entrées à l'intérieur d'un dossier resté à sa place alphabétique.
-  const groupedSections = (() => {
+  const groupedSections = useMemo(() => {
     if (folderFilter || existingFolders.length === 0) return null;
     const groups = new Map<string, PlainVaultEntry[]>();
     for (const entry of filtered) {
@@ -538,7 +553,7 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
       .map((name) => ({ name, entries: groups.get(name)! }));
     const withoutFolder = groups.get("");
     return withoutFolder ? [...named, { name: "Sans dossier", entries: withoutFolder }] : named;
-  })();
+  }, [filtered, folderFilter, existingFolders, sortBy]);
 
   if (view.kind === "addEntry") {
     return (
