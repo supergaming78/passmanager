@@ -19,7 +19,7 @@ import {
   setWindowMode,
   type WindowMode,
 } from "../lib/settings";
-import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, getCachedThemeProfiles, setCachedThemeProfiles, type Theme, type CustomThemeConfig } from "../lib/theme";
+import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, getCachedThemeProfiles, setCachedThemeProfiles, isThemeSyncEnabled, setThemeSyncEnabled, toValidTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
 import {
   DEFAULT_CUSTOM_THEME,
   HUE_PRESETS,
@@ -111,6 +111,10 @@ export default function SettingsView({
   const [clipboardSeconds, setClipboardSeconds] = useState(getClipboardClearSeconds());
   const [windowMode, setWindowModeState] = useState(getWindowMode());
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
+  // Retour utilisateur : "pouvoir choisir si [...] chaque extension pouvoir choisir si le thème
+  // est synchronisé" — voir lib/theme.ts::isThemeSyncEnabled/setThemeSyncEnabled, jamais envoyé
+  // au serveur (une préférence propre à CETTE installation).
+  const [themeSyncEnabled, setThemeSyncEnabledState] = useState<boolean>(() => isThemeSyncEnabled());
   const MAX_PROFILES = 3;
   const [profiles, setProfiles] = useState<ThemeProfileView[] | null>(null);
   const [profilesLoadError, setProfilesLoadError] = useState<string | null>(null);
@@ -193,11 +197,30 @@ export default function SettingsView({
   }
 
   // Retour utilisateur : "je veux que lorsqu'on choisit un thème ce soit pour partout (aussi
-  // l'extension) que le thème soit appliqué partout" — voir ThemeSettings.tsx côté desktop pour le
-  // même raisonnement (identique ici) : pousse le choix vers le compte, best-effort, sans jamais
-  // bloquer l'application LOCALE déjà instantanée via setTheme() (voir chaque appelant).
+  // l'extension) que le thème soit appliqué partout", affiné ensuite par "pouvoir choisir si
+  // [chaque périphérique/extension] a le thème synchronisé" — voir ThemeSettings.tsx côté desktop
+  // pour le même raisonnement (identique ici) : pousse le choix vers le compte, best-effort, sans
+  // jamais bloquer l'application LOCALE déjà instantanée via setTheme() (voir chaque appelant),
+  // SAUF si cette installation a désactivé la synchro (voir themeSyncEnabled ci-dessous).
   function syncPreferredThemeToServer(value: Theme) {
+    if (!themeSyncEnabled) return;
     session.authorizedRequest((token) => api.updatePreferredTheme(token, { theme: value })).catch(() => {});
+  }
+
+  /** Voir le commentaire équivalent côté desktop (ThemeSettings.tsx::handleToggleThemeSync) pour
+   * le raisonnement complet (identique ici). */
+  async function handleToggleThemeSync(enabled: boolean) {
+    setThemeSyncEnabledState(enabled);
+    setThemeSyncEnabled(enabled);
+    if (!enabled) return;
+    try {
+      const me = await session.authorizedRequest((token) => api.getMe(token));
+      const value = toValidTheme(me.preferred_theme);
+      setThemeState(value);
+      setTheme(value);
+    } catch {
+      // best-effort, voir la doc ci-dessus.
+    }
   }
 
   function handleSaveTheme(value: Theme) {
@@ -578,6 +601,18 @@ export default function SettingsView({
           <option value="amber">Ambre (accent doré, fond réchauffé)</option>
           <option value="custom">Personnalisé…</option>
         </select>
+
+        {/* Retour utilisateur : "pouvoir choisir si [...] chaque extension pouvoir choisir si le
+            thème est synchronisé". */}
+        <label className="mt-2 flex items-start gap-2 text-[11px] text-neutral-600 dark:text-neutral-400">
+          <input
+            type="checkbox"
+            checked={themeSyncEnabled}
+            onChange={(e) => void handleToggleThemeSync(e.target.checked)}
+            className="mt-0.5 shrink-0 rounded border-neutral-300 text-indigo-600 focus:ring-indigo-500"
+          />
+          <span>Synchroniser le thème avec mon compte, sur tous mes appareils. Décoche pour garder un thème propre à cette extension.</span>
+        </label>
 
         {theme === "custom" && (
           <div className="mt-3 space-y-3 rounded-lg border border-neutral-200 p-3 dark:border-neutral-800">

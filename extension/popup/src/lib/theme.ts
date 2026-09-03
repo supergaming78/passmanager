@@ -57,6 +57,33 @@ export function getTheme(): Theme {
   return cachedTheme;
 }
 
+// -------------------------------------------------------------------------
+// SYNCHRONISATION DU CHOIX DE THÈME — INTERRUPTEUR PAR APPAREIL (retour utilisateur : "pouvoir
+// choisir si l'app (par périphérique) et l'extension ont le thème synchronisé pour chaque
+// périphérique [...] chaque extension pouvoir choisir si le thème est synchronisé") — voir le
+// commentaire équivalent côté desktop (frontend(app)/src/lib/theme.ts) pour le raisonnement
+// complet (identique ici) : JAMAIS envoyé au serveur, propre à CETTE installation de l'extension
+// précisément (un profil Firefox et un profil Chrome sur la même machine peuvent faire des choix
+// différents). Activé par défaut.
+const SYNC_ENABLED_STORAGE_KEY = "passmanager.themeSyncEnabled";
+let cachedSyncEnabled: boolean | null = null;
+
+export function isThemeSyncEnabled(): boolean {
+  if (cachedSyncEnabled !== null) return cachedSyncEnabled;
+  const stored = localStorage.getItem(SYNC_ENABLED_STORAGE_KEY);
+  cachedSyncEnabled = stored === null ? true : stored === "true"; // absent -> défaut activé.
+  return cachedSyncEnabled;
+}
+
+export function setThemeSyncEnabled(enabled: boolean): void {
+  cachedSyncEnabled = enabled;
+  try {
+    localStorage.setItem(SYNC_ENABLED_STORAGE_KEY, String(enabled));
+  } catch {
+    // best-effort — au pire, retombe sur le défaut (activé) au prochain démarrage.
+  }
+}
+
 function systemPrefersDark(): boolean {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }

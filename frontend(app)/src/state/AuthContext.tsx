@@ -13,7 +13,7 @@ import * as tauri from "../api/tauri";
 import { getDeviceId, getDeviceName } from "../lib/deviceId";
 import { getAutoLockMinutes, getBackendUrl, getLockOnFocusLossDelaySeconds } from "../lib/settings";
 import { isFocusLossLockSuppressed } from "../lib/focusLossLockSuppression";
-import { setTheme, setCachedCustomTheme, setCachedThemeProfiles, clearAccountScopedThemeCache, toValidTheme } from "../lib/theme";
+import { setTheme, setCachedCustomTheme, setCachedThemeProfiles, clearAccountScopedThemeCache, toValidTheme, isThemeSyncEnabled } from "../lib/theme";
 import { flattenForReencryption, rebuildAttachments, rebuildEntries, rebuildHistory } from "../lib/passwordChangeCrypto";
 import { reseedAllContacts } from "../lib/emergencyAccess";
 import { ApiError, type SyncEvent } from "../api/types";
@@ -283,18 +283,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // sinon best-effort, voir la doc ci-dessus.
 
       // Retour utilisateur : "je veux que lorsqu'on choisit un thème ce soit pour partout (aussi
-      // l'extension) que le thème soit appliqué partout" — `preferred_theme` (GET /me) est
-      // désormais la source de vérité sur QUEL thème afficher, preset ou "custom", synchronisée
-      // par compte comme le reste (voir ThemeSettings.tsx pour l'écriture de ce champ à chaque
-      // changement explicite). `toValidTheme` : filet de sécurité si le serveur renvoie une
-      // valeur que CETTE version du client ne connaît pas encore (repli "dark", jamais planté).
-      if (meResult.status === "fulfilled") {
-        setTheme(toValidTheme(meResult.value.preferred_theme));
-      } else if (hasActiveProfile) {
-        // Repli si /me a échoué mais /theme-profiles a réussi (best-effort, voir la doc
-        // ci-dessus) : comportement d'avant ce champ, encore raisonnable dans ce cas précis — un
-        // profil actif reste un signal fort qu'il faut afficher "custom".
-        setTheme("custom");
+      // l'extension) que le thème soit appliqué partout", affiné ensuite par "pouvoir choisir si
+      // [chaque appareil] a le thème synchronisé" — `preferred_theme` (GET /me) est la source de
+      // vérité sur QUEL thème afficher, preset ou "custom", synchronisée par compte comme le
+      // reste (voir ThemeSettings.tsx pour l'écriture de ce champ à chaque changement explicite),
+      // MAIS uniquement si CET appareil a choisi de suivre le compte (voir
+      // lib/theme.ts::isThemeSyncEnabled — désactivable par appareil, activé par défaut). Un
+      // appareil qui a désactivé la synchro garde son thème local INCHANGÉ ici, quoi que dise le
+      // compte. `toValidTheme` : filet de sécurité si le serveur renvoie une valeur que CETTE
+      // version du client ne connaît pas encore (repli "dark", jamais planté).
+      if (isThemeSyncEnabled()) {
+        if (meResult.status === "fulfilled") {
+          setTheme(toValidTheme(meResult.value.preferred_theme));
+        } else if (hasActiveProfile) {
+          // Repli si /me a échoué mais /theme-profiles a réussi (best-effort, voir la doc
+          // ci-dessus) : comportement d'avant ce champ, encore raisonnable dans ce cas précis —
+          // un profil actif reste un signal fort qu'il faut afficher "custom".
+          setTheme("custom");
+        }
       }
     },
     [setTokens],

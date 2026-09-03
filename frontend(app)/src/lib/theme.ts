@@ -75,6 +75,37 @@ export function getTheme(): Theme {
   return cachedTheme;
 }
 
+// -------------------------------------------------------------------------
+// SYNCHRONISATION DU CHOIX DE THÈME — INTERRUPTEUR PAR APPAREIL (retour utilisateur : "pouvoir
+// choisir si l'app (par périphérique) et l'extension ont le thème synchronisé pour chaque
+// périphérique sur lequel l'app est (même compte), chaque extension pouvoir choisir si le thème
+// est synchronisé") — CET interrupteur est volontairement JAMAIS envoyé au serveur (contrairement
+// à `preferred_theme` lui-même) : c'est une préférence propre à CET appareil précis, pas au
+// compte — deux appareils du même compte peuvent faire des choix différents (l'un synchronisé,
+// l'autre gardant son propre thème local indépendant), exactement comme les thèmes presets
+// (avant ce champ) sont restés purement locaux à chaque appareil.
+//
+// Activé PAR DÉFAUT (retour utilisateur initial : "je veux que ce soit appliqué partout") — un
+// appareil qui veut un thème indépendant doit le désactiver explicitement, plutôt que l'inverse.
+const SYNC_ENABLED_STORAGE_KEY = "passmanager.themeSyncEnabled";
+let cachedSyncEnabled: boolean | null = null;
+
+export function isThemeSyncEnabled(): boolean {
+  if (cachedSyncEnabled !== null) return cachedSyncEnabled;
+  const stored = localStorage.getItem(SYNC_ENABLED_STORAGE_KEY);
+  cachedSyncEnabled = stored === null ? true : stored === "true"; // absent -> défaut activé.
+  return cachedSyncEnabled;
+}
+
+export function setThemeSyncEnabled(enabled: boolean): void {
+  cachedSyncEnabled = enabled;
+  try {
+    localStorage.setItem(SYNC_ENABLED_STORAGE_KEY, String(enabled));
+  } catch {
+    // best-effort — au pire, retombe sur le défaut (activé) au prochain démarrage.
+  }
+}
+
 function systemPrefersDark(): boolean {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }

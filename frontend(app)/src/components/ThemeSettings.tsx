@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, getCachedThemeProfiles, setCachedThemeProfiles, type Theme, type CustomThemeConfig } from "../lib/theme";
+import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, getCachedThemeProfiles, setCachedThemeProfiles, isThemeSyncEnabled, setThemeSyncEnabled, toValidTheme, type Theme, type CustomThemeConfig } from "../lib/theme";
 import {
   DEFAULT_CUSTOM_THEME,
   HUE_PRESETS,
@@ -274,6 +274,11 @@ export default function ThemeSettings() {
   const { authorizedRequest, isAdmin } = useAuth();
   const [theme, setThemeState] = useState<Theme>(() => getTheme());
 
+  // Retour utilisateur : "pouvoir choisir si l'app (par périphérique) [...] a le thème
+  // synchronisé" — voir lib/theme.ts::isThemeSyncEnabled/setThemeSyncEnabled, jamais envoyé au
+  // serveur (une préférence propre à CET appareil).
+  const [themeSyncEnabled, setThemeSyncEnabledState] = useState<boolean>(() => isThemeSyncEnabled());
+
   const [profiles, setProfiles] = useState<ThemeProfileView[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | "new" | null>(null);
@@ -343,14 +348,18 @@ export default function ThemeSettings() {
   }, [theme, profiles, authorizedRequest]);
 
   // Retour utilisateur : "je veux que lorsqu'on choisit un thème ce soit pour partout (aussi
-  // l'extension) que le thème soit appliqué partout" — pousse le choix vers le compte, en plus de
-  // l'application LOCALE déjà instantanée via setTheme() (voir chaque appelant). Best-effort,
-  // volontairement en `.catch(() => {})` plutôt qu'`await`-é par l'appelant : une coupure réseau
-  // ne doit jamais empêcher l'utilisateur de voir son changement s'appliquer ici et maintenant,
-  // juste laisser la synchronisation vers les autres appareils en retard jusqu'à la prochaine
-  // connexion réussie (voir state/AuthContext.tsx::establishSession, qui la relit à chaque
-  // session).
+  // l'extension) que le thème soit appliqué partout", affiné ensuite par "pouvoir choisir si
+  // [chaque appareil] a le thème synchronisé" — pousse le choix vers le compte, en plus de
+  // l'application LOCALE déjà instantanée via setTheme() (voir chaque appelant), SAUF si CET
+  // appareil a désactivé la synchro (voir themeSyncEnabled ci-dessous et son interrupteur dans le
+  // JSX) : dans ce cas, le changement reste purement local, exactement comme avant l'existence de
+  // ce champ. Best-effort, volontairement en `.catch(() => {})` plutôt qu'`await`-é par
+  // l'appelant : une coupure réseau ne doit jamais empêcher l'utilisateur de voir son changement
+  // s'appliquer ici et maintenant, juste laisser la synchronisation vers les autres appareils en
+  // retard jusqu'à la prochaine connexion réussie (voir state/AuthContext.tsx::establishSession,
+  // qui la relit à chaque session).
   function syncPreferredThemeToServer(value: Theme) {
+    if (!themeSyncEnabled) return;
     authorizedRequest((token) => api.updatePreferredTheme(token, { theme: value })).catch(() => {});
   }
 
@@ -358,6 +367,28 @@ export default function ThemeSettings() {
     setThemeState(value);
     setTheme(value);
     syncPreferredThemeToServer(value);
+  }
+
+  /** Retour utilisateur : "pouvoir choisir si [chaque appareil] a le thème synchronisé" —
+   * bascule l'interrupteur (toujours local, jamais envoyé au serveur). En l'ACTIVANT, applique
+   * tout de suite le thème actuellement choisi sur le compte plutôt que d'attendre la prochaine
+   * connexion (voir state/AuthContext.tsx::establishSession pour ce même repli, ici en plus
+   * immédiat puisque l'utilisateur vient justement de demander cette synchro) — best-effort, une
+   * coupure réseau laisse simplement l'interrupteur activé sans rien changer visuellement tant
+   * que la prochaine connexion n'a pas eu la main. En la DÉSACTIVANT, rien à faire : le thème
+   * actuellement affiché reste tel quel, juste plus mis à jour depuis le compte à l'avenir. */
+  async function handleToggleThemeSync(enabled: boolean) {
+    setThemeSyncEnabledState(enabled);
+    setThemeSyncEnabled(enabled);
+    if (!enabled) return;
+    try {
+      const me = await authorizedRequest((token) => api.getMe(token));
+      const value = toValidTheme(me.preferred_theme);
+      setThemeState(value);
+      setTheme(value);
+    } catch {
+      // best-effort, voir la doc ci-dessus.
+    }
   }
 
   // CORRECTIF (retour utilisateur : "je ne peux pas appliquer, ça reste tout le temps comme ça") :
@@ -606,6 +637,21 @@ export default function ThemeSettings() {
         jusqu'à {MAX_PROFILES} profils où chaque couleur (fond compris) a sa propre teinte,
         luminosité et saturation — synchronisés sur tous tes appareils connectés à ce compte.
       </p>
+
+      {/* Retour utilisateur : "pouvoir choisir si l'app (par périphérique) [...] a le thème
+          synchronisé [...] chaque appareil pouvoir choisir si le thème est synchronisé". */}
+      <label className="mt-3 flex items-start gap-2 text-xs text-neutral-600 dark:text-neutral-400">
+        <input
+          type="checkbox"
+          checked={themeSyncEnabled}
+          onChange={(e) => void handleToggleThemeSync(e.target.checked)}
+          className="mt-0.5 shrink-0 rounded border-neutral-300 text-indigo-600 focus:ring-indigo-500"
+        />
+        <span>
+          Synchroniser le thème choisi ci-dessus avec mon compte, sur tous mes appareils.
+          Désactive cette case pour garder un thème propre à CET appareil, indépendant des autres.
+        </span>
+      </label>
 
       {theme === "custom" && (
         <div className="mt-4 space-y-4 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">

@@ -16,7 +16,7 @@ import { copyPasswordWithAutoClear } from "./lib/clipboard";
 import * as entrySharing from "./lib/entrySharing";
 import { recordEntryUse } from "./lib/vaultUsage";
 import { openEntryUrl } from "./lib/openExternalUrl";
-import { setTheme, setCachedCustomTheme, setCachedThemeProfiles, toValidTheme } from "./lib/theme";
+import { setTheme, setCachedCustomTheme, setCachedThemeProfiles, toValidTheme, isThemeSyncEnabled } from "./lib/theme";
 import VaultEntryForm, { type VaultEntryFormValues } from "./components/VaultEntryForm";
 import TrashView from "./components/TrashView";
 import ShareEntryView from "./components/ShareEntryView";
@@ -82,15 +82,20 @@ async function syncThemeCustomization(accessToken: string): Promise<void> {
     }
   }
 
+  // Retour utilisateur, suite : "pouvoir choisir si [chaque périphérique/extension] a le thème
+  // synchronisé" — voir lib/theme.ts::isThemeSyncEnabled (désactivable par installation, activé
+  // par défaut). Une installation qui a désactivé la synchro garde son thème local INCHANGÉ ici.
   // `toValidTheme` : filet de sécurité si le serveur renvoie une valeur que CETTE version de
   // l'extension ne connaît pas encore (repli "dark", jamais planté).
-  if (meResult.status === "fulfilled") {
-    setTheme(toValidTheme(meResult.value.preferred_theme));
-  } else if (hasActiveProfile) {
-    // Repli si GET /me a échoué mais /theme-profiles a réussi : comportement d'avant ce champ,
-    // encore raisonnable dans ce cas précis — un profil actif reste un signal fort qu'il faut
-    // afficher "custom".
-    setTheme("custom");
+  if (isThemeSyncEnabled()) {
+    if (meResult.status === "fulfilled") {
+      setTheme(toValidTheme(meResult.value.preferred_theme));
+    } else if (hasActiveProfile) {
+      // Repli si GET /me a échoué mais /theme-profiles a réussi : comportement d'avant ce champ,
+      // encore raisonnable dans ce cas précis — un profil actif reste un signal fort qu'il faut
+      // afficher "custom".
+      setTheme("custom");
+    }
   }
 }
 
