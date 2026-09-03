@@ -200,11 +200,57 @@ export async function clearPendingTfa(): Promise<void> {
   await chrome.storage.session.remove(PENDING_TFA_KEY);
 }
 
+/** Rafraîchissement en cours, partagé par tous les appels simultanés (voir refreshAccessTokenOnce).
+ * `null` quand aucun n'est en vol. */
+let refreshInFlight: Promise<string> | null = null;
+
+/**
+ * Rafraîchit l'access token, en garantissant qu'UN SEUL appel réseau part même si plusieurs
+ * requêtes échouent en 401 au même instant.
+ *
+ * CORRECTIF (déconnexions intempestives) : il n'y avait ici aucun verrou, au motif — écrit dans le
+ * commentaire d'origine — qu'une popup mono-fenêtre ne lance pas d'appels authentifiés
+ * simultanés. C'est faux : la popup en lance à au moins cinq endroits (synchronisation du thème au
+ * démarrage, réglages, accès d'urgence, coffres partagés, partages à usage limité), tous en
+ * Promise.all/allSettled.
+ *
+ * Or le serveur fait TOURNER les refresh tokens et rejette tout rejeu (voir
+ * backend/src/handlers/auth/session.rs::refresh). Le scénario était donc : la popup est rouverte
+ * après expiration de l'access token (10 min — le cas NORMAL pour une popup ouverte
+ * sporadiquement), deux requêtes partent ensemble, les deux reçoivent 401, les deux rafraîchissent
+ * avec le MÊME refresh token ; la première réussit et invalide ce jeton, la seconde échoue — et le
+ * `clearStored()` ci-dessous effaçait la session. Symptôme : l'extension redemandait le mot de
+ * passe maître sans raison apparente.
+ *
+ * Deux courses sont couvertes :
+ * - simultanée : les appelants suivants réutilisent la promesse en vol au lieu d'en lancer une ;
+ * - décalée : le jeton stocké est relu À L'INTÉRIEUR du verrou, et si un autre appel vient déjà de
+ *   le renouveler (l'access token en base diffère de celui qui a échoué), on réutilise le sien
+ *   sans rafraîchir une seconde fois.
+ */
+function refreshAccessTokenOnce(staleAccessToken: string): Promise<string> {
+  if (refreshInFlight) return refreshInFlight;
+
+  const attempt = (async (): Promise<string> => {
+    const stored = await readStored();
+    if (!stored) throw new ApiError(401, "Aucune session active.");
+    if (stored.accessToken !== staleAccessToken) return stored.accessToken;
+
+    const tokens = await api.refresh({ refresh_token: stored.refreshToken });
+    await persistSession(stored.email, tokens.access_token, tokens.refresh_token, base64ToBytes(stored.vaultKeyB64));
+    return tokens.access_token;
+  })();
+
+  refreshInFlight = attempt.finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
+}
+
 /**
  * Enveloppe un appel API authentifié — même logique de retry-on-401 que
- * AuthContext.tsx::authorizedRequest côté desktop. Pas de verrou anti-double-refresh ici (pas
- * nécessaire pour une popup mono-fenêtre, contrairement au desktop où plusieurs composants
- * peuvent déclencher un appel authentifié au même instant).
+ * AuthContext.tsx::authorizedRequest côté desktop, verrou anti-double-refresh compris (voir
+ * refreshAccessTokenOnce ci-dessus).
  */
 export async function authorizedRequest<T>(fn: (accessToken: string) => Promise<T>): Promise<T> {
   const session = await getActiveSession();
@@ -215,9 +261,8 @@ export async function authorizedRequest<T>(fn: (accessToken: string) => Promise<
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
       try {
-        const tokens = await api.refresh({ refresh_token: session.refreshToken });
-        await persistSession(session.email, tokens.access_token, tokens.refresh_token, session.vaultKey);
-        return await fn(tokens.access_token);
+        const freshAccessToken = await refreshAccessTokenOnce(session.accessToken);
+        return await fn(freshAccessToken);
       } catch (refreshErr) {
         await clearStored();
         throw refreshErr;
