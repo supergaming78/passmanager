@@ -408,10 +408,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // (métadonnées seules), puis on récupère le contenu complet de chacune. CORRECTIF : un oubli
       // ici les laisserait indéfiniment chiffrées avec l'ANCIENNE clé après ce changement de mot
       // de passe, exactement comme l'aurait fait un oubli de `history` ci-dessus.
+      // CORRECTIF (trouvé à l'audit) : on n'interroge QUE les entrées qui ont effectivement des
+      // pièces jointes. Auparavant, cette liste partait sur `entries` EN ENTIER, soit une requête
+      // HTTP par entrée du coffre — jusqu'à 5000 (voir MAX_VAULT_ENTRIES_PER_USER côté backend),
+      // toutes tirées d'un coup par ce Promise.all. Au-delà d'environ 500 entrées, la rafale
+      // dépassait le rate limiter du serveur (200 req/s, rafale 500) : la plupart des requêtes
+      // repartaient en 429, ce Promise.all rejetait, et LE CHANGEMENT DE MOT DE PASSE ÉCHOUAIT
+      // entièrement — après avoir déjà fait patienter l'utilisateur sur deux dérivations Argon2id.
+      //
+      // `has_attachments` est calculé par le serveur dans la requête d'export elle-même (sous-
+      // requête EXISTS, voir repository.rs::get_all) : il est donc exact au moment où on lit
+      // `entries`, et le plafond de 50 pièces jointes par compte borne cette liste à 50 requêtes
+      // au maximum, quel que soit le nombre d'entrées.
+      //
+      // Sûr même en cas de course (une pièce jointe ajoutée par un AUTRE appareil entre l'export
+      // et ici serait absente de cette liste) : le serveur vérifie désormais que l'ensemble des
+      // identifiants re-chiffrés recouvre EXACTEMENT celui en base et refuse tout le changement
+      // sinon, plutôt que de laisser une pièce jointe chiffrée avec l'ancienne clé.
+      const entriesWithAttachments = entries.filter((entry) => entry.has_attachments);
       const attachmentMetaByEntry = await Promise.all(
-        entries.map((entry) => authorizedRequest((token) => api.getVaultAttachments(token, entry.id))),
+        entriesWithAttachments.map((entry) => authorizedRequest((token) => api.getVaultAttachments(token, entry.id))),
       );
-      const attachmentRefs = entries.flatMap((entry, i) =>
+      const attachmentRefs = entriesWithAttachments.flatMap((entry, i) =>
         attachmentMetaByEntry[i].map((meta) => ({ vaultId: entry.id, attachmentId: meta.id })),
       );
       const attachments = await Promise.all(
