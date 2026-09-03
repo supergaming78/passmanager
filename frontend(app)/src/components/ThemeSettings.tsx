@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getTheme, setTheme, getCachedCustomTheme, setCachedCustomTheme, getCachedThemeProfiles, setCachedThemeProfiles, type Theme, type CustomThemeConfig } from "../lib/theme";
 import {
   DEFAULT_CUSTOM_THEME,
@@ -392,11 +392,47 @@ export default function ThemeSettings() {
     setSaveState("idle");
   }
 
+  // OPTIMISATION CPU/RAM (retour utilisateur : "améliore l'utilisation du CPU et de la RAM avec le
+  // thème ajouté récemment") — un glissement de curseur déclenche l'évènement `onChange` du
+  // `<input type=range>` à CHAQUE micro-mouvement (potentiellement des dizaines par seconde,
+  // souris ou tactile) ; jusqu'ici, CHACUN de ces évènements passait par setCachedCustomTheme()
+  // (lib/theme.ts) — un JSON.stringify + une écriture localStorage SYNCHRONE, suivis d'un
+  // re-thème complet de l'app (applyCustomTheme, voir customTheme.ts). Ramené à AU PLUS UNE fois
+  // par frame d'affichage (`requestAnimationFrame`) — la seule cadence que l'œil peut de toute
+  // façon distinguer — sans rien perdre en réactivité perçue (~16 ms de décalage, invisible) : si
+  // plusieurs évènements arrivent dans la même frame, seule la DERNIÈRE valeur est retenue
+  // (annule la frame déjà programmée et en reprogramme une avec la valeur à jour).
+  //
+  // `draft` (l'état React qui pilote directement la position des curseurs, l'aperçu
+  // ThemePreviewMockup et la valeur numérique affichée — ET ce qui part réellement au serveur via
+  // handleSaveProfile ci-dessous) reste lui parfaitement INSTANTANÉ, jamais throttlé : seul le
+  // coûteux (E/S + réécriture DOM de toute l'app) est ralenti, jamais la source de vérité.
+  const pendingApplyRef = useRef<{ frame: number; config: CustomThemeConfig } | null>(null);
+
+  useEffect(() => {
+    // Si le composant se démonte (ex: on quitte l'écran Réglages) pendant qu'une frame est encore
+    // en attente, on l'applique immédiatement plutôt que de la perdre — sinon le cache local
+    // (anti-FOUC/prévisualisation, voir lib/theme.ts) resterait sur l'avant-dernière valeur
+    // glissée au lieu de la toute dernière.
+    return () => {
+      if (pendingApplyRef.current) {
+        cancelAnimationFrame(pendingApplyRef.current.frame);
+        setCachedCustomTheme(pendingApplyRef.current.config);
+      }
+    };
+  }, []);
+
   function updateDraft(patch: Partial<CustomThemeConfig>) {
     const next = { ...draft, ...patch };
     setDraft(next);
     setSaveState("idle");
-    setCachedCustomTheme(next);
+
+    if (pendingApplyRef.current) cancelAnimationFrame(pendingApplyRef.current.frame);
+    const frame = requestAnimationFrame(() => {
+      pendingApplyRef.current = null;
+      setCachedCustomTheme(next);
+    });
+    pendingApplyRef.current = { frame, config: next };
   }
 
   /** Réinitialise les curseurs du profil en cours d'édition sur les valeurs par défaut — IDENTIQUES

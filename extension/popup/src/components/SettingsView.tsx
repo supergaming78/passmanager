@@ -2,7 +2,7 @@
 // verrouillage popup, délai d'effacement du presse-papiers, changement d'email, appareils de
 // confiance. PAS de changement de mot de passe maître (voir le plan — reste une opération desktop).
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import * as api from "../api/client";
 import * as session from "../lib/session";
 import * as wasmCrypto from "../lib/wasmCrypto";
@@ -321,11 +321,33 @@ export default function SettingsView({
     setProfileSaveState("idle");
   }
 
+  // OPTIMISATION CPU/RAM — voir ThemeSettings.tsx côté desktop pour le raisonnement complet
+  // (identique ici) : ramène l'E/S localStorage + le re-thème complet de la popup à au plus une
+  // fois par frame d'affichage pendant un glissement de curseur, au lieu d'une fois par
+  // micro-mouvement. `draftProfile` (curseurs/aperçu/valeur affichée, et ce qui part réellement au
+  // serveur) reste lui instantané.
+  const pendingApplyRef = useRef<{ frame: number; config: CustomThemeConfig } | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pendingApplyRef.current) {
+        cancelAnimationFrame(pendingApplyRef.current.frame);
+        setCachedCustomTheme(pendingApplyRef.current.config);
+      }
+    };
+  }, []);
+
   function updateDraftProfile(patch: Partial<CustomThemeConfig>) {
     const next = { ...draftProfile, ...patch };
     setDraftProfile(next);
     setProfileSaveState("idle");
-    setCachedCustomTheme(next);
+
+    if (pendingApplyRef.current) cancelAnimationFrame(pendingApplyRef.current.frame);
+    const frame = requestAnimationFrame(() => {
+      pendingApplyRef.current = null;
+      setCachedCustomTheme(next);
+    });
+    pendingApplyRef.current = { frame, config: next };
   }
 
   /** Voir ThemeSettings.tsx côté desktop pour le même raisonnement : identique au thème preset
