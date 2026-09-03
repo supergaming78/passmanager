@@ -333,7 +333,7 @@ export default function SharedVaultDetailView({
 
       <ul className="flex flex-col divide-y divide-neutral-200 pb-2 dark:divide-neutral-800">
         {(entries ?? []).map((entry) => (
-          <li key={entry.id} className="flex flex-col gap-1.5 px-4 py-2">
+          <li key={entry.id} className="vault-row-cv flex flex-col gap-1.5 px-4 py-2">
             <div className="flex items-center justify-between gap-2">
               <div className="min-w-0">
                 <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{entry.siteName}</p>
