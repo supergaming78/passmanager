@@ -9,7 +9,28 @@ use jsonwebtoken::{EncodingKey, DecodingKey};
 mod config;
 use crate::config::Config;
 use tracing::{info, warn};
+use tower::limit::ConcurrencyLimitLayer;
 use tower_governor::GovernorLayer;
+
+/// Nombre maximum de requêtes à GROS CORPS traitées EN MÊME TEMPS, tous comptes confondus
+/// (`PUT /auth/password` et `POST /vault/import`).
+///
+/// CORRECTIF DISPONIBILITÉ : ces deux routes acceptent respectivement 512 Mo et 256 Mo de corps —
+/// des plafonds imposés par la conception (un changement de mot de passe maître doit re-chiffrer
+/// TOUT le coffre en une seule requête, pièces jointes comprises, voir handlers/auth/account.rs).
+/// Or Axum bufferise l'intégralité du corps EN MÉMOIRE avant de le désérialiser, et la forme
+/// désérialisée est encore plus grosse que le JSON brut. Le rate limiter, lui, compte des
+/// REQUÊTES PAR SECONDE, pas des octets : `sensitive_governor` autorisait donc une rafale de 30
+/// requêtes de 512 Mo, de quoi faire tuer le backend par l'OOM killer depuis un simple compte
+/// authentifié — sur un serveur auto-hébergé modeste, quelques requêtes suffisaient.
+///
+/// Borner la CONCURRENCE plutôt que la taille est le seul levier qui ne casse aucun usage
+/// légitime : le pic mémoire devient au pire `HEAVY_BODY_MAX_CONCURRENCY x taille max`, quelle que
+/// soit la charge. Les requêtes en excès ATTENDENT leur tour (contre-pression Tower) au lieu
+/// d'être rejetées — et si l'attente dépasse le délai global de 30 s (voir plus bas), elles
+/// reçoivent un 408 propre. Ces deux opérations sont rarissimes et déjà lentes côté client
+/// (déchiffrement + re-chiffrement de tout le coffre) : les sérialiser ne dégrade rien en pratique.
+const HEAVY_BODY_MAX_CONCURRENCY: usize = 2;
 use tower_governor::key_extractor::{KeyExtractor, PeerIpKeyExtractor, SmartIpKeyExtractor};
 use tower_governor::errors::GovernorError;
 
@@ -616,6 +637,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             .merge(Router::new()
                 .route("/password", put(handlers::update_password))
                 .route_layer(DefaultBodyLimit::max(512 * 1024 * 1024))
+                .route_layer(ConcurrencyLimitLayer::new(HEAVY_BODY_MAX_CONCURRENCY))
                 .route_layer(GovernorLayer::new(sensitive_governor.clone())))
             // Rate limiter appliqué à TOUT le groupe /auth ; les routes sensibles ci-dessus
             // cumulent donc les deux limiteurs (le plus strict des deux s'applique de fait).
@@ -652,7 +674,8 @@ fn build_router(state: Arc<AppState>) -> Router {
             // 256 Ko plus bas la couperait sinon.
             .merge(Router::new()
                 .route("/import", post(handlers::import_vault))
-                .route_layer(DefaultBodyLimit::max(256 * 1024 * 1024))))
+                .route_layer(DefaultBodyLimit::max(256 * 1024 * 1024))
+                .route_layer(ConcurrencyLimitLayer::new(HEAVY_BODY_MAX_CONCURRENCY))))
             .route("/api/vault/sync", get(handlers::check_sync))
             .route("/api/vault/sync-check", get(handlers::check_sync)) // Alias historique, même handler que /sync (voir commentaire dans handlers.rs)
             // Exige le hash du mot de passe maître dans le corps (voir ExportVaultPayload) :
@@ -804,7 +827,22 @@ fn build_router(state: Arc<AppState>) -> Router {
         // correction — peu importe l'ordre exact vis-à-vis des autres couches ci-dessous, elle
         // s'exécute de toute façon avant que le moindre handler n'extraie `ConnectInfo`.
         .layer(axum_middleware::from_fn_with_state(state.clone(), rewrite_client_ip_from_proxy_headers))
-        .layer(TraceLayer::new_for_http()) // Génère des logs automatiques pour chaque requête HTTP reçue
+        // Logs automatiques pour chaque requête HTTP reçue.
+        // DURCISSEMENT : span personnalisé n'enregistrant que le CHEMIN, jamais l'URI complète.
+        // `DefaultMakeSpan` (le comportement d'origine) enregistre `uri`, donc la query string —
+        // or `/ws?ticket=...` y fait transiter un secret d'authentification (voir
+        // handlers/sync.rs). Il n'apparaissait pas dans les logs en niveau `info` habituel, mais
+        // un passage ponctuel en `RUST_LOG=debug` (typiquement pour diagnostiquer un souci de
+        // connexion — exactement le moment où l'on regarde `/ws`) l'aurait écrit en clair sur
+        // disque. Notre propre journal de requêtes (log_requests, plus bas) utilise déjà
+        // `.uri().path()` pour cette raison.
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &Request| {
+            tracing::info_span!(
+                "http",
+                method = %request.method(),
+                path = %request.uri().path(),
+            )
+        }))
         // Limite globale de taille de requête : 256 Ko, généreux pour une entrée de coffre chiffrée
         // (voir MAX_ENCRYPTED_FIELD_LEN dans models.rs, 8 Ko par champ x quelques champs), mais
         // empêche un client malveillant/buggé d'envoyer un corps de requête disproportionné avant

@@ -289,16 +289,10 @@ impl VaultRepository {
         .map_err(AppError::from)
     }
 
-    /// Compte les lignes d'historique d'un utilisateur — sert à vérifier qu'un changement de mot
-    /// de passe maître a bien re-chiffré TOUT l'historique, comme count_active() le fait déjà pour
-    /// les entrées actives elles-mêmes.
-    pub async fn count_history_for_user(db: &SqlitePool, email: &str) -> Result<i64, AppError> {
-        sqlx::query_scalar("SELECT COUNT(*) FROM vault_password_history WHERE user_email = ?")
-            .bind(email)
-            .fetch_one(db)
-            .await
-            .map_err(AppError::from)
-    }
+    // NOTE : `count_history_for_user()` a été supprimée ici. Elle ne servait qu'au garde-fou du
+    // changement de mot de passe, qui ne compte plus les lignes mais compare l'ENSEMBLE des
+    // identifiants re-chiffrés à ceux réellement en base, et le fait DANS la transaction — voir
+    // handlers/auth/account.rs::update_password et check_reencrypted_ids().
 
     /// Remplace le mot de passe chiffré d'UNE ligne d'historique par sa version re-chiffrée —
     /// pendant de reencrypt() ci-dessus, mais pour vault_password_history plutôt que vault.
@@ -863,12 +857,21 @@ impl EmergencyRepository {
     /// alourdies de celle-ci : l'écart de quelques secondes entre l'échéance réelle et le prochain
     /// appel du contact n'a aucune conséquence pratique). Ne fait rien si la ligne n'est pas dans
     /// l'état attendu ou si le délai n'est pas encore écoulé — pas une erreur, juste un no-op.
-    pub async fn maybe_auto_grant(db: &SqlitePool, id: &str) -> Result<(), AppError> {
+    ///
+    /// DURCISSEMENT : `contact_email` fait partie du WHERE. Sans lui, n'importe quel compte
+    /// connecté pouvait déclencher la transition d'état de N'IMPORTE QUELLE relation dont le délai
+    /// était écoulé, simplement en devinant/énumérant un id. L'effet restait le même que ce qui se
+    /// serait produit naturellement au prochain appel du vrai contact (et la clé scellée, elle,
+    /// est de toute façon protégée par get_granted_vault_key, filtrée sur contact_email), donc ce
+    /// n'était pas exploitable — mais une écriture déclenchable par un tiers sur la ligne d'autrui
+    /// n'a aucune raison d'exister.
+    pub async fn maybe_auto_grant(db: &SqlitePool, id: &str, contact_email: &str) -> Result<(), AppError> {
         sqlx::query(
             "UPDATE emergency_contacts SET status = 'access_granted'
-             WHERE id = ? AND status = 'access_requested' AND available_at <= CURRENT_TIMESTAMP",
+             WHERE id = ? AND contact_email = ? AND status = 'access_requested' AND available_at <= CURRENT_TIMESTAMP",
         )
         .bind(id)
+        .bind(contact_email)
         .execute(db)
         .await?;
         Ok(())

@@ -19,10 +19,56 @@ use chrono::Utc;
 use serde_json::json;
 use tracing::{instrument, warn, info};
 use rand::RngExt;
-use super::{MAX_CODE_ATTEMPTS, PURPOSE_PASSWORD_RESET};
+use super::{MAX_CODE_ATTEMPTS, PURPOSE_PASSWORD_RESET, RESET_CODE_LIFETIME_MINUTES, is_code_within_cooldown};
 use super::super::common::is_extension_origin;
 
 // --- ROUTE : MISE À JOUR DU MOT DE PASSE (PASSWORD UPDATE) ---
+
+/// Vérifie que les identifiants re-chiffrés reçus recouvrent EXACTEMENT ceux présents en base :
+/// ni doublon, ni manquant, ni inconnu. Voir son appel dans update_password() pour le pourquoi
+/// détaillé — en résumé, un simple contrôle du NOMBRE d'éléments laissait passer un même id
+/// envoyé deux fois, ce qui laissait une autre donnée chiffrée avec l'ancienne clé, définitivement
+/// illisible et sans le moindre message d'erreur.
+///
+/// `label` s'insère dans le message d'erreur ("Re-chiffrement {label} incomplet : ...") pour
+/// dire à l'utilisateur LAQUELLE des trois catégories pose problème.
+fn check_reencrypted_ids<'a>(
+    label: &str,
+    expected: &[String],
+    received: impl Iterator<Item = &'a str>,
+) -> Result<(), AppError> {
+    use std::collections::HashSet;
+
+    let expected_set: HashSet<&str> = expected.iter().map(|s| s.as_str()).collect();
+    let mut received_set: HashSet<&str> = HashSet::new();
+    let mut received_len = 0usize;
+    for id in received {
+        received_len += 1;
+        received_set.insert(id);
+    }
+
+    // Doublon : c'est LE cas que l'ancien contrôle par comptage ne voyait pas.
+    if received_len != received_set.len() {
+        return Err(AppError::ValidationError(format!(
+            "Re-chiffrement {label} invalide : un même identifiant a été envoyé plusieurs fois ({} envoyé(s) pour {} distinct(s)). Le changement de mot de passe a été annulé pour éviter de perdre des données.",
+            received_len,
+            received_set.len()
+        )));
+    }
+
+    let missing = expected_set.difference(&received_set).count();
+    let unknown = received_set.difference(&expected_set).count();
+    if missing > 0 || unknown > 0 {
+        return Err(AppError::ValidationError(format!(
+            "Re-chiffrement {label} incomplet : {} manquant(s) et {} inconnu(s), sur {} en base. Le changement de mot de passe a été annulé pour éviter de perdre des données.",
+            missing,
+            unknown,
+            expected_set.len()
+        )));
+    }
+
+    Ok(())
+}
 
 #[instrument(skip(state, user, payload))]
 /// Permet à un utilisateur connecté de changer VOLONTAIREMENT son mot de passe maître.
@@ -63,44 +109,12 @@ pub async fn update_password(
         return Err(AppError::InvalidCredentials);
     }
 
-    // 3. GARDE-FOU CRITIQUE : le client doit avoir re-chiffré TOUTES les entrées actives, ET TOUT
-    // l'historique de mots de passe, sans exception — un oubli rendrait cette donnée
-    // définitivement indéchiffrable (elle resterait chiffrée avec l'ANCIENNE clé, perdue à
-    // jamais). On compare aux comptes réels en BDD, AVANT de toucher quoi que ce soit.
-    //
-    // CORRECTIF PERF (retour utilisateur, 2026-09-02) : ces trois COUNT() portent sur trois
-    // TABLES DIFFÉRENTES et sont totalement INDÉPENDANTS les uns des autres (aucun n'a besoin du
-    // résultat d'un autre) — auparavant enchaînés séquentiellement (un .await après l'autre) alors
-    // qu'ils peuvent tourner EN PARALLÈLE sur des connexions différentes du pool (SQLite en mode
-    // WAL gère bien plusieurs lectures concurrentes, voir main.rs). Les résultats sont ensuite
-    // vérifiés dans le MÊME ORDRE qu'avant (entrées, puis historique, puis pièces jointes) : un
-    // changement de mot de passe avec plusieurs incohérences à la fois affiche encore le même
-    // message qu'avant, seule la phase de LECTURE est parallélisée.
-    let (active_count, history_count, attachments_count) = tokio::try_join!(
-        VaultRepository::count_active(&state.db, &user.email),
-        VaultRepository::count_history_for_user(&state.db, &user.email),
-        VaultRepository::count_attachments_for_user(&state.db, &user.email),
-    )?;
-    if payload.reencrypted_entries.len() as i64 != active_count {
-        return Err(AppError::ValidationError(format!(
-            "Re-chiffrement incomplet : {} entrée(s) active(s) en BDD, {} reçue(s). Le changement de mot de passe a été annulé pour éviter de perdre des données.",
-            active_count, payload.reencrypted_entries.len()
-        )));
-    }
-    if payload.reencrypted_history.len() as i64 != history_count {
-        return Err(AppError::ValidationError(format!(
-            "Re-chiffrement de l'historique incomplet : {} ligne(s) en BDD, {} reçue(s). Le changement de mot de passe a été annulé pour éviter de perdre des données.",
-            history_count, payload.reencrypted_history.len()
-        )));
-    }
-    if payload.reencrypted_attachments.len() as i64 != attachments_count {
-        return Err(AppError::ValidationError(format!(
-            "Re-chiffrement des pièces jointes incomplet : {} pièce(s) jointe(s) en BDD, {} reçue(s). Le changement de mot de passe a été annulé pour éviter de perdre des données.",
-            attachments_count, payload.reencrypted_attachments.len()
-        )));
-    }
-
-    // 4. Calcul du hachage du NOUVEAU hash d'authentification (double hachage, comme au login)
+    // 3. Calcul du hachage du NOUVEAU hash d'authentification (double hachage, comme au login).
+    // Le GARDE-FOU qui vérifie que le client a bien tout re-chiffré n'est plus ici mais DANS la
+    // transaction, plus bas — voir son commentaire pour pourquoi ce déplacement était nécessaire.
+    // Argon2id est calculé avant d'ouvrir la transaction : il coûte volontairement ~46 Mo et
+    // plusieurs dizaines de ms (voir crypto.rs), autant ne pas tenir le verrou d'écriture SQLite
+    // pendant ce temps-là.
     let new_password_hash = crypto::hash_password(&payload.new_master_password_hash, &state.config.password_pepper).await?;
 
     // 5. TRANSACTION ATOMIQUE : mot de passe + TOUTES les entrées re-chiffrées + TOUT l'historique
@@ -117,6 +131,40 @@ pub async fn update_password(
         .bind(&user.email)
         .execute(&mut *tx)
         .await?;
+
+    // GARDE-FOU CRITIQUE (renforcé — voir check_reencrypted_ids en bas de fichier) : le client
+    // doit avoir re-chiffré EXACTEMENT toutes les entrées actives, tout l'historique et toutes les
+    // pièces jointes — un oubli rendrait cette donnée définitivement indéchiffrable (elle
+    // resterait chiffrée avec l'ANCIENNE clé, perdue à jamais).
+    //
+    // Vérifie désormais l'ENSEMBLE DES IDENTIFIANTS, plus seulement leur NOMBRE. L'ancienne
+    // version ne comparait que des `len()` : envoyer deux fois le même id (bug de déduplication
+    // côté client, retry partiel...) satisfaisait le compte tout en laissant une autre entrée
+    // JAMAIS re-chiffrée — perte définitive et SILENCIEUSE, puisque la transaction committait
+    // normalement. `reencrypt()` ne pouvait pas le rattraper : un id dupliqué met bien à jour une
+    // ligne existante, donc `rows_affected == 1` à chaque passage.
+    //
+    // Fait ICI, DANS la transaction et APRÈS l'écriture ci-dessus (qui prend le verrou d'écriture
+    // SQLite, les transactions étant DEFERRED par défaut) : les identifiants lus ne peuvent donc
+    // plus changer avant le COMMIT. L'ancienne version lisait ses COUNT hors transaction, si bien
+    // qu'une entrée ajoutée par un AUTRE appareil entretemps n'était jamais re-chiffrée — même
+    // perte définitive, par une course cette fois.
+    let active_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ? AND deleted_at IS NULL")
+        .bind(&user.email)
+        .fetch_all(&mut *tx)
+        .await?;
+    let history_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_password_history WHERE user_email = ?")
+        .bind(&user.email)
+        .fetch_all(&mut *tx)
+        .await?;
+    let attachment_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_attachments WHERE user_email = ?")
+        .bind(&user.email)
+        .fetch_all(&mut *tx)
+        .await?;
+
+    check_reencrypted_ids("des entrées", &active_ids, payload.reencrypted_entries.iter().map(|e| e.id.as_str()))?;
+    check_reencrypted_ids("de l'historique", &history_ids, payload.reencrypted_history.iter().map(|e| e.id.as_str()))?;
+    check_reencrypted_ids("des pièces jointes", &attachment_ids, payload.reencrypted_attachments.iter().map(|a| a.id.as_str()))?;
 
     for entry in &payload.reencrypted_entries {
         VaultRepository::reencrypt(&mut tx, &user.email, entry).await?;
@@ -297,10 +345,25 @@ pub async fn request_password_reset(
         .await?
         .is_some();
 
-    if user_exists {
+    // ANTI-EMAIL-BOMBING : un code déjà envoyé il y a moins de EMAIL_RESEND_COOLDOWN_SECONDS
+    // interdit d'en renvoyer un. Sans ce contrôle, seule la limite PAR IP protégeait cette route,
+    // alors qu'elle expédie un email vers une adresse choisie par l'appelant : quelques IP
+    // suffisaient à noyer la boîte d'un utilisateur connu et à griller le quota/la réputation du
+    // serveur SMTP. Le code déjà émis reste valide, l'utilisateur légitime n'est donc pas bloqué.
+    //
+    // Aucune colonne « émis à » n'est nécessaire : la durée de vie d'un code de reset est fixe
+    // (RESET_CODE_LIFETIME_MINUTES), donc « expire encore dans plus de (durée de vie - cooldown) »
+    // équivaut exactement à « a été émis il y a moins de cooldown ».
+    //
+    // Appliqué SILENCIEUSEMENT (on saute juste l'envoi, la réponse reste un 202 identique) :
+    // renvoyer une erreur ici trahirait l'existence du compte, exactement ce que le reste de cette
+    // fonction s'applique à masquer.
+    let recently_sent = is_code_within_cooldown(&state, &email, PURPOSE_PASSWORD_RESET, RESET_CODE_LIFETIME_MINUTES).await?;
+
+    if user_exists && !recently_sent {
         // 1. Génère un code de sécurité temporaire à 6 chiffres
         let reset_code = format!("{:06}", rand::rng().random_range(0..1000000));
-        let expires_at = (Utc::now() + chrono::Duration::minutes(15)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let expires_at = (Utc::now() + chrono::Duration::minutes(RESET_CODE_LIFETIME_MINUTES)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
         // 2. Sauvegarde ou remplace le code en base pour cet email
         sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
@@ -317,6 +380,8 @@ pub async fn request_password_reset(
         if let Err(e) = mailer::send_reset_email(&email, &reset_code, &state.config).await {
             warn!("Échec envoi email de reset pour {} : {:?}", email, e);
         }
+    } else if user_exists {
+        warn!("Demande de reset ignorée (cooldown anti-email-bombing encore actif) pour {}", email);
     } else {
         warn!("Demande de reset de mot de passe pour un email inconnu : {}", email);
     }
@@ -709,6 +774,68 @@ mod tests {
             crypto::verify_password("mot_de_passe_actuel_123", &current_user.password_hash, &state.config.password_pepper).await,
             "l'ancien mot de passe doit rester valide, rien ne doit avoir changé"
         );
+    }
+
+    /// RÉGRESSION (faille de PERTE DE DONNÉES trouvée à l'audit) : envoyer le MÊME identifiant
+    /// deux fois satisfaisait l'ancien garde-fou, qui ne comparait que le NOMBRE d'entrées reçues
+    /// au nombre en base. Conséquence : l'autre entrée n'était jamais re-chiffrée et restait
+    /// chiffrée avec l'ANCIENNE clé — définitivement illisible — alors que la transaction
+    /// committait normalement et que l'utilisateur voyait un succès. `reencrypt()` ne pouvait pas
+    /// le rattraper : un id dupliqué met bien à jour une ligne existante à chaque passage.
+    #[tokio::test]
+    async fn test_update_password_rejects_duplicate_entry_ids() {
+        let state = build_test_state().await;
+        let email = "duplicateids@example.com";
+        register_test_user(&state, email, "mot_de_passe_actuel_123").await;
+
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        for site in ["Site1", "Site2"] {
+            let entry = VaultEntryInput {
+                encrypted_site_name: site.to_string(), encrypted_username: None, encrypted_login_email: None, encrypted_folder: None, encrypted_notes: None, encrypted_url: None, password_changed: false, expected_version: None,
+                entry_type: "login".to_string(), encrypted_extra_fields: None,
+                encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
+            };
+            crate::handlers::vault::add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
+                AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+                .await.expect("l'ajout doit réussir");
+        }
+
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
+            .bind(email).fetch_all(&state.db).await.unwrap();
+
+        // Le BON NOMBRE d'entrées (2 pour 2 en base), mais c'est deux fois la MÊME.
+        let make = |id: &str| crate::models::ReencryptedVaultEntry {
+            id: id.to_string(),
+            encrypted_site_name: "ReChiffre".to_string(),
+            encrypted_username: None,
+            encrypted_login_email: None, encrypted_folder: None, encrypted_notes: None, encrypted_url: None,
+            encrypted_password: "nouveau_chiffre".to_string(),
+            encrypted_preferred_login_type: "email".to_string(),
+            encrypted_extra_fields: None,
+        };
+        let duplicate_payload = ChangeMasterPasswordPayload {
+            old_master_password_hash: "mot_de_passe_actuel_123".to_string(),
+            new_master_password_hash: "nouveau_mot_de_passe_789".to_string(),
+            reencrypted_entries: vec![make(&ids[0]), make(&ids[0])],
+            reencrypted_history: vec![],
+            reencrypted_attachments: vec![],
+        };
+        let result = update_password(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false }, Json(duplicate_payload)).await;
+        assert!(
+            matches!(result, Err(AppError::ValidationError(_))),
+            "un identifiant envoyé deux fois doit être refusé, même si le NOMBRE d'entrées correspond"
+        );
+
+        // Rien ne doit avoir changé : ni le mot de passe, ni la seconde entrée restée intacte.
+        let current_user: User = sqlx::query_as("SELECT * FROM users WHERE email = ?")
+            .bind(email).fetch_one(&state.db).await.unwrap();
+        assert!(
+            crypto::verify_password("mot_de_passe_actuel_123", &current_user.password_hash, &state.config.password_pepper).await,
+            "l'ancien mot de passe doit rester valide, la transaction devant être annulée en entier"
+        );
+        let untouched: String = sqlx::query_scalar("SELECT encrypted_password FROM vault WHERE id = ?")
+            .bind(&ids[1]).fetch_one(&state.db).await.unwrap();
+        assert_eq!(untouched, "chiffre", "l'entrée jamais renvoyée ne doit pas avoir été touchée");
     }
 
     /// Vérifie que le changement de mot de passe applique effectivement le re-chiffrement reçu :
@@ -1151,6 +1278,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unknown_code_count, 0, "aucun code ne doit être généré pour un email inconnu");
+    }
+
+    /// ANTI-EMAIL-BOMBING (trouvé à l'audit) : deux demandes de reset coup sur coup pour la MÊME
+    /// adresse ne doivent produire qu'UN SEUL email. Le rate limiting de main.rs étant PAR IP, il
+    /// ne protégeait pas une adresse ciblée par un attaquant changeant d'IP, alors que chaque
+    /// requête expédie un vrai email. La 2e demande doit rester un 202 identique (ne jamais
+    /// trahir l'existence du compte) et laisser le PREMIER code intact (l'utilisateur légitime
+    /// qui vient de recevoir son code doit pouvoir continuer à s'en servir).
+    #[tokio::test]
+    async fn test_request_password_reset_is_rate_limited_per_address() {
+        let state = build_test_state().await;
+        let email = "bombing-target@example.com";
+        register_test_user(&state, email, "mot_de_passe_test_123").await;
+
+        request_password_reset(State(state.clone()), Json(ForgotPasswordPayload { email: email.to_string() }))
+            .await
+            .expect("la première demande doit réussir");
+        let first_code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
+            .bind(email).bind(PURPOSE_PASSWORD_RESET)
+            .fetch_one(&state.db).await.unwrap();
+
+        let second = request_password_reset(State(state.clone()), Json(ForgotPasswordPayload { email: email.to_string() })).await;
+        assert!(second.is_ok(), "la seconde demande doit répondre le même 202 (anti-énumération)");
+
+        let code_after: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
+            .bind(email).bind(PURPOSE_PASSWORD_RESET)
+            .fetch_one(&state.db).await.unwrap();
+        assert_eq!(
+            code_after, first_code,
+            "une seconde demande immédiate ne doit ni régénérer un code ni déclencher un second email"
+        );
     }
 
     /// get_me() doit renvoyer l'email ET le statut admin de l'utilisateur connecté — voir le

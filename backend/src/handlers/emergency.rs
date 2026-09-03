@@ -235,7 +235,7 @@ pub async fn get_emergency_vault(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    EmergencyRepository::maybe_auto_grant(&state.db, &id).await?;
+    EmergencyRepository::maybe_auto_grant(&state.db, &id, &user.email).await?;
 
     let (owner_email, sealed_vault_key) = EmergencyRepository::get_granted_vault_key(&state.db, &id, &user.email).await?;
     let entries = VaultRepository::get_all(&state.db, &owner_email, MAX_VAULT_ENTRIES, 0).await?;

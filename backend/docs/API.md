@@ -151,6 +151,12 @@ Renvoie un nouveau code de vérification (le précédent expire ou a été perdu
 inclus (anti-énumération de comptes). Aucun nouveau code n'est généré si le compte n'existe pas ou
 est déjà vérifié.
 
+**Cooldown anti-email-bombing (60 s par adresse)** : si un code de vérification a déjà été émis
+pour cette adresse il y a moins de 60 secondes, la requête répond le même `202` mais **aucun email
+n'est envoyé et le code en cours reste inchangé**. Le rate limiting par IP ne suffisait pas ici :
+cette route expédie un email vers une adresse choisie par l'appelant, donc une adresse ciblée
+restait inondable depuis plusieurs IP. Le code déjà reçu par l'utilisateur légitime reste valide.
+
 ### `POST /auth/login`
 
 | Champ | Type | Requis | Contraintes |
@@ -282,7 +288,19 @@ ce qui existe en base (opération annulée dans son ensemble, rien n'est modifi�
 de sécurité par email ; ferme aussi immédiatement les access tokens déjà émis (voir
 [Modèle d'authentification](#modèle-dauthentification)).
 **Note** : cette route accepte des requêtes jusqu'à 512 Mo (un coffre de 5000 entrées et 50 pièces
-jointes re-chiffrées peut être volumineux).
+jointes re-chiffrées peut être volumineux). Comme `POST /vault/import`, elle est limitée à
+**2 requêtes traitées simultanément** sur tout le serveur : au-delà, les requêtes attendent leur
+tour (et reçoivent un `408` si l'attente dépasse le délai global de 30 s). Sans ce plafond, Axum
+bufferisant tout le corps en mémoire avant désérialisation, quelques requêtes concurrentes de cette
+taille suffisaient à épuiser la RAM du serveur.
+
+**Le re-chiffrement doit être EXHAUSTIF et SANS DOUBLON** : `reencrypted_entries`,
+`reencrypted_history` et `reencrypted_attachments` doivent contenir **exactement** les
+identifiants présents en base — ni manquant, ni inconnu, ni répété. La vérification porte sur
+l'ensemble des identifiants (pas seulement leur nombre) et s'effectue à l'intérieur de la
+transaction, donc une entrée ajoutée par un autre appareil pendant l'opération fait échouer le
+changement au lieu de rester chiffrée avec l'ancienne clé. En cas d'écart : `400` avec un message
+détaillant la catégorie concernée, et **rien n'est modifié**.
 
 ### `PUT /auth/email`
 
@@ -354,6 +372,11 @@ Initie une réinitialisation de mot de passe oublié.
 
 **Réponse** : `202 Accepted`, corps vide, **dans tous les cas** (anti-énumération de comptes —
 même réponse que l'email existe ou non).
+
+**Cooldown anti-email-bombing (60 s par adresse)** : même mécanisme que
+`POST /auth/resend-verification` — si un code de réinitialisation a déjà été émis pour cette
+adresse il y a moins de 60 secondes, la réponse reste un `202` identique mais aucun email n'est
+envoyé et le code en cours reste valide.
 
 ### `POST /auth/reset-password`
 
@@ -613,7 +636,9 @@ Chaque entrée devient une **nouvelle** ligne — jamais de fusion/écrasement d
 ```
 **Erreurs** : `400` si une seule entrée du lot est invalide, ou si l'import dépasse le plafond de
 5000 entrées actives — dans les deux cas, **rien n'est importé** (tout ou rien).
-**Note** : accepte des requêtes jusqu'à 256 Mo.
+**Note** : accepte des requêtes jusqu'à 256 Mo, et est limitée à **2 requêtes traitées
+simultanément** sur tout le serveur (même plafond que `PUT /auth/password`, voir sa note pour le
+raisonnement) : au-delà, les requêtes attendent leur tour.
 
 ### `POST /vault/export`
 

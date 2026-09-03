@@ -60,7 +60,7 @@ tower_governor = "0.8.0"
 # transitivement — déclarée ici explicitement pour utiliser directement `ServiceBuilder` et
 # `timeout()` (limite de temps globale par requête, voir main.rs) et `HandleErrorLayer` pour
 # convertir proprement un dépassement de délai en réponse HTTP 408 plutôt qu'en erreur brute.
-tower = { version = "0.5", features = ["util", "timeout"] }
+tower = { version = "0.5", features = ["util", "timeout", "limit"] }
 
 # ==========================================
 # Sécurité & Authentification

@@ -18,7 +18,7 @@ use validator::Validate;
 use chrono::Utc;
 use tracing::{instrument, warn, info, error};
 use rand::RngExt;
-use super::{MAX_CODE_ATTEMPTS, PURPOSE_EMAIL_VERIFICATION};
+use super::{MAX_CODE_ATTEMPTS, PURPOSE_EMAIL_VERIFICATION, VERIFICATION_CODE_LIFETIME_MINUTES, is_code_within_cooldown};
 #[cfg(test)]
 use super::PURPOSE_PASSWORD_RESET;
 
@@ -179,9 +179,15 @@ pub async fn resend_verification_email(
         .fetch_optional(&state.db)
         .await?;
 
-    if let Some(false) = email_verified {
+    // ANTI-EMAIL-BOMBING : voir is_code_within_cooldown() (handlers/auth.rs) — cette route expédie
+    // un email vers une adresse choisie par l'appelant, et n'était protégée que PAR IP. Silencieux
+    // (la réponse reste un 202 identique) pour ne pas trahir l'existence/l'état du compte, exactement
+    // comme le reste de cette fonction s'y applique.
+    let recently_sent = is_code_within_cooldown(&state, &email, PURPOSE_EMAIL_VERIFICATION, VERIFICATION_CODE_LIFETIME_MINUTES).await?;
+
+    if let (Some(false), false) = (email_verified, recently_sent) {
         let code = format!("{:06}", rand::rng().random_range(0..1000000));
-        let expires_at = (Utc::now() + chrono::Duration::minutes(30)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let expires_at = (Utc::now() + chrono::Duration::minutes(VERIFICATION_CODE_LIFETIME_MINUTES)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
         // INSERT OR REPLACE : remplace aussi le compteur `attempts` par sa valeur par défaut (0),
         // donc un renvoi donne bien un nouveau capital de MAX_CODE_ATTEMPTS tentatives. Filtré
@@ -502,6 +508,13 @@ mod tests {
         sqlx::query("UPDATE tfa_codes SET attempts = 3 WHERE email = ? AND purpose = ?")
             .bind(email).bind(PURPOSE_EMAIL_VERIFICATION).execute(&state.db).await.unwrap();
 
+        // Le code vient d'être émis par l'inscription juste au-dessus : le cooldown
+        // anti-email-bombing (voir handlers/auth.rs::is_code_within_cooldown) bloquerait le renvoi.
+        // On vieillit artificiellement son expiration pour simuler l'écoulement du cooldown — c'est
+        // bien le RENVOI qu'on teste ici, pas le cooldown (couvert par son propre test plus bas).
+        sqlx::query("UPDATE tfa_codes SET expires_at = STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now', '+5 minutes') WHERE email = ? AND purpose = ?")
+            .bind(email).bind(PURPOSE_EMAIL_VERIFICATION).execute(&state.db).await.unwrap();
+
         resend_verification_email(State(state.clone()), Json(ForgotPasswordPayload { email: email.to_string() }))
             .await
             .expect("le renvoi doit réussir pour un compte non vérifié");
@@ -514,6 +527,36 @@ mod tests {
         verify_email(State(state.clone()), Json(VerifyEmailPayload { email: email.to_string(), code: new_code }))
             .await
             .expect("le nouveau code renvoyé doit être valide");
+    }
+
+    /// ANTI-EMAIL-BOMBING (trouvé à l'audit) : un renvoi demandé juste après l'émission d'un code
+    /// ne doit produire NI nouveau code NI second email — le rate limiting de main.rs étant PAR IP,
+    /// il ne protégeait pas une adresse ciblée par un attaquant changeant d'IP. La réponse reste
+    /// un 202 identique pour ne pas trahir l'état du compte.
+    #[tokio::test]
+    async fn test_resend_verification_email_is_rate_limited_per_address() {
+        let state = build_test_state().await;
+        let email = "resend-bombing@example.com";
+        register(State(state.clone()), Json(AuthPayload {
+            email: email.to_string(),
+            master_password_hash: "mot_de_passe_test_123".to_string(),
+            device_id: "device-resend-bombing".to_string(),
+            remember_me: None,
+            max_trusted_devices: None,
+        })).await.expect("l'inscription doit réussir");
+
+        let original_code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
+            .bind(email).bind(PURPOSE_EMAIL_VERIFICATION).fetch_one(&state.db).await.unwrap();
+
+        let result = resend_verification_email(State(state.clone()), Json(ForgotPasswordPayload { email: email.to_string() })).await;
+        assert!(result.is_ok(), "le renvoi trop rapproché doit répondre le même 202 (anti-énumération)");
+
+        let code_after: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
+            .bind(email).bind(PURPOSE_EMAIL_VERIFICATION).fetch_one(&state.db).await.unwrap();
+        assert_eq!(
+            code_after, original_code,
+            "un renvoi immédiat ne doit ni régénérer un code ni déclencher un second email"
+        );
     }
 
     /// resend_verification_email() ne doit RIEN faire (ni erreur, ni nouveau code) pour un

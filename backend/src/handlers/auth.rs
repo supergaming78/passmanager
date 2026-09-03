@@ -36,3 +36,44 @@ pub(super) const PURPOSE_PASSWORD_RESET: &str = "password_reset";
 /// DERNIER échec — une connexion réussie remet le compteur à zéro.
 pub(super) const MAX_FAILED_LOGIN_ATTEMPTS: i64 = 5;
 pub(super) const FAILED_LOGIN_WINDOW_MINUTES: i64 = 15;
+
+/// Durées de vie des codes envoyés par email, par flux. Extraites en constantes parce que le
+/// cooldown anti-email-bombing ci-dessous en DÉRIVE l'instant d'émission (voir
+/// is_code_within_cooldown) — les avoir en dur à deux endroits ferait silencieusement diverger
+/// le calcul du cooldown de la durée réelle.
+pub(super) const RESET_CODE_LIFETIME_MINUTES: i64 = 15;
+pub(super) const VERIFICATION_CODE_LIFETIME_MINUTES: i64 = 30;
+
+/// Délai minimum entre deux envois d'un même type de code à une MÊME adresse.
+pub(super) const EMAIL_RESEND_COOLDOWN_SECONDS: i64 = 60;
+
+/// Vrai si un code de ce `purpose` a été émis pour cet email il y a moins de
+/// `EMAIL_RESEND_COOLDOWN_SECONDS` — protection anti-email-bombing des routes qui expédient un
+/// email vers une adresse choisie par l'appelant (`/auth/forgot-password`,
+/// `/auth/resend-verification`). Le rate limiting de main.rs est PAR IP : il ne protège pas une
+/// adresse ciblée par un attaquant qui change d'IP, alors que chaque requête coûte un vrai email.
+///
+/// N'ajoute AUCUNE colonne : la durée de vie d'un code étant fixe (`lifetime_minutes`), la
+/// condition « émis il y a moins de X » s'écrit exactement « expire dans plus de
+/// (durée de vie - X) ». Un code absent ou déjà expiré n'est jamais en cooldown.
+pub(super) async fn is_code_within_cooldown(
+    state: &crate::AppState,
+    email: &str,
+    purpose: &str,
+    lifetime_minutes: i64,
+) -> Result<bool, crate::error::AppError> {
+    let threshold = format!("+{} seconds", lifetime_minutes * 60 - EMAIL_RESEND_COOLDOWN_SECONDS);
+
+    let recent: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM tfa_codes
+         WHERE email = ? AND purpose = ?
+         AND expires_at > STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now', ?)",
+    )
+    .bind(email)
+    .bind(purpose)
+    .bind(&threshold)
+    .fetch_optional(&state.db)
+    .await?;
+
+    Ok(recent.is_some())
+}

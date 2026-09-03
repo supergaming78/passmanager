@@ -94,20 +94,21 @@ pub async fn ws_handler(
     };
 
     // Limite de connexions simultanées par utilisateur (voir MAX_WS_CONNECTIONS_PER_USER).
-    {
-        let mut connections = state.ws_connections.lock().unwrap();
-        let count = connections.entry(email.clone()).or_insert(0);
-        if *count >= MAX_WS_CONNECTIONS_PER_USER {
-            return Err(AppError::Conflict("Trop de connexions WebSocket actives pour ce compte".to_string()));
-        }
-        *count += 1;
-    }
+    // Le compteur est incrémenté ET le garde qui le décrémentera est construit ICI, d'un seul
+    // tenant (voir WsConnectionGuard::acquire) — CORRECTIF : l'incrément se faisait auparavant ici
+    // mais le garde n'était créé que DANS handle_socket, qui ne s'exécute QUE si l'upgrade aboutit
+    // vraiment. Si la connexion mourait entre la réponse 101 et l'upgrade effectif, le compteur
+    // n'était jamais décrémenté ; au bout de MAX_WS_CONNECTIONS_PER_USER occurrences, le compte ne
+    // pouvait PLUS JAMAIS ouvrir de WebSocket jusqu'au redémarrage du serveur. En le déplaçant
+    // dans la closure passée à on_upgrade, le garde est détruit — donc le compteur décrémenté —
+    // même si cette closure n'est jamais appelée et se contente d'être libérée.
+    let guard = WsConnectionGuard::acquire(&state, &email)?;
 
     // Abonnement au signal d'arrêt AVANT l'upgrade : voir handle_socket() plus bas et le
     // commentaire sur with_graceful_shutdown() dans main.rs.
     let shutdown_rx = state.shutdown_tx.subscribe();
 
-    Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, email, shutdown_rx)))
+    Ok(ws.on_upgrade(move |socket| handle_socket(socket, state, email, shutdown_rx, guard)))
 }
 
 /// Décrémente le compteur de connexions WebSocket actives de l'utilisateur à la fin de
@@ -118,9 +119,35 @@ struct WsConnectionGuard {
     email: String,
 }
 
+impl WsConnectionGuard {
+    /// Réserve une place dans le quota de connexions de cet utilisateur et renvoie le garde qui la
+    /// rendra. Incrément et construction du garde sont indissociables : tout chemin de sortie
+    /// après un `Ok(...)` détruira le garde, donc décrémentera — voir l'appel dans ws_handler().
+    fn acquire(state: &Arc<AppState>, email: &str) -> Result<Self, AppError> {
+        // `unwrap_or_else(|e| e.into_inner())` plutôt que `.unwrap()` : un Mutex de la lib standard
+        // devient EMPOISONNÉ si un thread panique en le tenant, et tout `.lock().unwrap()` ultérieur
+        // paniquerait à son tour — plus aucune connexion WebSocket possible jusqu'au redémarrage,
+        // et pire, la panique du Drop ci-dessous surviendrait pendant un déroulement de pile
+        // (double panique = abort du processus entier). Les données protégées ici ne sont qu'un
+        // compteur ; les reprendre telles quelles après une panique est sans danger.
+        let mut connections = state.ws_connections.lock().unwrap_or_else(|e| e.into_inner());
+        let count = connections.entry(email.to_string()).or_insert(0);
+        if *count >= MAX_WS_CONNECTIONS_PER_USER {
+            return Err(AppError::Conflict("Trop de connexions WebSocket actives pour ce compte".to_string()));
+        }
+        *count += 1;
+        drop(connections);
+
+        Ok(Self { state: state.clone(), email: email.to_string() })
+    }
+}
+
 impl Drop for WsConnectionGuard {
     fn drop(&mut self) {
-        let mut connections = self.state.ws_connections.lock().unwrap();
+        // Même raisonnement que dans acquire() ci-dessus pour le Mutex empoisonné — ici c'est
+        // encore plus important : paniquer dans un Drop pendant un déroulement de pile abort le
+        // processus.
+        let mut connections = self.state.ws_connections.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(count) = connections.get_mut(&self.email) {
             *count = count.saturating_sub(1);
             if *count == 0 {
@@ -133,8 +160,15 @@ impl Drop for WsConnectionGuard {
 /// Boucle de vie d'une connexion WebSocket : relaie les SyncEvent destinés à cet utilisateur,
 /// et se termine proprement à la déconnexion du client (fermeture explicite, erreur réseau...)
 /// OU à l'arrêt du serveur (voir la branche `shutdown_rx` ci-dessous).
-async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>, email: String, mut shutdown_rx: tokio::sync::broadcast::Receiver<()>) {
-    let _guard = WsConnectionGuard { state: state.clone(), email: email.clone() };
+async fn handle_socket(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    email: String,
+    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+    // Réservé par ws_handler() AVANT l'upgrade et transmis ici pour qu'il vive aussi longtemps que
+    // la connexion — voir WsConnectionGuard::acquire().
+    _guard: WsConnectionGuard,
+) {
     let mut rx = state.sync_tx.subscribe();
 
     loop {
