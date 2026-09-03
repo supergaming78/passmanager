@@ -3,7 +3,7 @@
 // réglages). Pas de routeur : un état local par écran, chaque écran plein remplace le contenu de
 // la popup (voir le plan — cohérent avec la taille modeste de chaque écran, 380×580px).
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState, type FormEvent } from "react";
 import * as api from "./api/client";
 import * as session from "./lib/session";
 import { decryptEntry, encryptEntry, type PlainVaultEntry, type EntryType } from "./lib/vaultCrypto";
@@ -17,18 +17,21 @@ import * as entrySharing from "./lib/entrySharing";
 import { recordEntryUse } from "./lib/vaultUsage";
 import { openEntryUrl } from "./lib/openExternalUrl";
 import { setTheme, setCachedCustomTheme, setCachedThemeProfiles, toValidTheme, isThemeSyncEnabled } from "./lib/theme";
-import VaultEntryForm, { type VaultEntryFormValues } from "./components/VaultEntryForm";
-import TrashView from "./components/TrashView";
-import ShareEntryView from "./components/ShareEntryView";
-import SharedReceivedView from "./components/SharedReceivedView";
-import SharedEntryView from "./components/SharedEntryView";
-import EmergencyAccessView from "./components/EmergencyAccessView";
-import EmergencyVaultView from "./components/EmergencyVaultView";
-import SharedVaultsListView from "./components/SharedVaultsListView";
-import SharedVaultDetailView from "./components/SharedVaultDetailView";
-import BlindShareView from "./components/BlindShareView";
-import SettingsView from "./components/SettingsView";
+import type { VaultEntryFormValues } from "./components/VaultEntryForm";
 import UpdateBanner from "./components/UpdateBanner";
+
+// CHARGEMENT À LA DEMANDE (voir LazyView plus bas pour le pourquoi).
+const VaultEntryForm = lazy(() => import("./components/VaultEntryForm"));
+const TrashView = lazy(() => import("./components/TrashView"));
+const ShareEntryView = lazy(() => import("./components/ShareEntryView"));
+const SharedReceivedView = lazy(() => import("./components/SharedReceivedView"));
+const SharedEntryView = lazy(() => import("./components/SharedEntryView"));
+const EmergencyAccessView = lazy(() => import("./components/EmergencyAccessView"));
+const EmergencyVaultView = lazy(() => import("./components/EmergencyVaultView"));
+const SharedVaultsListView = lazy(() => import("./components/SharedVaultsListView"));
+const SharedVaultDetailView = lazy(() => import("./components/SharedVaultDetailView"));
+const BlindShareView = lazy(() => import("./components/BlindShareView"));
+const SettingsView = lazy(() => import("./components/SettingsView"));
 
 type Screen =
   | { kind: "loading" }
@@ -249,6 +252,23 @@ export default function App() {
 
 function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex min-h-[200px] items-center justify-center p-6 text-sm text-neutral-500">{children}</div>;
+}
+
+/** Enveloppe une vue secondaire chargée à la demande.
+ *
+ * OPTIMISATION : contrairement à l'app desktop (un processus qui reste ouvert), la popup d'une
+ * extension MV3 est DÉTRUITE puis reconstruite à CHAQUE ouverture — tout ce qui est chargé au
+ * démarrage est donc payé en permanence, plusieurs fois par jour. Or l'extension livrait un seul
+ * paquet monolithique : les écrans Réglages, corbeille, partages, coffres partagés, accès
+ * d'urgence et partages à usage limité (~2500 lignes, dont 1000 pour les seuls Réglages) étaient
+ * analysés à chaque ouverture, alors que le chemin courant — ouvrir puis consulter le coffre — ne
+ * les atteint jamais.
+ *
+ * Chacun vit désormais dans son propre morceau, chargé au moment où l'on ouvre l'écran
+ * correspondant. Le fichier étant local à l'extension (aucune requête réseau), l'attente est
+ * imperceptible : ce repli n'apparaît en pratique jamais à l'écran. */
+function LazyView({ children }: { children: React.ReactNode }) {
+  return <Suspense fallback={<Centered>Chargement…</Centered>}>{children}</Suspense>;
 }
 
 function LoginScreen({
@@ -669,116 +689,157 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
 
   if (view.kind === "addEntry") {
     return (
-      <div className="flex flex-col">
-        <ViewHeader title="Ajouter une entrée" onBack={() => setView({ kind: "list" })} />
-        <VaultEntryForm onSubmit={handleAdd} onCancel={() => setView({ kind: "list" })} />
-      </div>
+      <LazyView>
+
+        <div className="flex flex-col">
+          <ViewHeader title="Ajouter une entrée" onBack={() => setView({ kind: "list" })} />
+          <VaultEntryForm onSubmit={handleAdd} onCancel={() => setView({ kind: "list" })} />
+        </div>
+      </LazyView>
     );
   }
 
   if (view.kind === "editEntry") {
     return (
-      <div className="flex flex-col">
-        <ViewHeader title="Modifier l'entrée" onBack={() => setView({ kind: "list" })} />
-        <div className="flex gap-2 px-4 pt-3">
-          <button
-            onClick={() => setView({ kind: "share", entry: view.entry })}
-            className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 dark:border-neutral-700 dark:text-neutral-300"
-          >
-            Partager
-          </button>
-          <button
-            onClick={() => setView({ kind: "blindShare", entry: view.entry })}
-            className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 dark:border-neutral-700 dark:text-neutral-300"
-          >
-            Partager (limité)
-          </button>
-          <button
-            onClick={() => void handleDelete(view.entry)}
-            className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
-          >
-            Supprimer
-          </button>
+      <LazyView>
+
+        <div className="flex flex-col">
+          <ViewHeader title="Modifier l'entrée" onBack={() => setView({ kind: "list" })} />
+          <div className="flex gap-2 px-4 pt-3">
+            <button
+              onClick={() => setView({ kind: "share", entry: view.entry })}
+              className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 dark:border-neutral-700 dark:text-neutral-300"
+            >
+              Partager
+            </button>
+            <button
+              onClick={() => setView({ kind: "blindShare", entry: view.entry })}
+              className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 dark:border-neutral-700 dark:text-neutral-300"
+            >
+              Partager (limité)
+            </button>
+            <button
+              onClick={() => void handleDelete(view.entry)}
+              className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950"
+            >
+              Supprimer
+            </button>
+          </div>
+          <VaultEntryForm
+            initial={view.entry}
+            onSubmit={(values) => handleEdit(view.entry, values)}
+            onCancel={() => setView({ kind: "list" })}
+          />
         </div>
-        <VaultEntryForm
-          initial={view.entry}
-          onSubmit={(values) => handleEdit(view.entry, values)}
-          onCancel={() => setView({ kind: "list" })}
-        />
-      </div>
+      </LazyView>
     );
   }
 
   if (view.kind === "trash") {
-    return <TrashView vaultKey={vaultKey} onBack={() => setView({ kind: "list" })} onRestored={() => void reload()} />;
+    return (
+      <LazyView>
+        <TrashView vaultKey={vaultKey} onBack={() => setView({ kind: "list" })} onRestored={() => void reload()} />
+      </LazyView>
+    );
   }
 
   if (view.kind === "share") {
-    return <ShareEntryView entry={view.entry} onBack={() => setView({ kind: "editEntry", entry: view.entry })} />;
+    return (
+      <LazyView>
+        <ShareEntryView entry={view.entry} onBack={() => setView({ kind: "editEntry", entry: view.entry })} />
+      </LazyView>
+    );
   }
 
   if (view.kind === "sharedReceived") {
     return (
-      <SharedReceivedView
-        vaultKey={vaultKey}
-        onBack={() => setView({ kind: "list" })}
-        onViewClassic={(shareId) => setView({ kind: "viewSharedEntry", shareId })}
-      />
+      <LazyView>
+
+        <SharedReceivedView
+          vaultKey={vaultKey}
+          onBack={() => setView({ kind: "list" })}
+          onViewClassic={(shareId) => setView({ kind: "viewSharedEntry", shareId })}
+        />
+      </LazyView>
     );
   }
 
   if (view.kind === "blindShare") {
-    return <BlindShareView entry={view.entry} onBack={() => setView({ kind: "editEntry", entry: view.entry })} />;
+    return (
+      <LazyView>
+        <BlindShareView entry={view.entry} onBack={() => setView({ kind: "editEntry", entry: view.entry })} />
+      </LazyView>
+    );
   }
 
   if (view.kind === "viewSharedEntry") {
-    return <SharedEntryView shareId={view.shareId} vaultKey={vaultKey} onBack={() => setView({ kind: "sharedReceived" })} />;
+    return (
+      <LazyView>
+        <SharedEntryView shareId={view.shareId} vaultKey={vaultKey} onBack={() => setView({ kind: "sharedReceived" })} />
+      </LazyView>
+    );
   }
 
   if (view.kind === "emergencyAccess") {
     return (
-      <EmergencyAccessView
-        vaultKey={vaultKey}
-        onBack={() => setView({ kind: "list" })}
-        onViewVault={(contactId, ownerEmail) => setView({ kind: "emergencyVault", contactId, ownerEmail })}
-      />
+      <LazyView>
+
+        <EmergencyAccessView
+          vaultKey={vaultKey}
+          onBack={() => setView({ kind: "list" })}
+          onViewVault={(contactId, ownerEmail) => setView({ kind: "emergencyVault", contactId, ownerEmail })}
+        />
+      </LazyView>
     );
   }
 
   if (view.kind === "emergencyVault") {
     return (
-      <EmergencyVaultView
-        vaultKey={vaultKey}
-        contactId={view.contactId}
-        ownerEmail={view.ownerEmail}
-        onBack={() => setView({ kind: "emergencyAccess" })}
-      />
+      <LazyView>
+
+        <EmergencyVaultView
+          vaultKey={vaultKey}
+          contactId={view.contactId}
+          ownerEmail={view.ownerEmail}
+          onBack={() => setView({ kind: "emergencyAccess" })}
+        />
+      </LazyView>
     );
   }
 
   if (view.kind === "sharedVaults") {
     return (
-      <SharedVaultsListView
-        vaultKey={vaultKey}
-        onBack={() => setView({ kind: "list" })}
-        onOpen={(vaultId) => setView({ kind: "sharedVaultDetail", vaultId })}
-      />
+      <LazyView>
+
+        <SharedVaultsListView
+          vaultKey={vaultKey}
+          onBack={() => setView({ kind: "list" })}
+          onOpen={(vaultId) => setView({ kind: "sharedVaultDetail", vaultId })}
+        />
+      </LazyView>
     );
   }
 
   if (view.kind === "sharedVaultDetail") {
     return (
-      <SharedVaultDetailView
-        vaultId={view.vaultId}
-        vaultKey={vaultKey}
-        myEmail={email}
-        onBack={() => setView({ kind: "sharedVaults" })}
-      />
+      <LazyView>
+
+        <SharedVaultDetailView
+          vaultId={view.vaultId}
+          vaultKey={vaultKey}
+          myEmail={email}
+          onBack={() => setView({ kind: "sharedVaults" })}
+        />
+      </LazyView>
     );
   }
 
   if (view.kind === "settings") {
-    return <SettingsView email={email} onBack={() => setView({ kind: "list" })} onLoggedOut={onLoggedOut} />;
+    return (
+      <LazyView>
+        <SettingsView email={email} onBack={() => setView({ kind: "list" })} onLoggedOut={onLoggedOut} />
+      </LazyView>
+    );
   }
 
   return (
