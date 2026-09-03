@@ -13,7 +13,7 @@ import * as tauri from "../api/tauri";
 import { getDeviceId, getDeviceName } from "../lib/deviceId";
 import { getAutoLockMinutes, getBackendUrl, getLockOnFocusLossDelaySeconds } from "../lib/settings";
 import { isFocusLossLockSuppressed } from "../lib/focusLossLockSuppression";
-import { setTheme, setCachedCustomTheme, setCachedThemeProfiles } from "../lib/theme";
+import { setTheme, setCachedCustomTheme, setCachedThemeProfiles, clearAccountScopedThemeCache } from "../lib/theme";
 import { flattenForReencryption, rebuildAttachments, rebuildEntries, rebuildHistory } from "../lib/passwordChangeCrypto";
 import { reseedAllContacts } from "../lib/emergencyAccess";
 import { ApiError, type SyncEvent } from "../api/types";
@@ -141,6 +141,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void tauri.lockVault().catch(() => {});
     setIsVaultLocked(false);
     setTokens(LOGGED_OUT_STATE);
+    // CORRECTIF SÉCURITÉ/VIE PRIVÉE (retour utilisateur : "n'oublie pas la sécurité est le plus
+    // important") — voir clearAccountScopedThemeCache() dans lib/theme.ts pour le raisonnement
+    // complet : sans ça, un compte B connecté sur ce même appareil juste après la déconnexion de A
+    // pouvait voir les couleurs/noms de profils de personnalisation de A.
+    clearAccountScopedThemeCache();
   }, [setTokens]);
 
   // Promesse de rafraîchissement en cours, partagée par tous les appelants concurrents plutôt que

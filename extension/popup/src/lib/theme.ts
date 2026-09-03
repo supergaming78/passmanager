@@ -102,6 +102,29 @@ export function setCachedThemeProfiles(profiles: ThemeProfileView[]): void {
   cachedThemeProfiles = profiles;
 }
 
+/** À appeler à la DÉCONNEXION (voir lib/session.ts::clearStored, appelée par logout() ET par
+ * authorizedRequest() quand le rafraîchissement échoue) — voir ThemeSettings.tsx côté desktop pour
+ * le raisonnement complet (identique ici) : CORRECTIF SÉCURITÉ/VIE PRIVÉE (retour utilisateur,
+ * 2026-09-03 : "n'oublie pas la sécurité est le plus important") — cachedCustomTheme et
+ * cachedThemeProfiles sont des variables de MODULE, qui ne redémarrent PAS à une simple
+ * déconnexion (seulement à la fermeture complète de la popup) : sans ce nettoyage, un compte B qui
+ * se connecte dans la MÊME ouverture de popup juste après la déconnexion du compte A pouvait voir
+ * les couleurs/noms de profils de personnalisation de A. Aucune donnée sensible en jeu à
+ * proprement parler (le serveur revérifie de toute façon la propriété de chaque profil par le
+ * token de l'appelant, jamais par ce cache), mais un compte ne doit jamais voir ne serait-ce
+ * qu'une couleur appartenant à un autre compte. */
+export function clearAccountScopedThemeCache(): void {
+  cachedCustomTheme = null;
+  cachedThemeProfiles = null;
+  try {
+    localStorage.removeItem(CUSTOM_THEME_STORAGE_KEY);
+  } catch {
+    // best-effort — au pire la prochaine lecture tombe sur un JSON déjà géré par
+    // sanitizeCustomThemeConfig (voir getCachedCustomTheme), jamais une fuite vers le compte B.
+  }
+  applyTheme(getTheme());
+}
+
 /** Applique un thème à la page (classe `dark` + classe de palette éventuelle sur `<html>`) sans le
  * persister — utilisé par setTheme() ci-dessous ET par le listener système (voir initTheme()), qui
  * ne doit jamais réécrire localStorage (le choix "system" doit rester "system", pas se figer sur

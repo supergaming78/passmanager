@@ -140,6 +140,36 @@ export function setCachedThemeProfiles(profiles: ThemeProfileView[]): void {
   cachedThemeProfiles = profiles;
 }
 
+/** À appeler à la DÉCONNEXION (voir state/AuthContext.tsx::forceLocalLogout) — CORRECTIF
+ * SÉCURITÉ/VIE PRIVÉE (retour utilisateur, 2026-09-03 : "n'oublie pas la sécurité est le plus
+ * important") : cachedCustomTheme et cachedThemeProfiles ci-dessus sont des variables de MODULE —
+ * contrairement à un site web classique, cette app tourne en continu dans le MÊME processus (la
+ * déconnexion ne recharge jamais la page). Sans ce nettoyage, un compte B qui se connecte APRÈS
+ * qu'un compte A se soit déconnecté sur le MÊME appareil (poste partagé en famille, par ex.)
+ * pouvait voir — même brièvement, ou DURABLEMENT si son propre compte n'a lui-même aucun profil
+ * actif — le NOM et les couleurs des profils de personnalisation de A, tant que sa propre session
+ * (establishSession) n'avait pas encore eu la main. Aucune donnée SENSIBLE en jeu à proprement
+ * parler (une couleur n'a rien à protéger, voir la migration SQL de
+ * theme_customization_profiles ; toute MUTATION reste de toute façon rejetée côté serveur, qui
+ * revérifie systématiquement la propriété du profil par le token de l'appelant, jamais par ce
+ * cache) — mais un compte ne doit jamais voir, même une simple couleur ou un nom de profil,
+ * appartenant à un AUTRE compte que le sien. Réinitialise les deux caches en mémoire ET, pour le
+ * thème "custom", son entrée localStorage anti-FOUC (sinon relue telle quelle, stale, au prochain
+ * accès avant même que la nouvelle session n'ait pu la remplacer) — puis réapplique immédiatement
+ * le thème actif, qui retombe alors sur DEFAULT_CUSTOM_THEME tant qu'aucune nouvelle session n'a
+ * rechargé son propre profil actif. */
+export function clearAccountScopedThemeCache(): void {
+  cachedCustomTheme = null;
+  cachedThemeProfiles = null;
+  try {
+    localStorage.removeItem(CUSTOM_THEME_STORAGE_KEY);
+  } catch {
+    // best-effort — au pire la prochaine lecture tombe sur un JSON déjà géré par
+    // sanitizeCustomThemeConfig (voir getCachedCustomTheme), jamais une fuite vers le compte B.
+  }
+  applyTheme(getTheme());
+}
+
 /** Applique un thème à la page (classe `dark` + classe de palette éventuelle sur `<html>`) sans le
  * persister — utilisé par setTheme() ci-dessous ET par le listener système (voir initTheme()), qui
  * ne doit jamais réécrire localStorage (le choix "system" doit rester "system", pas se figer sur

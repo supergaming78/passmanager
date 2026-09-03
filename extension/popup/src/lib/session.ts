@@ -18,6 +18,7 @@ import * as wasmCrypto from "./wasmCrypto";
 import { getDeviceId, getDeviceName } from "./deviceId";
 import { getPopupLockMinutes } from "./settings";
 import { bytesToBase64, base64ToBytes } from "./base64";
+import { clearAccountScopedThemeCache } from "./theme";
 import { ApiError } from "../api/types";
 
 const STORAGE_KEY = "passmanager.session";
@@ -63,6 +64,13 @@ async function writeStored(session: StoredSession): Promise<void> {
 
 async function clearStored(): Promise<void> {
   await chrome.storage.session.remove(STORAGE_KEY);
+  // CORRECTIF SÉCURITÉ/VIE PRIVÉE (retour utilisateur : "n'oublie pas la sécurité est le plus
+  // important") — voir clearAccountScopedThemeCache() dans lib/theme.ts pour le raisonnement
+  // complet. Centralisé ICI (plutôt que dans logout() seul) pour couvrir aussi le cas
+  // "rafraîchissement de session échoué" (voir authorizedRequest ci-dessus), qui appelle également
+  // clearStored() — un compte B ne doit jamais hériter du cache de thème du compte A, quelle que
+  // soit la façon dont la session de A s'est terminée.
+  clearAccountScopedThemeCache();
 }
 
 async function persistSession(email: string, accessToken: string, refreshToken: string, vaultKey: Uint8Array): Promise<void> {
