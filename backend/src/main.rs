@@ -29,7 +29,38 @@ pub use state::AppState;
 // FONCTION PRINCIPALE (ASYNC MAIN)
 // =========================================================================
 
-#[tokio::main]
+// MULTITHREADING (retour utilisateur : "multithread le backend le mieux possible [...] n'oublie
+// pas de mettre la sécurité au premier plan") — `flavor = "multi_thread"` rendu EXPLICITE (c'était
+// déjà le comportement PAR DÉFAUT de `#[tokio::main]` avec la feature "rt-multi-thread", activée
+// par la feature "full" de tokio dans Cargo.toml — aucun changement de comportement ici, seulement
+// une garantie écrite noir sur blanc contre une régression future si quelqu'un simplifie cette
+// ligne sans connaître cette dépendance implicite). `worker_threads` VOLONTAIREMENT absent : son
+// défaut (`std::thread::available_parallelism()`, un thread par cœur logique disponible) est déjà
+// la valeur optimale pour n'importe quel serveur cible — le coder en dur figerait ce nombre à la
+// machine de développement au lieu de s'adapter automatiquement au conteneur réellement déployé.
+//
+// Ce que ce thread pool async fait DÉJÀ tourner en parallèle, un audit l'a confirmé (voir aussi
+// state.rs::AppState) : chaque requête HTTP tourne sur SA PROPRE tâche Tokio, réparties librement
+// entre tous les threads worker — au contraire d'un serveur mono-thread, deux requêtes simultanées
+// (deux appareils qui se synchronisent en même temps, par ex.) s'exécutent VRAIMENT en parallèle
+// sur des cœurs différents, pas l'une après l'autre. Le calcul CPU le plus lourd de toute l'API
+// (Argon2id, ~46 Mo/appel, voir crypto.rs) est déjà déplacé sur le pool de threads BLOQUANT dédié
+// de Tokio via `spawn_blocking` (voir crypto.rs::hash_password/verify_password) — deux connexions
+// simultanées de DEUX comptes différents hachent donc déjà chacune sur un thread séparé, en
+// parallèle, sans se bloquer l'une l'autre. Aucun appel bloquant restant n'a été trouvé ailleurs
+// dans le code de requête (SMTP via `lettre` est nativement asynchrone, voir mailer.rs ; les rares
+// `std::sync::Mutex` du code — voir handlers/sync.rs et handlers/common.rs — ne sont jamais tenus
+// au travers d'un `.await`, donc jamais un frein à la parallélisation).
+//
+// SÉCURITÉ D'ABORD, PAS TOUCHÉ (demande explicite de l'utilisateur) : le paramètre `parallelism`
+// (p=1) d'Argon2id (crypto.rs) contrôle le nombre de "voies" internes à UN SEUL calcul de hachage —
+// l'augmenter le rendrait plus rapide en utilisant plusieurs cœurs pour UNE SEULE tentative de
+// mot de passe, mais diviserait d'autant la mémoire par voie, ce qui AFFAIBLIT la résistance aux
+// attaques par force brute sur du matériel massivement parallèle (GPU/ASIC) — recommandation OWASP
+// pour un hachage de mot de passe côté serveur. Ce n'est PAS le bon levier de multithreading ici :
+// le vrai parallélisme entre PLUSIEURS connexions vient déjà de `spawn_blocking` ci-dessus, sans ce
+// compromis de sécurité.
+#[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Ecriture volontairement la toute premiere ligne de main(). Constate en conteneur
     // (Docker Desktop / WSL2, pas en execution native Windows) : sans aucune ecriture sur
@@ -129,10 +160,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialisation du Pool de connexions. Le nombre de connexions n'aide QUE la contention en
     // LECTURE (le mode WAL les gère bien) : SQLite reste de toute façon à un seul écrivain à la
-    // fois, augmenter ce nombre n'accélère donc pas les écritures. 10 reste très raisonnable pour
-    // l'usage visé (un utilisateur + son app + son extension, potentiellement quelques comptes).
+    // fois — HONNÊTETÉ (retour utilisateur : "multithread le backend le mieux possible") : plus de
+    // threads worker Tokio (voir le commentaire sur `#[tokio::main]` plus haut) ne change RIEN à ce
+    // fait, ce n'est pas quelque chose qu'un nombre de threads plus élevé peut contourner, c'est une
+    // propriété de SQLite lui-même. Ce que ça change en revanche : avec plusieurs requêtes GET
+    // désormais vraiment traitées EN PARALLÈLE sur des cœurs différents (au lieu de se relayer sur
+    // un seul thread), il devient plus facile qu'elles réclament chacune une connexion du pool au
+    // même instant (plusieurs appareils qui se synchronisent en même temps, ou un seul écran comme
+    // Réglages qui déclenche plusieurs requêtes de lecture en parallèle) — 20 (au lieu de 10) laisse
+    // une marge confortable pour ce cas sans rien coûter de notable (une connexion SQLite oisive est
+    // très légère). Pas la peine d'aller beaucoup plus haut : au-delà, c'est de toute façon le seul
+    // écrivain qui devient le vrai goulot d'étranglement, pas le nombre de connexions disponibles.
     let db = SqlitePoolOptions::new()
-        .max_connections(10)
+        .max_connections(20)
         .connect_with(conn_options)
         .await?;
 
