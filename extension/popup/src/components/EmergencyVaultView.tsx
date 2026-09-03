@@ -11,6 +11,7 @@ import type { PlainVaultEntry } from "../lib/vaultCrypto";
 import { getErrorMessage } from "../lib/errors";
 import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { getPreferredIdentifier } from "../lib/entryIdentifier";
+import { openEntryUrl } from "../lib/openExternalUrl";
 
 export default function EmergencyVaultView({
   vaultKey,
@@ -75,7 +76,7 @@ export default function EmergencyVaultView({
               <div className="flex shrink-0 items-center gap-2">
                 {entry.url && (
                   <button
-                    onClick={() => window.open(entry.url, "_blank", "noopener,noreferrer")}
+                    onClick={() => openEntryUrl(entry.url)}
                     className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
                   >
                     Ouvrir

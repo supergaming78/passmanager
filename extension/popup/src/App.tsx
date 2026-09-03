@@ -15,6 +15,7 @@ import { getErrorMessage } from "./lib/errors";
 import { copyPasswordWithAutoClear } from "./lib/clipboard";
 import * as entrySharing from "./lib/entrySharing";
 import { recordEntryUse } from "./lib/vaultUsage";
+import { openEntryUrl } from "./lib/openExternalUrl";
 import { setTheme, setCachedCustomTheme, setCachedThemeProfiles } from "./lib/theme";
 import VaultEntryForm, { type VaultEntryFormValues } from "./components/VaultEntryForm";
 import TrashView from "./components/TrashView";
@@ -771,7 +772,7 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
           {entry.url && (
             <button
-              onClick={() => window.open(entry.url, "_blank", "noopener,noreferrer")}
+              onClick={() => openEntryUrl(entry.url)}
               title="Ouvrir le site"
               className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
             >

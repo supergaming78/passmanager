@@ -12,6 +12,7 @@ import { runAutofill, getActiveTabUrl, domainsLikelyMatch } from "../lib/autofil
 import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { getErrorMessage } from "../lib/errors";
 import { getPreferredIdentifier } from "../lib/entryIdentifier";
+import { openEntryUrl } from "../lib/openExternalUrl";
 
 const EMPTY_FORM = { siteName: "", username: "", loginEmail: "", password: "", preferredLoginType: "username" as "username" | "email", notes: "", url: "" };
 
@@ -345,7 +346,7 @@ export default function SharedVaultDetailView({
             {revealedId === entry.id && <p className="select-all font-mono text-xs text-neutral-700 dark:text-neutral-300">{entry.password}</p>}
             <div className="flex flex-wrap gap-1.5">
               {entry.url && (
-                <button onClick={() => window.open(entry.url, "_blank", "noopener,noreferrer")} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 dark:border-neutral-700 dark:text-neutral-300">
+                <button onClick={() => openEntryUrl(entry.url)} className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 dark:border-neutral-700 dark:text-neutral-300">
                   Ouvrir
                 </button>
               )}

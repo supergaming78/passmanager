@@ -8,6 +8,7 @@ import type { PlainVaultEntry } from "../lib/vaultCrypto";
 import { getErrorMessage } from "../lib/errors";
 import { copyPasswordWithAutoClear } from "../lib/clipboard";
 import { getPreferredIdentifier } from "../lib/entryIdentifier";
+import { openEntryUrl } from "../lib/openExternalUrl";
 
 export default function SharedEntryView({ shareId, vaultKey, onBack }: { shareId: string; vaultKey: Uint8Array; onBack: () => void }) {
   const [entry, setEntry] = useState<PlainVaultEntry | null>(null);
@@ -77,7 +78,7 @@ export default function SharedEntryView({ shareId, vaultKey, onBack }: { shareId
           </div>
           {entry.url && (
             <button
-              onClick={() => window.open(entry.url, "_blank", "noopener,noreferrer")}
+              onClick={() => openEntryUrl(entry.url)}
               className="self-start rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
             >
               Ouvrir le site
