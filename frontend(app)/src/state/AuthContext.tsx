@@ -194,8 +194,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return promise;
   }, [setTokens, forceLocalLogout]);
 
+  // Dernière interaction utilisateur — alimenté par les écouteurs d'activité (voir le minuteur
+  // d'inactivité plus bas). Déclaré ICI, avant authorizedRequest, qui le consulte.
+  const lastActivityRef = useRef(Date.now());
+
   const authorizedRequest = useCallback(
     async <T,>(fn: (accessToken: string) => Promise<T>): Promise<T> => {
+      // VÉRIFICATION À L'ACCÈS du délai d'inactivité, en plus du minuteur périodique plus bas.
+      // Reprise du modèle de l'extension (voir extension/popup/src/lib/session.ts
+      // ::getActiveSession, qui contrôle l'expiration à chaque lecture de la clé) : un minuteur
+      // peut être MANQUÉ — onglet suspendu par le navigateur, machine en veille, processus gelé —
+      // alors qu'un contrôle au moment de l'accès ne peut pas l'être. Le minuteur reste utile pour
+      // verrouiller SANS attendre une action (l'utilisateur s'éloigne de sa machine) ; celui-ci
+      // garantit qu'aucune opération authentifiée ne passe après l'échéance, même si le minuteur
+      // n'a pas tourné.
+      const minutes = getAutoLockMinutes();
+      if (minutes > 0 && Date.now() - lastActivityRef.current >= minutes * 60_000) {
+        await tauri.lockVault();
+        setIsVaultLocked(true);
+        throw new ApiError(401, "Coffre verrouillé par inactivité.");
+      }
+
       const token = stateRef.current.accessToken;
       if (!token) throw new ApiError(401, "Aucune session active.");
 
@@ -237,6 +256,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Une nouvelle connexion vient de dériver la clé côté Rust (voir login()) : le coffre
       // redémarre forcément déverrouillé, même si la session précédente avait été verrouillée.
       setIsVaultLocked(false);
+      // Même raison que dans unlockVault : l'app a pu rester ouverte longtemps sur l'écran de
+      // connexion avant cette saisie, laissant l'horodatage d'activité périmé — la vérification à
+      // l'accès de authorizedRequest verrouillerait alors la session à peine ouverte.
+      lastActivityRef.current = Date.now();
 
       // OPTIMISATION (retour utilisateur : "optimise l'utilisation [...] de la bande passante") :
       // GET /me et GET /theme-profiles sont deux appels INDÉPENDANTS (aucun n'a besoin du résultat
@@ -549,6 +572,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const email = stateRef.current.email;
       if (!email) throw new Error("Aucune session active.");
 
+      // INDISPENSABLE avant le authorizedRequest de rechargement plus bas : à cet instant précis,
+      // l'horodatage d'activité est forcément périmé — c'est justement l'inactivité qui vient de
+      // verrouiller le coffre. Sans cette remise à zéro, la vérification à l'accès ajoutée dans
+      // authorizedRequest re-verrouillerait immédiatement, rendant tout déverrouillage impossible.
+      // Saisir son mot de passe maître EST une activité utilisateur : la consigner ici n'est pas un
+      // contournement du contrôle, c'est ce qu'il mesure.
+      lastActivityRef.current = Date.now();
+
       await tauri.deriveKeys(email, password);
       let entries;
       try {
@@ -579,6 +610,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const quickUnlockVault = useCallback(async () => {
+    // Même raison que dans unlockVault ci-dessus : réussir la vérification Windows Hello est une
+    // activité utilisateur, et sans cette ligne la vérification à l'accès de authorizedRequest
+    // re-verrouillerait aussitôt.
+    lastActivityRef.current = Date.now();
     // Contrairement à unlockVault(password) ci-dessus, pas de vérification supplémentaire ici :
     // tryQuickUnlock() ne réussit QUE si la vérification Windows Hello a réussi ET que le blob
     // DPAPI s'est déchiffré correctement (authentifié, pas de "mauvaise clé silencieuse" possible
@@ -591,7 +626,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Minuteur d'inactivité : réinitialisé à chaque interaction utilisateur, verrouille le coffre
   // s'il expire (délai configurable, voir lib/settings.ts — 0 désactive). Un seul minuteur pour
   // toute la session (pas un par écran), comme la connexion WebSocket ci-dessous.
-  const lastActivityRef = useRef(Date.now());
   useEffect(() => {
     if (!state.email || isVaultLocked) return;
 
