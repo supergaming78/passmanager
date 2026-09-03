@@ -81,6 +81,27 @@ pub async fn cleanup_stale_unverified_accounts(db: &sqlx::SqlitePool) {
     }
 }
 
+/// Laisse SQLite mettre à jour ses statistiques de planification (`PRAGMA optimize`).
+///
+/// OPTIMISATION : sans statistiques, le planificateur de requêtes choisit ses index sur de simples
+/// heuristiques ("cet index est probablement sélectif"). C'est sans conséquence sur une base
+/// quasi vide, mais dès qu'un coffre grossit — ou qu'un compte pèse beaucoup plus lourd que les
+/// autres — ces suppositions peuvent l'amener à préférer un index moins efficace. `PRAGMA optimize`
+/// est la forme recommandée depuis SQLite 3.18 : il ne lance un `ANALYZE` que sur les tables dont
+/// les statistiques sont réellement absentes ou périmées, et ne fait donc RIEN la plupart du temps
+/// (coût nul en régime établi, contrairement à un `ANALYZE` complet qu'il ne faut pas planifier
+/// aveuglément).
+///
+/// Appelé dans le même cycle de 30 minutes que les nettoyages ci-dessus (voir main.rs) : aucune
+/// tâche supplémentaire, et la fréquence est largement suffisante pour ce type de statistiques.
+pub async fn optimize_query_planner(db: &sqlx::SqlitePool) {
+    if let Err(e) = sqlx::query("PRAGMA optimize").execute(db).await {
+        // Volontairement non bloquant : ce n'est qu'une optimisation, jamais une condition de
+        // bon fonctionnement — on trace et on continue.
+        error!("Échec de PRAGMA optimize (sans conséquence fonctionnelle) : {:?}", e);
+    }
+}
+
 /// Promeut modérateur le compte correspondant à `admin_email` (ADMIN_EMAIL), s'il existe déjà —
 /// voir aussi handlers/auth/register.rs::register(), qui gère le cas symétrique où le compte
 /// s'inscrit APRÈS que la variable d'environnement a été définie. Extraite en fonction séparée
@@ -328,6 +349,58 @@ mod tests {
             remaining,
             vec!["fresh-unverified@example.com".to_string(), "old-but-verified@example.com".to_string()],
             "seul le compte non vérifié ET vieux de plus de 24h doit avoir été supprimé"
+        );
+    }
+
+    /// optimize_query_planner() ne doit jamais échouer ni paniquer sur une base normale.
+    #[tokio::test]
+    async fn test_optimize_query_planner_runs_without_error() {
+        let pool = build_test_pool().await;
+        optimize_query_planner(&pool).await; // ne doit pas paniquer
+        let still_usable: i64 = sqlx::query_scalar("SELECT 1").fetch_one(&pool).await.unwrap();
+        assert_eq!(still_usable, 1, "la base doit rester parfaitement utilisable après PRAGMA optimize");
+    }
+
+    /// RÉGRESSION DE PERFORMANCE : verrouille les deux gains mesurés par la migration
+    /// 20260903080000_vault_covering_index.sql, qu'un simple remaniement d'index ferait perdre
+    /// SILENCIEUSEMENT (aucun test fonctionnel ne verrait la différence — seule la latence
+    /// changerait). On interroge directement le planificateur de SQLite via EXPLAIN QUERY PLAN.
+    #[tokio::test]
+    async fn test_vault_index_avoids_temp_sort_and_covers_sync_check() {
+        let pool = build_test_pool().await;
+
+        // 1. Le listage du coffre (GET /vault) ne doit plus trier dans une table temporaire.
+        // EXPLAIN QUERY PLAN renvoie 4 colonnes (id, parent, notused, detail) — seule `detail`
+        // contient le texte du plan.
+        let list_plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN
+             SELECT id, is_favorite FROM vault
+             WHERE user_email = 'a' AND deleted_at IS NULL
+             ORDER BY is_favorite DESC LIMIT 100"
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let list_plan = list_plan.into_iter().map(|r| r.3).collect::<Vec<_>>().join(" | ");
+        assert!(
+            !list_plan.contains("TEMP B-TREE"),
+            "le listage du coffre ne doit pas retrier en table temporaire — plan obtenu : {list_plan}"
+        );
+
+        // 2. La vérification de synchro (appelée en boucle par chaque appareil) doit se satisfaire
+        // de l'index seul, sans jamais ouvrir la table.
+        let sync_plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+            "EXPLAIN QUERY PLAN
+             SELECT COUNT(*), MAX(updated_at) FROM vault
+             WHERE user_email = 'a' AND deleted_at IS NULL"
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let sync_plan = sync_plan.into_iter().map(|r| r.3).collect::<Vec<_>>().join(" | ");
+        assert!(
+            sync_plan.contains("COVERING INDEX"),
+            "la vérification de synchro doit être servie par un index couvrant — plan obtenu : {sync_plan}"
         );
     }
 
