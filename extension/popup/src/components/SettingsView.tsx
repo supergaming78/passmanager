@@ -183,10 +183,16 @@ export default function SettingsView({
     };
   }
 
+  // CORRECTIF (retour utilisateur : "je ne peux pas appliquer, ça reste tout le temps comme ça") :
+  // voir ThemeSettings.tsx côté desktop pour le raisonnement complet — aperçu TOUJOURS appliqué en
+  // éditant, pas seulement pour le profil déjà actif (qui ne concernait jamais le tout premier
+  // profil d'un compte, le cas le plus courant).
   function startNewThemeProfile() {
     setEditingProfileId("new");
     setDraftProfileName(`Profil ${(profiles?.length ?? 0) + 1}`);
-    setDraftProfile(getCachedCustomTheme());
+    const config = getCachedCustomTheme();
+    setDraftProfile(config);
+    setCachedCustomTheme(config);
     setProfileActionError(null);
     setProfileSaveState("idle");
   }
@@ -194,7 +200,9 @@ export default function SettingsView({
   function startEditThemeProfile(p: ThemeProfileView) {
     setEditingProfileId(p.id);
     setDraftProfileName(p.name);
-    setDraftProfile(profileToConfig(p));
+    const config = profileToConfig(p);
+    setDraftProfile(config);
+    setCachedCustomTheme(config);
     setProfileActionError(null);
     setProfileSaveState("idle");
   }
@@ -203,8 +211,7 @@ export default function SettingsView({
     const next = { ...draftProfile, ...patch };
     setDraftProfile(next);
     setProfileSaveState("idle");
-    const editingActiveProfile = profiles?.some((p) => p.id === editingProfileId && p.is_active);
-    if (editingActiveProfile) setCachedCustomTheme(next);
+    setCachedCustomTheme(next);
   }
 
   /** Voir ThemeSettings.tsx côté desktop pour le même raisonnement : identique au thème preset

@@ -160,10 +160,21 @@ export default function ThemeSettings() {
     setTheme(value);
   }
 
+  // CORRECTIF (retour utilisateur : "je ne peux pas appliquer, ça reste tout le temps comme ça") :
+  // startNewProfile/startEditProfile/updateDraft appliquent maintenant TOUJOURS un aperçu immédiat
+  // (setCachedCustomTheme), pas seulement quand le profil édité est déjà celui actif côté serveur.
+  // Éditer un profil est une action WYSIWYG — bouger un curseur doit se voir tout de suite, même
+  // pour le tout premier profil d'un compte (jamais actif avant sa création, donc l'ancienne
+  // condition ne prévisualisait JAMAIS rien pour ce cas, le plus courant). Le seul coût : quitter
+  // l'écran sans enregistrer laisse l'aperçu du brouillon dans le cache local jusqu'au prochain
+  // establishSession()/activation, qui le remplace par la vraie valeur active côté serveur — sans
+  // gravité, ce cache n'a jamais été une source de vérité (voir lib/theme.ts).
   function startNewProfile() {
     setEditingId("new");
     setDraftName(`Profil ${(profiles?.length ?? 0) + 1}`);
-    setDraft(getCachedCustomTheme());
+    const config = getCachedCustomTheme();
+    setDraft(config);
+    setCachedCustomTheme(config);
     setActionError(null);
     setSaveState("idle");
   }
@@ -171,7 +182,9 @@ export default function ThemeSettings() {
   function startEditProfile(p: ThemeProfileView) {
     setEditingId(p.id);
     setDraftName(p.name);
-    setDraft(profileToConfig(p));
+    const config = profileToConfig(p);
+    setDraft(config);
+    setCachedCustomTheme(config);
     setActionError(null);
     setSaveState("idle");
   }
@@ -180,10 +193,7 @@ export default function ThemeSettings() {
     const next = { ...draft, ...patch };
     setDraft(next);
     setSaveState("idle");
-    // Aperçu immédiat SEULEMENT si ce profil est déjà le profil actif — éditer un profil inactif
-    // ne doit pas changer ce qui est affiché tant qu'on ne l'a pas explicitement activé.
-    const editingActiveProfile = profiles?.some((p) => p.id === editingId && p.is_active);
-    if (editingActiveProfile) setCachedCustomTheme(next);
+    setCachedCustomTheme(next);
   }
 
   /** Réinitialise les curseurs du profil en cours d'édition sur les valeurs par défaut — IDENTIQUES
