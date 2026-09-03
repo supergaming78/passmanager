@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { NOTE_TYPE_PASSWORD_PLACEHOLDER, type EntryType, type PlainVaultEntry } from "../lib/vaultCrypto";
 import { openEntryUrl } from "../lib/openExternalUrl";
+import { validateEntryFields, normalizeEntryUrl } from "../lib/entryValidation";
 import PasswordGeneratorPanel from "./PasswordGeneratorPanel";
 
 export type VaultEntryFormValues = Omit<PlainVaultEntry, "id" | "updatedAt" | "version" | "hasAttachments" | "useCount">;
@@ -17,19 +18,28 @@ const TYPE_LABELS: Record<EntryType, { typeLabel: string; siteName: string; site
 };
 
 /** Champs additionnels affichés pour "card"/"identity" (voir PlainVaultEntry.extraFields) — "note"
- * et "login" n'en ont aucun. `key` correspond à la clé stockée dans l'objet extraFields. */
-const EXTRA_FIELDS_BY_TYPE: Record<EntryType, { key: string; label: string; placeholder?: string; sensitive?: boolean }[]> = {
+ * et "login" n'en ont aucun. `key` correspond à la clé stockée dans l'objet extraFields.
+ * `inputType`/`inputMode`/`maxLength` : contraintes de SAISIE (clavier adapté sur mobile, longueur
+ * bornée) — la validation de FORMAT réelle avant enregistrement reste dans lib/entryValidation.ts,
+ * ces attributs sont un confort en plus, pas un substitut (un champ HTML reste contournable). Les 3
+ * champs date d'identity utilisent `type="date"` (sélecteur natif) plutôt qu'un champ texte libre —
+ * élimine par construction les dates invalides (ex: "32/13/2020"), pas besoin de les valider à la
+ * main. */
+const EXTRA_FIELDS_BY_TYPE: Record<
+  EntryType,
+  { key: string; label: string; placeholder?: string; sensitive?: boolean; inputType?: "text" | "date"; inputMode?: "numeric"; maxLength?: number }[]
+> = {
   login: [],
   card: [
-    { key: "expiryMonth", label: "Mois d'expiration", placeholder: "MM" },
-    { key: "expiryYear", label: "Année d'expiration", placeholder: "AAAA" },
-    { key: "cvv", label: "CVV", sensitive: true },
+    { key: "expiryMonth", label: "Mois d'expiration", placeholder: "MM", inputMode: "numeric", maxLength: 2 },
+    { key: "expiryYear", label: "Année d'expiration", placeholder: "AAAA", inputMode: "numeric", maxLength: 4 },
+    { key: "cvv", label: "CVV", sensitive: true, inputMode: "numeric", maxLength: 4 },
   ],
   identity: [
-    { key: "dateOfBirth", label: "Date de naissance" },
+    { key: "dateOfBirth", label: "Date de naissance", inputType: "date" },
     { key: "nationality", label: "Nationalité" },
-    { key: "issueDate", label: "Date de délivrance" },
-    { key: "expiryDate", label: "Date d'expiration" },
+    { key: "issueDate", label: "Date de délivrance", inputType: "date" },
+    { key: "expiryDate", label: "Date d'expiration", inputType: "date" },
     { key: "address", label: "Adresse" },
   ],
   note: [],
@@ -92,11 +102,25 @@ export default function VaultEntryForm({ title, initialValues, submitLabel, onSu
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
+
+    // Validation de FORMAT (numéro de carte/CVV/expiration, URL) — voir lib/entryValidation.ts
+    // pour le détail et le retour utilisateur à l'origine. Volontairement AVANT le chiffrement :
+    // le serveur ne voit jamais ces valeurs en clair, donc ne peut pas faire ce contrôle lui-même.
+    const validationError = validateEntryFields(values);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       // Type "note" : pas de champ mot de passe affiché (voir plus bas) — le backend en exige
       // pourtant un non vide (partagé avec "login"), d'où ce placeholder fixe jamais montré.
-      const toSubmit = values.entryType === "note" ? { ...values, password: NOTE_TYPE_PASSWORD_PLACEHOLDER } : values;
+      const toSubmit = {
+        ...values,
+        password: values.entryType === "note" ? NOTE_TYPE_PASSWORD_PLACEHOLDER : values.password,
+        url: normalizeEntryUrl(values.url),
+      };
       await onSubmit(toSubmit);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Une erreur inattendue est survenue.");
@@ -302,7 +326,9 @@ export default function VaultEntryForm({ title, initialValues, submitLabel, onSu
                     <label className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">{field.label}</label>
                     <div className="flex gap-1.5">
                       <input
-                        type={field.sensitive && !isRevealed ? "password" : "text"}
+                        type={field.inputType === "date" ? "date" : field.sensitive && !isRevealed ? "password" : "text"}
+                        inputMode={field.inputMode}
+                        maxLength={field.maxLength}
                         value={values.extraFields[field.key] ?? ""}
                         onChange={(e) => updateExtraField(field.key, e.target.value)}
                         className="w-full min-w-0 rounded-lg border border-neutral-300 px-3 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-950"
