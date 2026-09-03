@@ -6,7 +6,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import * as api from "./api/client";
 import * as session from "./lib/session";
-import { decryptEntry, encryptEntry, type PlainVaultEntry } from "./lib/vaultCrypto";
+import { decryptEntry, encryptEntry, type PlainVaultEntry, type EntryType } from "./lib/vaultCrypto";
 import { getPreferredIdentifier } from "./lib/entryIdentifier";
 import { isStandaloneWindow, openStandaloneAndClose } from "./lib/popupWindow";
 import { getWindowMode } from "./lib/settings";
@@ -35,6 +35,12 @@ type Screen =
   | { kind: "login" }
   | { kind: "tfa"; email: string; authHashHex: string; vaultKey: Uint8Array; rememberMe: boolean }
   | { kind: "vault"; email: string; vaultKey: Uint8Array };
+
+/** Libellés du filtre par type d'entrée (voir typeFilter plus bas) — mêmes 4 types que
+ * pages/Vault.tsx::TYPE_FILTER_LABELS côté app desktop (formulation au pluriel, propre au
+ * filtre — distincte de components/VaultEntryForm.tsx::TYPE_LABELS, au singulier, propre au
+ * formulaire de création/édition d'une entrée). */
+const TYPE_FILTER_LABELS: Record<EntryType, string> = { login: "Identifiants", card: "Cartes bancaires", identity: "Identités", note: "Notes sécurisées" };
 
 /** Récupère les profils de personnalisation de thème du compte ET le thème actuellement choisi
  * (voir lib/theme.ts::setTheme, api/client.ts::listThemeProfiles/getMe) — équivalent, pour la
@@ -397,6 +403,10 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
   // "" = tous les dossiers, "__none__" = sans dossier assigné, sinon le nom exact du dossier —
   // même convention que pages/Vault.tsx côté app desktop.
   const [folderFilter, setFolderFilter] = useState("");
+  // Retour utilisateur : "je souhaite que les infos des cartes bancaires et carte d'identité ne
+  // soient pas mélangées avec les mots de passe" — voir pages/Vault.tsx côté app desktop pour le
+  // même raisonnement (identique ici).
+  const [typeFilter, setTypeFilter] = useState<"" | EntryType>("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [filledId, setFilledId] = useState<string | null>(null);
   const [view, setView] = useState<VaultView>({ kind: "list" });
@@ -555,6 +565,7 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
           if (folderFilter === "__none__") return !e.folder;
           return e.folder === folderFilter;
         })
+        .filter((e) => !typeFilter || e.entryType === typeFilter)
         .sort((a, b) => {
           if (a.isFavorite !== b.isFavorite) return Number(b.isFavorite) - Number(a.isFavorite);
           switch (sortBy) {
@@ -567,7 +578,7 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
               return a.siteName.localeCompare(b.siteName);
           }
         }),
-    [entries, query, folderFilter, sortBy],
+    [entries, query, folderFilter, typeFilter, sortBy],
   );
 
   // Dossiers distincts déjà utilisés dans le coffre — même principe que
@@ -576,6 +587,13 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
     () => Array.from(new Set((entries ?? []).map((e) => e.folder).filter(Boolean))).sort((a, b) => a.localeCompare(b)),
     [entries],
   );
+
+  // Types distincts déjà présents dans le coffre (retour utilisateur : "je souhaite que les infos
+  // des cartes bancaires et carte d'identité ne soient pas mélangées avec les mots de passe") —
+  // même principe que pages/Vault.tsx::existingTypes côté app desktop. Le filtre ne s'affiche que
+  // s'il y a réellement plus d'un type à distinguer (voir la garde `existingTypes.length > 1`
+  // plus bas), pas la peine de proposer un filtre inutile à un coffre qui n'a que des identifiants.
+  const existingTypes = useMemo(() => Array.from(new Set((entries ?? []).map((e) => e.entryType))), [entries]);
 
   // Regroupe l'affichage par dossier — SEULEMENT si aucun filtre de dossier n'est déjà actif (le
   // filtre réduit déjà à un seul dossier) et qu'il existe au moins un dossier. Même retour
@@ -771,6 +789,24 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
               {existingFolders.map((folder) => (
                 <option key={folder} value={folder}>
                   {folder}
+                </option>
+              ))}
+            </select>
+          )}
+          {/* Retour utilisateur : "je souhaite que les infos des cartes bancaires et carte
+              d'identité ne soient pas mélangées avec les mots de passe" — filtre dédié, même
+              principe que le filtre par dossier juste au-dessus (et pages/Vault.tsx côté app
+              desktop). */}
+          {existingTypes.length > 1 && (
+            <select
+              value={typeFilter}
+              onChange={(e) => setTypeFilter(e.target.value as "" | EntryType)}
+              className="min-w-0 flex-1 rounded-lg border border-neutral-300 px-2 py-1.5 text-xs outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 dark:border-neutral-700 dark:bg-neutral-900"
+            >
+              <option value="">Tous les types</option>
+              {existingTypes.map((type) => (
+                <option key={type} value={type}>
+                  {TYPE_FILTER_LABELS[type]}
                 </option>
               ))}
             </select>
