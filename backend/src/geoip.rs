@@ -90,7 +90,7 @@ impl GeoIpResolver {
         // transmet. Les quatre états deviennent ainsi distinguables d'un coup d'œil.
         if path.is_none() {
             info!(
-                "Géolocalisation désactivée : GEOIP_DATABASE_PATH n'est pas défini (ou est vide). Si tu l'as pourtant renseigné, c'est que la variable n'atteint pas le conteneur — le fichier docker-compose.yml déployé est probablement antérieur à ce réglage."
+                "Géolocalisation désactivée : GEOIP_DATABASE_PATH n'est pas défini (ou est vide). Si tu l'as pourtant renseigné, elle n'atteint pas le processus : en Docker, le fichier docker-compose.yml déployé est probablement antérieur à ce réglage ; en local, exporte-la avant `cargo run` ou ajoute-la à ton .env."
             );
         }
         let reader = path.as_deref().and_then(open_database);
