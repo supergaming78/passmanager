@@ -10,6 +10,8 @@ import {
   type AdminUserView,
   type UserIpHistoryResponse,
   type ServerHealth,
+  type VacuumResult,
+  type UpdateQuotasPayload,
   type ApiErrorBody,
   type AuditLog,
   type CompleteRecoveryPayload,
@@ -785,6 +787,35 @@ export function updateServerChoiceAtLogin(accessToken: string, payload: UpdateSe
 /** SANS authentification (voir Login.tsx) — lit le réglage global ci-dessus AVANT toute connexion. */
 export function getPublicConfig(): Promise<PublicConfig> {
   return request<PublicConfig>("/public-config");
+}
+
+/** Journal d'audit complet en CSV. Passe par l'API authentifiée : un lien href direct ne
+ * porterait pas le jeton d'accès. Renvoie le texte brut, au client d'en faire un téléchargement. */
+export async function exportAuditLogsCsv(accessToken: string): Promise<string> {
+  const reponse = await fetch(`${getBackendUrl()}/audit/export.csv`, { headers: authHeaders(accessToken) });
+  if (!reponse.ok) {
+    throw new ApiError(reponse.status, "Export du journal impossible.");
+  }
+  return reponse.text();
+}
+
+/** Compacte la base et renvoie ce que l'opération a rendu au disque. Réservé à l'Admin. */
+export function vacuumDatabase(accessToken: string): Promise<VacuumResult> {
+  return request<VacuumResult>("/admin/vacuum", { method: "POST", headers: authHeaders(accessToken) });
+}
+
+/** Envoie un email de test à l'Admin lui-même, pour vérifier la configuration SMTP. */
+export function sendTestEmail(accessToken: string): Promise<void> {
+  return request<void>("/admin/test-email", { method: "POST", headers: authHeaders(accessToken) });
+}
+
+/** Règle les quotas d'un compte. `null` sur un champ le remet sur le plafond global. */
+export function updateQuotas(accessToken: string, targetEmail: string, payload: UpdateQuotasPayload): Promise<void> {
+  return request<void>(`/admin/users/${encodeURIComponent(targetEmail)}/quotas`, {
+    method: "PUT",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify(payload),
+  });
 }
 
 /** État de santé du serveur — disque, base, sauvegardes, activité. Réservé à l'Admin. */

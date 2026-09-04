@@ -19,6 +19,36 @@ use super::common::get_user_agent;
 /// habituellement), donc sans impact sur l'usage légitime.
 const MAX_VAULT_ENTRIES_PER_USER: i64 = 5000;
 
+/// Plafond d'entrées applicable à CE compte : sa surcharge si l'Admin en a défini une, sinon le
+/// plafond global ci-dessus.
+///
+/// Lu à chaque vérification plutôt que mis en cache : un quota abaissé doit prendre effet tout de
+/// suite, sans attendre la reconnexion du compte visé. Le coût est une lecture indexée sur la clé
+/// primaire, négligeable à côté de l'écriture qu'elle protège.
+///
+/// Une erreur de lecture retombe sur le plafond global — refuser une écriture parce qu'on n'a pas
+/// pu lire un réglage facultatif serait pire que le problème qu'il résout.
+async fn entry_quota_for(state: &AppState, email: &str) -> i64 {
+    sqlx::query_scalar::<_, Option<i64>>("SELECT max_vault_entries FROM users WHERE email = ?")
+        .bind(email)
+        .fetch_one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(MAX_VAULT_ENTRIES_PER_USER)
+}
+
+/// Idem pour les pièces jointes (voir MAX_ATTACHMENTS_PER_USER).
+async fn attachment_quota_for(state: &AppState, email: &str) -> i64 {
+    sqlx::query_scalar::<_, Option<i64>>("SELECT max_attachments FROM users WHERE email = ?")
+        .bind(email)
+        .fetch_one(&state.db)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(MAX_ATTACHMENTS_PER_USER)
+}
+
 // --- GESTION DU COFFRE-FORT (VAULT) ---
 
 /// Liste les entrées chiffrées du coffre-fort de l'utilisateur (avec pagination).
@@ -128,9 +158,10 @@ pub async fn import_vault(
     // MAX_VAULT_ENTRIES_PER_USER. Vérifié AVANT toute écriture pour que l'import reste tout-ou-rien.
     let active_count = VaultRepository::count_active(&state.db, &user.email).await?;
     let import_count = payload.entries.len() as i64;
-    if active_count + import_count > MAX_VAULT_ENTRIES_PER_USER {
+    let quota = entry_quota_for(&state, &user.email).await;
+    if active_count + import_count > quota {
         return Err(AppError::ValidationError(format!(
-            "Cet import dépasserait la limite de {MAX_VAULT_ENTRIES_PER_USER} entrées du coffre ({active_count} déjà présente(s), {import_count} à importer)."
+            "Cet import dépasserait la limite de {quota} entrées du coffre ({active_count} déjà présente(s), {import_count} à importer)."
         )));
     }
 
@@ -163,7 +194,7 @@ pub async fn add_to_vault(
 
     // Garde-fou anti-épuisement de stockage : voir MAX_VAULT_ENTRIES_PER_USER ci-dessus.
     let active_count = VaultRepository::count_active(&state.db, &user.email).await?;
-    if active_count >= MAX_VAULT_ENTRIES_PER_USER {
+    if active_count >= entry_quota_for(&state, &user.email).await {
         return Err(AppError::ValidationError(format!(
             "Limite de {} entrées atteinte pour ce coffre.",
             MAX_VAULT_ENTRIES_PER_USER
@@ -332,9 +363,10 @@ pub async fn add_vault_attachment(
             "Limite de {MAX_ATTACHMENTS_PER_ENTRY} pièce(s) jointe(s) par entrée atteinte."
         )));
     }
-    if total_count >= MAX_ATTACHMENTS_PER_USER {
+    let quota_pieces = attachment_quota_for(&state, &user.email).await;
+    if total_count >= quota_pieces {
         return Err(AppError::ValidationError(format!(
-            "Limite de {MAX_ATTACHMENTS_PER_USER} pièces jointes atteinte pour ce coffre."
+            "Limite de {quota_pieces} pièces jointes atteinte pour ce coffre."
         )));
     }
 
@@ -2106,6 +2138,42 @@ mod tests {
 
     /// Refuse une nouvelle pièce jointe une fois MAX_ATTACHMENTS_PER_USER atteint, MÊME sur une
     /// entrée qui n'a encore aucune pièce jointe elle-même (quota GLOBAL, pas juste par entrée).
+    #[tokio::test]
+    /// Le quota PAR COMPTE doit réellement s'appliquer, pas seulement être stocké : un réglage
+    /// enregistré mais jamais consulté serait un faux sentiment de contrôle.
+    async fn test_per_account_quota_overrides_the_global_ceiling() {
+        let state = build_test_state().await;
+        let email = "quotaperso@example.com";
+        register_test_user(&state, email).await;
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let appelant = || AuthUser { email: email.to_string(), is_moderator: false };
+
+        // Deux entrées autorisées, très en dessous du plafond global de 5000.
+        sqlx::query("UPDATE users SET max_vault_entries = 2 WHERE email = ?")
+            .bind(email).execute(&state.db).await.unwrap();
+
+        for i in 0..2 {
+            add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(), appelant(),
+                Json(sample_entry(&format!("Entree{i}")))).await
+                .expect("les entrées sous le quota doivent passer");
+        }
+
+        let refus = add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(), appelant(),
+            Json(sample_entry("DeTrop"))).await;
+        assert!(matches!(refus, Err(AppError::ValidationError(_))), "la 3e entrée doit être refusée par le quota du compte");
+
+        // Remettre NULL doit rendre le compte au plafond global, sans rien supprimer.
+        sqlx::query("UPDATE users SET max_vault_entries = NULL WHERE email = ?")
+            .bind(email).execute(&state.db).await.unwrap();
+        add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(), appelant(),
+            Json(sample_entry("ApresLiberation"))).await
+            .expect("sans surcharge, le plafond global s'applique de nouveau");
+
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_email = ?")
+            .bind(email).fetch_one(&state.db).await.unwrap();
+        assert_eq!(total, 3, "abaisser puis relever un quota ne doit jamais supprimer d'entrée");
+    }
+
     #[tokio::test]
     async fn test_attachment_rejects_when_per_user_limit_reached() {
         let state = build_test_state().await;

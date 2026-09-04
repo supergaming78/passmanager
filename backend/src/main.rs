@@ -731,9 +731,15 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/ws", get(handlers::ws_handler)) // Synchronisation temps réel entre appareils (authentifiée par ticket, pas par l'access token)
         .route("/me", get(handlers::get_me)) // Récupérer le profil de l'utilisateur connecté
         .route("/audit", get(handlers::get_audit_logs)) // Admin/modérateur : historique de TOUS les comptes
+        // Mêmes données que /audit, en CSV et sans la limite de 100 lignes : le journal étant purgé
+        // à 10 jours, c'est le seul moyen d'en garder une trace au-delà.
+        .route("/audit/export.csv", get(handlers::export_audit_logs_csv)) // Modérateur : export du journal
         // Même information que /audit (une IP par événement), mais regroupée par compte et par IP.
         // Lecture seule et bornée par la purge du journal — pas de nouvelle rétention.
         .route("/admin/server-health", get(handlers::get_server_health)) // Admin : disque, base, sauvegardes, activité
+        // Compactage de la base et test SMTP : des ACTIONS, pas des lectures — sur le palier
+        // sensible comme les autres mutations d'administration (voir plus bas). Le test d'email
+        // consomme en plus le quota SMTP du propriétaire, une raison de plus de le freiner.
         .route("/admin/users/{email}/ip-history", get(handlers::get_user_ip_history)) // Modérateur : IP vues pour UN compte
         .route("/audit/me", get(handlers::get_my_audit_logs)) // Self-service : historique du compte connecté seulement
         // Gestion admin/modérateur des comptes (voir handlers/admin.rs pour le détail exact des
@@ -757,6 +763,9 @@ fn build_router(state: Arc<AppState>) -> Router {
             // Contrôles ajoutés après la 1.0.0 (voir la migration 20260904100000_admin_controls.sql).
             // Sur sensitive_governor comme le reste des mutations d'administration.
             .route("/admin/registration-open", put(handlers::update_registration_open)) // GLOBAL : ouvrir/fermer les inscriptions (Admin uniquement)
+            .route("/admin/vacuum", post(handlers::vacuum_database)) // Admin : compacte la base
+            .route("/admin/test-email", post(handlers::send_test_email)) // Admin : vérifie la configuration SMTP
+            .route("/admin/users/{email}/quotas", put(handlers::update_quotas)) // Admin : quotas d'un compte
             .route("/admin/users/{email}/suspended", put(handlers::update_suspended)) // Suspendre/réactiver un compte — données conservées, contrairement à la suppression
             .route("/admin/users/{email}/revoke-sessions", post(handlers::revoke_user_sessions)) // Déconnecter un compte à distance
             .route("/admin/users/{email}", delete(handlers::delete_user)) // Supprimer définitivement un compte

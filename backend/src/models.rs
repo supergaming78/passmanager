@@ -127,6 +127,16 @@ pub struct AdminUserView {
     pub entry_count: i64,
     #[sqlx(default)]
     pub attachment_bytes: i64,
+    /// Dernière activité connue, tirée de `account_ip_history` (qui SURVIT à la purge du journal,
+    /// contrairement à `audit_logs` : c'est ce qui permet de dire « rien depuis huit mois » plutôt
+    /// que « rien depuis dix jours »). `None` pour un compte qui ne s'est jamais connecté.
+    #[sqlx(default)]
+    pub last_seen: Option<String>,
+    /// Quotas propres au compte. `None` = plafond global (voir handlers/vault.rs).
+    #[sqlx(default)]
+    pub max_vault_entries: Option<i64>,
+    #[sqlx(default)]
+    pub max_attachments: Option<i64>,
 }
 
 /// Représente une entrée de journal d'audit en base de données pour l'historique de sécurité.
@@ -1436,6 +1446,21 @@ pub struct UserIpHistoryEntry {
     /// dispense le type d'implémenter Decode (contrairement à `default`).
     #[sqlx(skip)]
     pub location: Option<crate::geoip::IpLocation>,
+}
+
+/// Corps de `PUT /admin/users/{email}/quotas`. `None` remet le compte sur le plafond global.
+#[derive(serde::Deserialize)]
+pub struct UpdateQuotasPayload {
+    pub max_vault_entries: Option<i64>,
+    pub max_attachments: Option<i64>,
+}
+
+/// Réponse de `POST /admin/vacuum` — l'intérêt d'un VACUUM se juge à ce qu'il a rendu.
+#[derive(serde::Serialize)]
+pub struct VacuumResult {
+    pub before_bytes: u64,
+    pub after_bytes: u64,
+    pub freed_bytes: i64,
 }
 
 /// Réponse de `GET /admin/users/{email}/ip-history`.

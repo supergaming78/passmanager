@@ -1,6 +1,6 @@
 use axum::{
     extract::{State, Path, ConnectInfo},
-    http::{StatusCode, HeaderMap},
+    http::{StatusCode, HeaderMap, header},
     response::IntoResponse,
     Json
 };
@@ -53,7 +53,7 @@ pub async fn list_users(
     }
 
     let mut users = sqlx::query_as::<_, AdminUserView>(
-        "SELECT email, is_moderator, email_verified, created_at, max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, is_suspended FROM users ORDER BY created_at DESC"
+        "SELECT email, is_moderator, email_verified, created_at, max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, is_suspended, max_vault_entries, max_attachments FROM users ORDER BY created_at DESC"
     )
     .fetch_all(&state.db)
     .await?;
@@ -74,8 +74,19 @@ pub async fn list_users(
     .fetch_all(&state.db)
     .await?;
 
+    // DERNIÈRE ACTIVITÉ — lue dans account_ip_history et non dans audit_logs, précisément parce
+    // que cette table survit à la purge à 10 jours. Sur audit_logs, un compte dormant depuis huit
+    // mois et un compte inactif depuis onze jours seraient indiscernables : tous deux « aucune
+    // trace ». C'est justement la distinction qu'on cherche.
+    let last_seen: Vec<(String, String)> = sqlx::query_as(
+        "SELECT user_email, MAX(last_seen) FROM account_ip_history GROUP BY user_email",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
     let entry_counts: std::collections::HashMap<String, i64> = entry_counts.into_iter().collect();
     let attachment_sizes: std::collections::HashMap<String, i64> = attachment_sizes.into_iter().collect();
+    let last_seen: std::collections::HashMap<String, String> = last_seen.into_iter().collect();
 
     // is_admin n'est pas une colonne SQL (voir models.rs::AdminUserView) — un seul compte peut
     // jamais correspondre à ADMIN_EMAIL, rempli après coup plutôt que par une comparaison SQL
@@ -86,6 +97,9 @@ pub async fn list_users(
         // renvoie pas de ligne pour un compte qui n'a rien).
         u.entry_count = entry_counts.get(&u.email).copied().unwrap_or(0);
         u.attachment_bytes = attachment_sizes.get(&u.email).copied().unwrap_or(0);
+        // Volontairement None et non une date bidon pour un compte jamais vu : « jamais connecté »
+        // est une information à part entière, à ne pas confondre avec « connecté il y a longtemps ».
+        u.last_seen = last_seen.get(&u.email).cloned();
     }
 
     Ok(Json(users))
@@ -661,6 +675,203 @@ pub async fn get_user_ip_history(
         geoip_enabled: state.geoip.is_enabled(),
         entries,
     }))
+}
+
+/// Exporte le journal d'audit complet en CSV.
+///
+/// Le journal est purgé à 10 jours (voir maintenance.rs) : sans moyen de l'emporter, tout ce qui
+/// dépasse cette fenêtre est perdu pour de bon. Cette route permet d'en garder une trace hors du
+/// serveur, et de l'analyser dans un tableur plutôt qu'à travers un écran paginé.
+///
+/// Réservé aux modérateurs, comme `GET /audit` : ce sont exactement les mêmes données, dans un
+/// autre emballage — les réserver ici tout en les laissant lisibles là ne protégerait rien.
+///
+/// Exporte TOUT le journal, sans la limite de 100 lignes de `GET /audit` : une exportation
+/// tronquée serait pire qu'inutile, on croirait tenir l'historique complet. La table est bornée
+/// par la purge, donc l'export l'est aussi.
+pub async fn export_audit_logs_csv(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_moderator {
+        warn!("Tentative d'export du journal par {} (pas modérateur)", user.email);
+        return Err(AppError::Forbidden);
+    }
+
+    let lignes: Vec<(String, String, String, Option<String>, String)> = sqlx::query_as(
+        "SELECT created_at, user_email, action, user_agent, ip_address \
+           FROM audit_logs ORDER BY created_at DESC",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let mut csv = String::from("date,compte,action,adresse_ip,navigateur\n");
+    for (date, email, action, agent, ip) in &lignes {
+        csv.push_str(&format!(
+            "{},{},{},{},{}\n",
+            csv_field(date),
+            csv_field(email),
+            csv_field(action),
+            csv_field(ip),
+            csv_field(agent.as_deref().unwrap_or("")),
+        ));
+    }
+
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, "AUDIT_LOG_EXPORTED", addr.to_string(), agent).await;
+
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"journal-audit.csv\"".to_string(),
+            ),
+        ],
+        csv,
+    ))
+}
+
+/// Échappe un champ CSV selon la RFC 4180.
+///
+/// Indispensable ici : un User-Agent contient des virgules et des guillemets, et une adresse IP
+/// n'est pas garantie exempte de surprise. Sans échappement, une seule virgule décale toutes les
+/// colonnes de la ligne — et un tableur ouvre le fichier sans rien signaler, ce qui donne une
+/// analyse fausse plutôt qu'une erreur visible.
+fn csv_field(valeur: &str) -> String {
+    if valeur.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", valeur.replace('"', "\"\""))
+    } else {
+        valeur.to_string()
+    }
+}
+
+/// Règle les quotas d'UN compte (Admin uniquement).
+///
+/// `null` sur un champ remet ce compte sur le plafond global codé dans handlers/vault.rs — c'est
+/// distinct de `0`, qui interdit réellement toute nouvelle entrée. Les deux sont légitimes : le
+/// premier dit « comme tout le monde », le second gèle un compte sans le suspendre.
+///
+/// Les quotas ne s'appliquent qu'aux AJOUTS. Abaisser un quota sous ce qu'un compte possède déjà
+/// ne supprime rien : il conserve ses entrées et ne peut plus en créer. Supprimer les données de
+/// quelqu'un parce qu'un chiffre a bougé dans un écran d'administration serait indéfendable.
+pub async fn update_quotas(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Path(target_email): Path<String>,
+    Json(payload): Json<crate::models::UpdateQuotasPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin(&state) {
+        warn!("Tentative de modification de quotas par {} (pas l'Admin)", user.email);
+        return Err(AppError::Forbidden);
+    }
+    if payload.max_vault_entries.is_some_and(|v| v < 0) || payload.max_attachments.is_some_and(|v| v < 0) {
+        return Err(AppError::ValidationError("Un quota ne peut pas être négatif.".to_string()));
+    }
+    let target_email = target_email.to_lowercase();
+
+    let res = sqlx::query("UPDATE users SET max_vault_entries = ?, max_attachments = ? WHERE email = ?")
+        .bind(payload.max_vault_entries)
+        .bind(payload.max_attachments)
+        .bind(&target_email)
+        .execute(&state.db)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, "QUOTAS_UPDATED", addr.to_string(), agent).await;
+    info!(
+        "Quotas de {} réglés par {} (entrées={:?}, pièces jointes={:?})",
+        target_email, user.email, payload.max_vault_entries, payload.max_attachments
+    );
+
+    Ok(StatusCode::OK)
+}
+
+/// Compacte la base (VACUUM) et renvoie ce que l'opération a rendu au disque.
+///
+/// Réservé à l'Admin : c'est une opération sur le fichier, pas sur des comptes.
+///
+/// VACUUM réécrit INTÉGRALEMENT la base dans un fichier temporaire avant de la remplacer. Deux
+/// conséquences à ne pas ignorer :
+/// - il faut temporairement de la place pour une seconde copie. Sur un disque déjà tendu — la
+///   situation même qui pousse à lancer un VACUUM — l'opération peut échouer faute d'espace, et
+///   c'est pour cela que l'écran affiche l'espace libre juste à côté du bouton ;
+/// - il prend un verrou exclusif : les écritures attendent. Sur une base familiale de quelques
+///   centaines de Mo, c'est l'affaire de quelques secondes.
+///
+/// Aucune donnée n'est perdue : VACUUM ne supprime rien, il réorganise. Ce qu'il rend est l'espace
+/// déjà libéré par des suppressions passées, que SQLite conservait pour ses prochaines écritures.
+pub async fn vacuum_database(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin(&state) {
+        warn!("Tentative de VACUUM par {} (pas l'Admin)", user.email);
+        return Err(AppError::Forbidden);
+    }
+
+    let chemin = crate::health::database_path(&state.config.database_url);
+    let before = crate::health::file_size(&chemin);
+
+    sqlx::query("VACUUM").execute(&state.db).await?;
+
+    let after = crate::health::file_size(&chemin);
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, "DATABASE_VACUUMED", addr.to_string(), agent).await;
+    info!("VACUUM par {} : {} -> {} octets", user.email, before, after);
+
+    Ok(Json(crate::models::VacuumResult {
+        before_bytes: before,
+        after_bytes: after,
+        // Signé : un VACUUM peut très légèrement AGRANDIR une base déjà compacte (réorganisation
+        // des pages). Renvoyer un négatif est honnête ; le forcer à 0 masquerait le fait qu'il
+        // n'y avait rien à gagner.
+        freed_bytes: before as i64 - after as i64,
+    }))
+}
+
+/// Envoie un email de test à l'adresse de l'Admin, pour vérifier la configuration SMTP.
+///
+/// Existe parce qu'un SMTP cassé ne se découvre autrement qu'au pire moment : quand quelqu'un a
+/// besoin d'une réinitialisation de mot de passe ou d'un code de connexion, et que rien n'arrive.
+/// C'est le même piège que la sauvegarde silencieuse — ça casse sans bruit.
+///
+/// Toujours envoyé à l'Admin lui-même, jamais à une adresse fournie dans la requête : une route
+/// authentifiée capable d'expédier du courrier vers une adresse arbitraire serait un relais ouvert
+/// pour qui volerait ce compte.
+pub async fn send_test_email(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin(&state) {
+        warn!("Tentative d'envoi d'email de test par {} (pas l'Admin)", user.email);
+        return Err(AppError::Forbidden);
+    }
+
+    crate::mailer::send_security_alert(
+        &user.email,
+        "Ceci est un email de test envoyé depuis le panneau Administration de ton gestionnaire de \
+         mots de passe. Si tu le reçois, la configuration SMTP du serveur fonctionne : les codes de \
+         connexion, vérifications d'adresse et réinitialisations de mot de passe partiront bien.",
+        &state.config,
+    )
+    .await?;
+
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, "TEST_EMAIL_SENT", addr.to_string(), agent).await;
+    Ok(StatusCode::OK)
 }
 
 /// État de santé du serveur : disque, base, sauvegardes, activité (voir health.rs).
@@ -1692,6 +1903,172 @@ mod tests {
 
         let history = ip_history_of(&state, true, "cible@example.com").await;
         assert_eq!(history.as_array().unwrap().len(), 1, "l'historique IP doit survivre à la purge du journal");
+    }
+
+    // ---- Quotas, VACUUM, export CSV, comptes dormants ---------------------------------
+
+    /// Construit un état dont ADMIN_EMAIL est renseigné — nécessaire à toutes les routes
+    /// réservées à l'Admin.
+    async fn state_with_admin(admin_email: &str) -> Arc<AppState> {
+        let state = build_test_state().await;
+        Arc::new(AppState {
+            config: Config { admin_email: Some(admin_email.to_string()), ..state.config.clone() },
+            ..Arc::try_unwrap(state).ok().expect("état de test non partagé")
+        })
+    }
+
+    fn admin_user(email: &str) -> AuthUser {
+        AuthUser { email: email.to_string(), is_moderator: true }
+    }
+
+    /// Régler un quota doit être réservé à l'Admin, et un quota négatif refusé.
+    #[tokio::test]
+    async fn test_quotas_are_admin_only_and_validated() {
+        let state = state_with_admin("patron@example.com").await;
+        register_test_user(&state, "cible@example.com", false).await;
+
+        let refus = update_quotas(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+            Path("cible@example.com".to_string()),
+            Json(UpdateQuotasPayload { max_vault_entries: Some(10), max_attachments: None }),
+        ).await;
+        assert!(matches!(refus, Err(AppError::Forbidden)), "un modérateur ne règle pas les quotas");
+
+        let negatif = update_quotas(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            admin_user("patron@example.com"),
+            Path("cible@example.com".to_string()),
+            Json(UpdateQuotasPayload { max_vault_entries: Some(-1), max_attachments: None }),
+        ).await;
+        assert!(matches!(negatif, Err(AppError::ValidationError(_))), "un quota négatif n'a pas de sens");
+    }
+
+    /// `null` doit remettre le compte sur le plafond global, et `0` rester distinct — l'un dit
+    /// « comme tout le monde », l'autre gèle réellement le compte.
+    #[tokio::test]
+    async fn test_null_quota_differs_from_zero() {
+        let state = state_with_admin("patron@example.com").await;
+        register_test_user(&state, "cible@example.com", false).await;
+
+        let regler = |v: Option<i64>| {
+            let state = state.clone();
+            async move {
+                update_quotas(
+                    State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+                    admin_user("patron@example.com"),
+                    Path("cible@example.com".to_string()),
+                    Json(UpdateQuotasPayload { max_vault_entries: v, max_attachments: None }),
+                ).await.expect("le réglage doit réussir");
+                sqlx::query_scalar::<_, Option<i64>>("SELECT max_vault_entries FROM users WHERE email = ?")
+                    .bind("cible@example.com").fetch_one(&state.db).await.unwrap()
+            }
+        };
+
+        assert_eq!(regler(Some(0)).await, Some(0), "0 doit être stocké tel quel");
+        assert_eq!(regler(None).await, None, "null doit effacer la surcharge, pas écrire 0");
+    }
+
+    /// Un compte inexistant ne doit pas être silencieusement ignoré : sinon une faute de frappe
+    /// dans l'adresse donnerait l'impression d'avoir réglé un quota.
+    #[tokio::test]
+    async fn test_quota_on_unknown_account_is_not_found() {
+        let state = state_with_admin("patron@example.com").await;
+        let r = update_quotas(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            admin_user("patron@example.com"),
+            Path("fantome@example.com".to_string()),
+            Json(UpdateQuotasPayload { max_vault_entries: Some(10), max_attachments: Some(2) }),
+        ).await;
+        assert!(matches!(r, Err(AppError::NotFound)));
+    }
+
+    /// VACUUM : réservé à l'Admin, et doit réussir en renvoyant des tailles cohérentes.
+    #[tokio::test]
+    async fn test_vacuum_is_admin_only_and_reports_sizes() {
+        let state = state_with_admin("patron@example.com").await;
+
+        let refus = vacuum_database(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+        ).await;
+        assert!(matches!(refus, Err(AppError::Forbidden)), "un modérateur ne compacte pas la base");
+
+        let ok = vacuum_database(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            admin_user("patron@example.com"),
+        ).await.expect("le VACUUM doit réussir");
+        let bytes = axum::body::to_bytes(ok.into_response().into_body(), usize::MAX).await.unwrap();
+        let corps: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(corps["before_bytes"].is_number() && corps["after_bytes"].is_number());
+        assert_eq!(
+            corps["freed_bytes"].as_i64().unwrap(),
+            corps["before_bytes"].as_i64().unwrap() - corps["after_bytes"].as_i64().unwrap(),
+            "l'espace libéré doit être la différence exacte, signe compris"
+        );
+    }
+
+    /// L'export CSV doit ÉCHAPPER les champs : un User-Agent contient virgules et guillemets, et
+    /// sans échappement une seule virgule décale toutes les colonnes — un tableur ouvrirait le
+    /// fichier sans rien signaler, donnant une analyse fausse plutôt qu'une erreur visible.
+    #[tokio::test]
+    async fn test_csv_export_escapes_dangerous_fields() {
+        let state = build_test_state().await;
+        register_test_user(&state, "cible@example.com", false).await;
+        sqlx::query("INSERT INTO audit_logs (user_email, action, ip_address, user_agent) VALUES (?, ?, ?, ?)")
+            .bind("cible@example.com")
+            .bind("LOGIN")
+            .bind("203.0.113.7")
+            .bind("Mozilla/5.0 (X11; Linux), \"faux\" navigateur")
+            .execute(&state.db).await.unwrap();
+
+        let reponse = export_audit_logs_csv(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+        ).await.expect("l'export doit réussir");
+        let bytes = axum::body::to_bytes(reponse.into_response().into_body(), usize::MAX).await.unwrap();
+        let csv = String::from_utf8(bytes.to_vec()).unwrap();
+
+        assert!(csv.starts_with("date,compte,action,adresse_ip,navigateur\n"), "en-tête attendu : {csv}");
+        assert!(csv.contains("\"Mozilla/5.0 (X11; Linux), \"\"faux\"\" navigateur\""), "champ mal échappé : {csv}");
+
+        // Une seule ligne de données : les colonnes ne doivent pas avoir été décalées.
+        let ligne = csv.lines().nth(1).expect("une ligne de données");
+        assert!(ligne.contains("203.0.113.7"), "l'adresse doit rester dans sa colonne : {ligne}");
+    }
+
+    /// L'export est réservé aux modérateurs, comme la consultation du journal.
+    #[tokio::test]
+    async fn test_csv_export_requires_moderator() {
+        let state = build_test_state().await;
+        let r = export_audit_logs_csv(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            AuthUser { email: "curieux@example.com".to_string(), is_moderator: false },
+        ).await;
+        assert!(matches!(r, Err(AppError::Forbidden)));
+    }
+
+    /// « Jamais connecté » et « connecté il y a longtemps » sont deux états différents, et le
+    /// listage doit les distinguer — c'est tout l'intérêt de repérer un compte dormant.
+    #[tokio::test]
+    async fn test_listing_distinguishes_never_seen_from_seen() {
+        let state = state_with_admin("patron@example.com").await;
+        register_test_user(&state, "actif@example.com", false).await;
+        register_test_user(&state, "jamais@example.com", false).await;
+        state.log_audit("actif@example.com", "LOGIN", "203.0.113.7".to_string(), None).await;
+
+        let reponse = list_users(State(state.clone()), admin_user("patron@example.com"))
+            .await
+            .expect("le listage doit réussir");
+        let bytes = axum::body::to_bytes(reponse.into_response().into_body(), usize::MAX).await.unwrap();
+        let comptes: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let trouver = |email: &str| {
+            comptes.as_array().unwrap().iter()
+                .find(|u| u["email"] == email).cloned().expect("compte présent")
+        };
+        assert!(trouver("actif@example.com")["last_seen"].is_string(), "un compte vu doit porter une date");
+        assert!(trouver("jamais@example.com")["last_seen"].is_null(), "un compte jamais vu doit rester null");
     }
 
     /// L'état du serveur est réservé à l'Admin, PAS aux modérateurs : ces mesures portent sur la

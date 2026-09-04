@@ -263,6 +263,12 @@ export interface AdminUserView {
    * repérer un compte qui approche des plafonds avant que le disque ne se remplisse. */
   entry_count: number;
   attachment_bytes: number;
+  /** Dernière activité, tirée de l'historique IP (qui survit à la purge du journal). `null` =
+   * jamais connecté, ce qui est un état distinct de « connecté il y a longtemps ». */
+  last_seen: string | null;
+  /** Quotas propres au compte. `null` = plafond global du serveur. */
+  max_vault_entries: number | null;
+  max_attachments: number | null;
   /** Vrai UNIQUEMENT pour le compte ADMIN_EMAIL — il n'existe qu'UN SEUL "Admin" ; tout autre
    * compte avec is_moderator=true est un "Modérateur" (voir Admin.tsx). */
   is_admin: boolean;
@@ -737,6 +743,19 @@ export interface ServerHealth {
     newest_age_hours: number | null;
     newest_bytes: number | null;
   };
+}
+
+/** Résultat d'un compactage de base. `freed_bytes` peut être négatif : un VACUUM sur une base
+ * déjà compacte peut l'agrandir très légèrement. */
+export interface VacuumResult {
+  before_bytes: number;
+  after_bytes: number;
+  freed_bytes: number;
+}
+
+export interface UpdateQuotasPayload {
+  max_vault_entries: number | null;
+  max_attachments: number | null;
 }
 
 export interface UserIpHistoryResponse {

@@ -1256,9 +1256,21 @@ Liste tous les comptes de l'application. **Ne contient jamais `password_hash`**,
   "is_admin": false,
   "is_suspended": false,
   "entry_count": 42,
-  "attachment_bytes": 1048576
+  "attachment_bytes": 1048576,
+  "last_seen": "2026-09-04 14:17:01",
+  "max_vault_entries": null,
+  "max_attachments": null
 }]
 ```
+
+`last_seen` vient de `account_ip_history` et **non** de `audit_logs` — précisément parce que cette
+table survit à la purge à 10 jours. Sur le journal, un compte dormant depuis huit mois et un compte
+inactif depuis onze jours seraient indiscernables (« aucune trace » dans les deux cas), alors que
+c'est justement la distinction recherchée. `null` = jamais connecté, un état à part entière : une
+adresse réservée mais jamais utilisée peut signaler quelqu'un qui squatte celle d'un autre.
+
+`max_vault_entries` / `max_attachments` : `null` signifie « plafond global du serveur », distinct
+d'un `0` qui interdit réellement tout nouvel ajout. Voir `PUT /admin/users/{email}/quotas`.
 `is_admin` : voir la note de terminologie en tête de cette section — vrai UNIQUEMENT sur
 la ligne du compte `ADMIN_EMAIL` (l'"Admin"), jamais sur un simple "Modérateur".
 
@@ -1694,6 +1706,101 @@ local à chaque appareil. Exposé en lecture via `preferred_theme` sur `GET /me`
 joignable.
 
 **Réponse** : `200 OK { "status": "ok" }`, ou `503 Service Unavailable { "status": "db_unreachable" }`.
+
+### `POST /admin/vacuum`
+
+*Authentification requise, réservé à l'Admin (`ADMIN_EMAIL`).* Compacte la base et renvoie ce que
+l'opération a rendu au disque.
+
+**Aucune donnée n'est perdue** : `VACUUM` ne supprime rien, il réorganise. Ce qu'il rend est
+l'espace déjà libéré par des suppressions passées, que SQLite conservait pour ses prochaines
+écritures (voir `reclaimable_bytes` dans `GET /admin/server-health`).
+
+Deux conséquences à connaître avant de l'appeler :
+- SQLite réécrit **intégralement** la base dans un fichier temporaire avant de la remplacer : il
+  faut temporairement de la place pour une seconde copie. Sur un disque déjà tendu — la situation
+  même qui pousse à compacter — l'opération peut échouer faute d'espace, d'où l'affichage de
+  l'espace libre juste à côté du bouton dans le client ;
+- l'opération prend un **verrou exclusif** : les écritures attendent. Quelques secondes sur une
+  base familiale de quelques centaines de Mo.
+
+**Réponse** : `200 OK` :
+```json
+{ "before_bytes": 8388608, "after_bytes": 6291456, "freed_bytes": 2097152 }
+```
+`freed_bytes` est **signé** : un VACUUM sur une base déjà compacte peut l'agrandir très légèrement
+(réorganisation des pages). Renvoyer un négatif est honnête ; le forcer à `0` masquerait le fait
+qu'il n'y avait rien à gagner.
+
+**Erreurs** : `403` si l'appelant n'est pas l'Admin.
+**Audit** : `DATABASE_VACUUMED`.
+
+### `POST /admin/test-email`
+
+*Authentification requise, réservé à l'Admin (`ADMIN_EMAIL`).* Envoie un email de test pour
+vérifier la configuration SMTP.
+
+Existe parce qu'un SMTP cassé ne se découvre autrement **qu'au pire moment** : quand quelqu'un a
+besoin d'une réinitialisation de mot de passe ou d'un code de connexion, et que rien n'arrive.
+Même piège que la sauvegarde silencieuse — ça casse sans bruit.
+
+**L'adresse de destination n'est pas un paramètre** : le message part toujours vers l'adresse de
+l'Admin authentifié. Une route capable d'expédier du courrier vers une adresse arbitraire serait un
+relais ouvert pour qui volerait ce compte, en plus de consommer le quota SMTP du propriétaire.
+
+**Réponse** : `200 OK`, corps vide. Une erreur SMTP remonte telle quelle — c'est le but.
+**Erreurs** : `403` si l'appelant n'est pas l'Admin.
+**Audit** : `TEST_EMAIL_SENT`.
+
+### `PUT /admin/users/{email}/quotas`
+
+*Authentification requise, réservé à l'Admin (`ADMIN_EMAIL`).* Règle les plafonds d'UN compte, en
+surcharge des constantes globales de `handlers/vault.rs` (5000 entrées, 50 pièces jointes).
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `max_vault_entries` | integer ou null | oui |
+| `max_attachments` | integer ou null | oui |
+
+`null` remet le compte sur le plafond global ; `0` interdit réellement tout nouvel ajout. Les deux
+sont légitimes et **distincts** : le premier dit « comme tout le monde », le second gèle un compte
+sans le suspendre.
+
+Les quotas ne s'appliquent qu'aux **ajouts**. Abaisser un quota sous ce qu'un compte possède déjà
+ne supprime rien : il conserve ses entrées et ne peut plus en créer. Supprimer les données de
+quelqu'un parce qu'un chiffre a bougé dans un écran d'administration serait indéfendable.
+
+Le plafond est relu à chaque vérification, jamais mis en cache : un quota abaissé prend effet tout
+de suite, sans attendre la reconnexion du compte visé.
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `400` quota négatif. `403` appelant autre que l'Admin. `404` email inconnu.
+**Audit** : `QUOTAS_UPDATED`.
+
+### `GET /audit/export.csv`
+
+*Authentification requise, modérateur.* Exporte le journal d'audit complet en CSV.
+
+Le journal est purgé à 10 jours (voir `AUDIT_LOG_RETENTION_DAYS`) : sans moyen de l'emporter, tout
+ce qui dépasse cette fenêtre est perdu pour de bon. Cette route permet d'en garder une trace hors
+du serveur, et de l'analyser dans un tableur plutôt qu'à travers un écran paginé.
+
+Même porte que `GET /audit` : ce sont exactement les mêmes données dans un autre emballage, les
+réserver ici tout en les laissant lisibles là ne protégerait rien.
+
+Exporte **tout** le journal, sans la limite de 100 lignes de `GET /audit` : un export tronqué serait
+pire qu'inutile, on croirait tenir l'historique complet.
+
+**Réponse** : `200 OK`, `text/csv; charset=utf-8`, en pièce jointe (`journal-audit.csv`). Colonnes :
+`date,compte,action,adresse_ip,navigateur`.
+
+Les champs sont échappés selon la RFC 4180. Ce n'est pas une précaution théorique : un User-Agent
+contient virgules et guillemets, et sans échappement une seule virgule décale toutes les colonnes
+de la ligne — un tableur ouvrirait le fichier **sans rien signaler**, donnant une analyse fausse
+plutôt qu'une erreur visible.
+
+**Erreurs** : `403` si l'appelant n'est pas modérateur.
+**Audit** : `AUDIT_LOG_EXPORTED` — exporter le journal est lui-même journalisé.
 
 ### `GET /admin/server-health`
 

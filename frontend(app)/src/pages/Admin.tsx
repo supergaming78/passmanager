@@ -180,6 +180,87 @@ function UsersSection() {
   /** Suspend ou réactive un compte. Marche intermédiaire entre "ne rien faire" et la suppression
    * définitive, qui cascade sur tout le coffre et ne se rattrape pas — ici les données sont
    * conservées, et la suspension coupe immédiatement les sessions en cours (voir le backend). */
+  /** Compacte la base. Confirmation explicite : l'opération prend un verrou exclusif (les
+   * écritures attendent) et réécrit tout le fichier, donc demande temporairement de la place. */
+  async function handleVacuum() {
+    if (!confirm("Compacter la base ? Les écritures sont brièvement suspendues, et l'opération a besoin de place pour une copie temporaire. Aucune donnée n'est supprimée.")) return;
+    setError(null);
+    try {
+      const res = await authorizedRequest((token) => api.vacuumDatabase(token));
+      alert(
+        res.freed_bytes > 0
+          ? `Base compactée : ${formatBytes(res.freed_bytes)} rendus au disque (${formatBytes(res.before_bytes)} → ${formatBytes(res.after_bytes)}).`
+          : "Base déjà compacte : il n'y avait rien à récupérer.",
+      );
+      setHealth(await authorizedRequest((token) => api.getServerHealth(token)));
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }
+
+  /** Envoie un email de test à SA PROPRE adresse — jamais à une adresse saisie : une route
+   * capable d'expédier du courrier n'importe où serait un relais ouvert si le compte était volé. */
+  async function handleTestEmail() {
+    setError(null);
+    try {
+      await authorizedRequest((token) => api.sendTestEmail(token));
+      alert("Email de test envoyé à ton adresse. S'il n'arrive pas d'ici quelques minutes (pense aux indésirables), la configuration SMTP du serveur est en cause — et c'est elle qui envoie aussi les codes de connexion et les réinitialisations.");
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }
+
+  /** Règle les quotas d'un compte. Une saisie vide vaut « plafond global », ce qui est différent
+   * de 0 — d'où la distinction explicite plutôt qu'une conversion silencieuse. */
+  async function handleEditQuotas(user: AdminUserView) {
+    const lire = (label: string, actuel: number | null) => {
+      const saisie = window.prompt(
+        `${label} pour ${user.email}\n\nLaisse VIDE pour appliquer le plafond global du serveur.\nMets 0 pour interdire tout nouvel ajout.`,
+        actuel === null ? "" : String(actuel),
+      );
+      if (saisie === null) return undefined; // annulé
+      const nettoye = saisie.trim();
+      if (nettoye === "") return null;
+      const n = Number(nettoye);
+      return Number.isInteger(n) && n >= 0 ? n : undefined;
+    };
+
+    const entrees = lire("Nombre maximum d'entrées", user.max_vault_entries);
+    if (entrees === undefined) return;
+    const pieces = lire("Nombre maximum de pièces jointes", user.max_attachments);
+    if (pieces === undefined) return;
+
+    setBusyEmail(user.email);
+    setError(null);
+    try {
+      await authorizedRequest((token) =>
+        api.updateQuotas(token, user.email, { max_vault_entries: entrees, max_attachments: pieces }),
+      );
+      await load();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setBusyEmail(null);
+    }
+  }
+
+  /** Télécharge le journal d'audit en CSV. Passe par l'API authentifiée puis crée un objet local :
+   * un simple lien href ne porterait pas le jeton d'accès. */
+  async function handleExportAudit() {
+    setError(null);
+    try {
+      const csv = await authorizedRequest((token) => api.exportAuditLogsCsv(token));
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+      const lien = document.createElement("a");
+      lien.href = url;
+      lien.download = `journal-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+      lien.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }
+
   async function handleToggleHealth() {
     if (healthOpen) {
       setHealthOpen(false);
@@ -304,6 +385,17 @@ function UsersSection() {
         >
           {ipHistoryFor === user.email ? "Masquer les IP" : "Voir les IP"}
         </button>
+        {isAdmin && (
+          <button
+            type="button"
+            disabled={isBusy}
+            onClick={() => void handleEditQuotas(user)}
+            title="Limiter le nombre d'entrées et de pièces jointes de ce compte"
+            className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            Quotas
+          </button>
+        )}
         {canActOnTarget && (
           <button
             type="button"
@@ -480,6 +572,22 @@ function UsersSection() {
           <div className="flex gap-2">
             <button
               type="button"
+              onClick={() => void handleTestEmail()}
+              title="Envoie un email de test à ta propre adresse"
+              className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              Tester l'email
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleExportAudit()}
+              title="Télécharge le journal d'audit complet en CSV"
+              className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              Exporter le journal
+            </button>
+            <button
+              type="button"
               onClick={() => void handleToggleHealth()}
               className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
             >
@@ -548,11 +656,20 @@ function UsersSection() {
         </div>
 
         {database.reclaimable_bytes > 5 * 1024 * 1024 && (
-          <p className="mt-2 text-neutral-400">
-            {formatBytes(database.reclaimable_bytes)} sont alloués mais inutilisés dans la base : de
-            la place libérée par des suppressions, que SQLite garde pour ses prochaines écritures.
-            Un VACUUM la rendrait au disque — inutile tant qu'il reste de la place.
-          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <p className="flex-1 text-neutral-400">
+              {formatBytes(database.reclaimable_bytes)} sont alloués mais inutilisés dans la base :
+              de la place libérée par des suppressions, que SQLite garde pour ses prochaines
+              écritures. Compacter la rend au disque — inutile tant qu'il reste de la place.
+            </p>
+            <button
+              type="button"
+              onClick={() => void handleVacuum()}
+              className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              Compacter la base
+            </button>
+          </div>
         )}
       </div>
     );
@@ -761,6 +878,21 @@ function UsersSection() {
     );
   }
 
+  /** Décrit l'inactivité d'un compte, ou rien s'il est actif.
+   *
+   * Trois états à ne pas confondre : jamais connecté (une adresse réservée mais jamais utilisée —
+   * possiblement quelqu'un qui squatte l'adresse d'un autre), dormant depuis longtemps, et actif.
+   * Le seuil est à 90 jours : en dessous, une absence est banale (vacances, appareil de secours).
+   *
+   * S'appuie sur `last_seen`, tiré de l'historique IP qui SURVIT à la purge du journal — sinon
+   * tout compte inactif depuis plus de dix jours paraîtrait n'avoir jamais existé. */
+  function describeDormancy(user: AdminUserView) {
+    if (user.last_seen === null) return "jamais connecté";
+    const jours = Math.floor((Date.now() - new Date(`${user.last_seen.replace(" ", "T")}Z`).getTime()) / 86400000);
+    if (Number.isNaN(jours) || jours < 90) return null;
+    return jours >= 365 ? `inactif depuis ${Math.floor(jours / 365)} an(s)` : `inactif depuis ${Math.floor(jours / 30)} mois`;
+  }
+
   /** Badges "Admin"/"Modérateur"/"(toi)" — communs aux deux dispositions, même raisonnement que
    * renderUserActions ci-dessus. */
   function renderUserBadges(user: AdminUserView, isSelf: boolean) {
@@ -771,6 +903,16 @@ function UsersSection() {
         )}
         {user.is_moderator && !user.is_admin && (
           <span className="ml-2 rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">Modérateur</span>
+        )}
+        {describeDormancy(user) && (
+          <span className="ml-2 rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400">
+            {describeDormancy(user)}
+          </span>
+        )}
+        {(user.max_vault_entries !== null || user.max_attachments !== null) && (
+          <span className="ml-2 rounded-full bg-sky-100 px-2 py-0.5 text-xs text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+            quota
+          </span>
         )}
         {user.is_suspended && (
           <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-400">

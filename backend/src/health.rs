@@ -152,7 +152,9 @@ async fn scalar(state: &Arc<AppState>, sql: &'static str) -> i64 {
 }
 
 /// Extrait le chemin de fichier d'une URL SQLite (`sqlite:data/vault.db?mode=rwc`).
-fn database_path(url: &str) -> PathBuf {
+///
+/// Publique car `handlers::admin::vacuum_database` mesure le fichier avant/après compactage.
+pub fn database_path(url: &str) -> PathBuf {
     let sans_schema = url.strip_prefix("sqlite://").or_else(|| url.strip_prefix("sqlite:")).unwrap_or(url);
     let sans_options = sans_schema.split('?').next().unwrap_or(sans_schema);
     PathBuf::from(sans_options)
@@ -166,7 +168,7 @@ fn with_suffix(base: &Path, suffixe: &str) -> PathBuf {
 
 /// Taille d'un fichier, ou 0 s'il n'existe pas. Un WAL absent n'est pas une anomalie : SQLite le
 /// supprime au repli.
-fn file_size(chemin: &Path) -> u64 {
+pub fn file_size(chemin: &Path) -> u64 {
     std::fs::metadata(chemin).map(|m| m.len()).unwrap_or(0)
 }
 
