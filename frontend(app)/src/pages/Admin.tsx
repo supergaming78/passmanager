@@ -33,6 +33,10 @@ function UsersSection() {
   // base, inutile de les calculer pour quelqu'un qui vient juste gérer un compte.
   const [health, setHealth] = useState<ServerHealth | null>(null);
   const [healthOpen, setHealthOpen] = useState(false);
+  // Action d'administration en cours. Sans cet état, un bouton dont l'action prend plusieurs
+  // secondes (un envoi SMTP, un VACUUM) paraît mort et invite à re-cliquer — ce qui a réellement
+  // produit quatre emails de test pour un seul clic voulu.
+  const [busyAction, setBusyAction] = useState<"vacuum" | "email" | "export" | null>(null);
   const [ipHistoryFor, setIpHistoryFor] = useState<string | null>(null);
   const [ipHistory, setIpHistory] = useState<UserIpHistoryResponse | null>(null);
   // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
@@ -185,6 +189,7 @@ function UsersSection() {
   async function handleVacuum() {
     if (!confirm("Compacter la base ? Les écritures sont brièvement suspendues, et l'opération a besoin de place pour une copie temporaire. Aucune donnée n'est supprimée.")) return;
     setError(null);
+    setBusyAction("vacuum");
     try {
       const res = await authorizedRequest((token) => api.vacuumDatabase(token));
       alert(
@@ -195,6 +200,8 @@ function UsersSection() {
       setHealth(await authorizedRequest((token) => api.getServerHealth(token)));
     } catch (err) {
       setError(getErrorMessage(err));
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -202,11 +209,14 @@ function UsersSection() {
    * capable d'expédier du courrier n'importe où serait un relais ouvert si le compte était volé. */
   async function handleTestEmail() {
     setError(null);
+    setBusyAction("email");
     try {
       await authorizedRequest((token) => api.sendTestEmail(token));
       alert("Email de test envoyé à ton adresse. S'il n'arrive pas d'ici quelques minutes (pense aux indésirables), la configuration SMTP du serveur est en cause — et c'est elle qui envoie aussi les codes de connexion et les réinitialisations.");
     } catch (err) {
       setError(getErrorMessage(err));
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -248,6 +258,7 @@ function UsersSection() {
    * un simple lien href ne porterait pas le jeton d'accès. */
   async function handleExportAudit() {
     setError(null);
+    setBusyAction("export");
     try {
       const csv = await authorizedRequest((token) => api.exportAuditLogsCsv(token));
       const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
@@ -258,6 +269,8 @@ function UsersSection() {
       URL.revokeObjectURL(url);
     } catch (err) {
       setError(getErrorMessage(err));
+    } finally {
+      setBusyAction(null);
     }
   }
 
@@ -541,6 +554,11 @@ function UsersSection() {
    * plein, et la sauvegarde qui a cessé sans rien dire. Le reste est présenté sans couleur : un
    * écran où tout clignote n'apprend plus rien à personne. */
   function renderHealthPanel() {
+    // `disabled:` explicite : un bouton grisé DOIT se voir, sinon on ne comprend pas pourquoi le
+    // clic ne fait rien et on insiste.
+    const actionButtonClass =
+      "rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800";
+
     if (health === null) {
       return (
         <div className="mb-3 rounded-xl border border-neutral-200 bg-white p-3 text-xs text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900">
@@ -572,19 +590,21 @@ function UsersSection() {
           <div className="flex gap-2">
             <button
               type="button"
+              disabled={busyAction !== null}
               onClick={() => void handleTestEmail()}
               title="Envoie un email de test à ta propre adresse"
-              className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              className={actionButtonClass}
             >
-              Tester l'email
+              {busyAction === "email" ? "Envoi en cours…" : "Tester l'email"}
             </button>
             <button
               type="button"
+              disabled={busyAction !== null}
               onClick={() => void handleExportAudit()}
               title="Télécharge le journal d'audit complet en CSV"
-              className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              className={actionButtonClass}
             >
-              Exporter le journal
+              {busyAction === "export" ? "Export en cours…" : "Exporter le journal"}
             </button>
             <button
               type="button"
@@ -664,10 +684,11 @@ function UsersSection() {
             </p>
             <button
               type="button"
+              disabled={busyAction !== null}
               onClick={() => void handleVacuum()}
-              className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              className={actionButtonClass}
             >
-              Compacter la base
+              {busyAction === "vacuum" ? "Compactage en cours…" : "Compacter la base"}
             </button>
           </div>
         )}

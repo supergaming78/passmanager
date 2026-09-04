@@ -1748,9 +1748,16 @@ Même piège que la sauvegarde silencieuse — ça casse sans bruit.
 l'Admin authentifié. Une route capable d'expédier du courrier vers une adresse arbitraire serait un
 relais ouvert pour qui volerait ce compte, en plus de consommer le quota SMTP du propriétaire.
 
+**Délai minimal de 60 secondes entre deux envois.** Constaté en usage réel : un clic voulu, quatre
+emails reçus — l'envoi SMTP prend plusieurs secondes, le bouton ne montrait pas qu'il travaillait,
+l'utilisateur a recliqué. Le client affiche désormais son état, mais s'en remettre à lui ne suffit
+pas : chaque envoi consomme le quota SMTP du propriétaire et pèse sur la réputation de son domaine,
+et un client buggé, rechargé ou remplacé n'a aucune obligation d'être prudent. Le délai est court
+pour ne pas gêner le cas d'usage même de la route — retester après avoir corrigé un réglage SMTP.
+
 **Réponse** : `200 OK`, corps vide. Une erreur SMTP remonte telle quelle — c'est le but.
-**Erreurs** : `403` si l'appelant n'est pas l'Admin.
-**Audit** : `TEST_EMAIL_SENT`.
+**Erreurs** : `400` si un test a déjà été envoyé dans la dernière minute. `403` si l'appelant n'est pas l'Admin.
+**Audit** : `TEST_EMAIL_SENT` — c'est cette trace qui sert aussi de verrou pour le délai.
 
 ### `PUT /admin/users/{email}/quotas`
 

@@ -860,6 +860,30 @@ pub async fn send_test_email(
         return Err(AppError::Forbidden);
     }
 
+    // DÉLAI MINIMAL ENTRE DEUX TESTS.
+    //
+    // Signalé en usage réel : un clic sur le bouton, quatre emails reçus. L'envoi SMTP prend
+    // plusieurs secondes, le bouton ne montrait rien, l'utilisateur a cliqué à nouveau. Le client
+    // affiche désormais son état — mais compter là-dessus ne suffit pas : chaque envoi consomme le
+    // quota SMTP du propriétaire et pèse sur la réputation de son domaine, et un client buggé,
+    // rechargé ou remplacé n'a aucune obligation d'être prudent.
+    //
+    // 60 secondes : assez pour absorber une rafale de clics, assez court pour retester après avoir
+    // corrigé un réglage SMTP — le cas d'usage même de cette route.
+    const DELAI_ENTRE_TESTS_SECONDES: i64 = 60;
+    let recent: Option<String> = sqlx::query_scalar(
+        "SELECT created_at FROM audit_logs \
+          WHERE action = 'TEST_EMAIL_SENT' AND created_at > DATETIME('now', '-60 seconds') \
+          LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await?;
+    if recent.is_some() {
+        return Err(AppError::ValidationError(format!(
+            "Un email de test vient d'être envoyé. Attends {DELAI_ENTRE_TESTS_SECONDES} secondes avant de recommencer — vérifie d'abord ta boîte, y compris les indésirables."
+        )));
+    }
+
     crate::mailer::send_security_alert(
         &user.email,
         "Ceci est un email de test envoyé depuis le panneau Administration de ton gestionnaire de \
@@ -1983,7 +2007,54 @@ mod tests {
         assert!(matches!(r, Err(AppError::NotFound)));
     }
 
-    /// VACUUM : réservé à l'Admin, et doit réussir en renvoyant des tailles cohérentes.
+/// Un clic répété ne doit pas produire un email par clic : chaque envoi consomme le quota SMTP du
+    /// propriétaire et pèse sur la réputation de son domaine. Cas réel — un clic voulu, quatre
+    /// emails reçus, parce que le bouton ne montrait pas qu'il travaillait.
+    ///
+    /// Le test ne peut pas envoyer réellement (pas de SMTP en test) : il vérifie la garde EN AMONT,
+    /// c'est-à-dire qu'un envoi récent déjà tracé bloque le suivant avant toute tentative.
+    #[tokio::test]
+    async fn test_test_email_refuses_a_second_send_within_the_cooldown() {
+        let state = state_with_admin("patron@example.com").await;
+        register_test_user(&state, "patron@example.com", true).await;
+
+        // Simule un envoi qui vient d'avoir lieu, tel que le handler le trace.
+        state.log_audit("patron@example.com", "TEST_EMAIL_SENT", "127.0.0.1".to_string(), None).await;
+
+        let refus = send_test_email(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            admin_user("patron@example.com"),
+        ).await;
+        assert!(
+            matches!(refus, Err(AppError::ValidationError(_))),
+            "un second envoi dans la minute doit être refusé AVANT d'atteindre le SMTP"
+        );
+    }
+
+    /// La garde ne doit pas être permanente : le cas d'usage même de cette route est de retester
+    /// après avoir corrigé un réglage SMTP.
+    #[tokio::test]
+    async fn test_test_email_cooldown_expires() {
+        let state = state_with_admin("patron@example.com").await;
+        register_test_user(&state, "patron@example.com", true).await;
+        state.log_audit("patron@example.com", "TEST_EMAIL_SENT", "127.0.0.1".to_string(), None).await;
+        // Vieillit la trace au-delà du délai.
+        sqlx::query("UPDATE audit_logs SET created_at = DATETIME('now', '-5 minutes') WHERE action = 'TEST_EMAIL_SENT'")
+            .execute(&state.db).await.unwrap();
+
+        let r = send_test_email(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            admin_user("patron@example.com"),
+        ).await;
+        // Sans SMTP joignable en test, l'envoi échoue — mais PAS avec une erreur de validation :
+        // c'est ce qui distingue « bloqué par la garde » de « la garde a laissé passer ».
+        assert!(
+            !matches!(r, Err(AppError::ValidationError(_))),
+            "passé le délai, la garde ne doit plus bloquer"
+        );
+    }
+
+        /// VACUUM : réservé à l'Admin, et doit réussir en renvoyant des tailles cohérentes.
     #[tokio::test]
     async fn test_vacuum_is_admin_only_and_reports_sizes() {
         let state = state_with_admin("patron@example.com").await;
