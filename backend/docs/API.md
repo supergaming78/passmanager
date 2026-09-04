@@ -437,6 +437,13 @@ coffre — le serveur ne reçoit que le résultat.
 
 **Réponse** : `204 No Content`. Une alerte de sécurité est envoyée par email au titulaire.
 
+⚠️ **Le kit est automatiquement invalidé** dès que la clé du coffre change : changement volontaire
+de mot de passe (`PUT /auth/password`), réinitialisation (`POST /auth/reset-password`) et
+récupération elle-même. Il scelle en effet l'ANCIENNE clé et ne déchiffrerait plus rien — le
+laisser en place donnerait un kit silencieusement inopérant, pire qu'aucun kit puisqu'on se croirait
+couvert. Ni le serveur ni le client ne peuvent le re-sceller (le code n'est affiché qu'une fois et
+n'est stocké nulle part) : **il faut en générer un nouveau après chaque changement de mot de passe**.
+
 ### `DELETE /auth/recovery-kit`
 
 *Authentification requise.* Supprime le kit ; le code imprimé devient inopérant (feuille égarée,

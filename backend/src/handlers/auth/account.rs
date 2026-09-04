@@ -234,6 +234,18 @@ pub async fn update_password(
         VaultRepository::reencrypt_attachment(&mut tx, &user.email, attachment).await?;
     }
 
+    // Le kit de récupération scelle l'ANCIENNE clé du coffre, dérivée du mot de passe qu'on vient
+    // de remplacer : il ne déchiffrerait plus rien. Le laisser en place donnerait un kit
+    // SILENCIEUSEMENT INOPÉRANT — pire qu'aucun kit, puisque l'utilisateur se croirait couvert et
+    // ne le découvrirait qu'au pire moment. Le serveur ne peut pas le re-sceller lui-même (il n'a
+    // jamais vu le code), et le client non plus (le code n'est affiché qu'une fois, jamais stocké)
+    // : l'invalider et laisser l'utilisateur en régénérer un est la seule issue correcte.
+    // GET /me repassera à has_recovery_kit=false, ce que l'écran Réglages reflète aussitôt.
+    sqlx::query("UPDATE users SET recovery_sealed_vault_key = NULL WHERE email = ?")
+        .bind(&user.email)
+        .execute(&mut *tx)
+        .await?;
+
     // MESURE DE SÉCURITÉ : Invalidation immédiate de TOUTES les sessions actives (déconnexion globale)
     sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?")
         .bind(&user.email)
@@ -502,6 +514,13 @@ pub async fn confirm_password_reset(
     // filtre `purpose` ici (contrairement au reste de cette fonction) : une réinitialisation de
     // mot de passe est un événement majeur, on purge TOUS les codes en attente pour cet email,
     // même ceux d'un autre flux (2FA, vérification d'email) qui n'aurait plus de sens après ça.
+    // Même raison que dans update_password (voir son commentaire) — et ici le coffre lui-même
+    // vient d'être vidé : le kit scellerait la clé d'un contenu qui n'existe plus.
+    sqlx::query("UPDATE users SET recovery_sealed_vault_key = NULL WHERE email = ?")
+        .bind(&email)
+        .execute(&mut *tx)
+        .await?;
+
     sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?").bind(&email).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM tfa_codes WHERE email = ?").bind(&email).execute(&mut *tx).await?;
 
@@ -1916,6 +1935,75 @@ mod tests {
             .await.expect("la suppression doit réussir");
         let me = read_json_body(get_me(State(state.clone()), user()).await.unwrap().into_response()).await;
         assert_eq!(me["has_recovery_kit"], false, "après suppression, plus de kit");
+    }
+
+
+    /// RÉGRESSION : un changement VOLONTAIRE de mot de passe doit invalider le kit de récupération.
+    /// Il scelle l'ANCIENNE clé du coffre — le laisser en place donnerait un kit silencieusement
+    /// inopérant, que l'utilisateur ne découvrirait qu'au moment où il en aurait besoin.
+    #[tokio::test]
+    async fn test_update_password_invalidates_recovery_kit() {
+        let state = build_test_state().await;
+        let email = "kit-after-change@example.com";
+        register_test_user(&state, email, "ancien_mot_de_passe_123").await;
+        sqlx::query("UPDATE users SET recovery_sealed_vault_key = ? WHERE email = ?")
+            .bind("blob-scelle-ancienne-cle")
+            .bind(email)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        update_password(
+            State(state.clone()),
+            AuthUser { email: email.to_string(), is_moderator: false },
+            Json(ChangeMasterPasswordPayload {
+                old_master_password_hash: "ancien_mot_de_passe_123".to_string(),
+                new_master_password_hash: "nouveau_mot_de_passe_789".to_string(),
+                reencrypted_entries: vec![],
+                reencrypted_history: vec![],
+                reencrypted_attachments: vec![],
+            }),
+        )
+        .await
+        .expect("le changement de mot de passe doit réussir");
+
+        let kit: Option<String> = sqlx::query_scalar("SELECT recovery_sealed_vault_key FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert!(
+            kit.is_none(),
+            "le kit doit être invalidé : il scelle une clé qui ne déchiffre plus rien"
+        );
+    }
+
+    /// Même exigence pour la réinitialisation — et ici le coffre lui-même vient d'être vidé, donc
+    /// le kit scellerait la clé d'un contenu qui n'existe plus.
+    #[tokio::test]
+    async fn test_password_reset_invalidates_recovery_kit() {
+        let state = build_test_state().await;
+        let email = "kit-after-reset@example.com";
+        register_test_user(&state, email, "ancien_mot_de_passe_123").await;
+        let code = setup_recovery(&state, email, "blob-scelle-ancienne-cle").await;
+
+        confirm_password_reset(
+            State(state.clone()),
+            Json(ConfirmResetPayload {
+                email: email.to_string(),
+                code,
+                new_master_password_hash: "nouveau_mot_de_passe_789".to_string(),
+            }),
+        )
+        .await
+        .expect("la réinitialisation doit réussir");
+
+        let kit: Option<String> = sqlx::query_scalar("SELECT recovery_sealed_vault_key FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert!(kit.is_none(), "le kit doit être invalidé après une réinitialisation");
     }
 
 }

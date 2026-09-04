@@ -142,6 +142,13 @@ export default function RecoveryKitSettings() {
         </p>
       )}
 
+      {!hasKit && !generatedCode && (
+        <p className="mt-2 text-xs text-neutral-500">
+          À regénérer après chaque changement de mot de passe maître : le kit scelle la clé du
+          coffre, qui change avec le mot de passe.
+        </p>
+      )}
+
       {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
     </section>
   );

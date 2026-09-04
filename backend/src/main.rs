@@ -650,8 +650,14 @@ fn build_router(state: Arc<AppState>) -> Router {
                 .route_layer(GovernorLayer::new(sensitive_governor.clone())))
             // `/recovery/data` est NON authentifiée et vérifie un code à 6 chiffres : elle relève
             // du même palier strict que /login et /reset-password (brute-force de code).
+            //
+            // Bornée en concurrence pour la même raison que /auth/password, mais dans l'autre sens
+            // : ce n'est pas la REQUÊTE qui est volumineuse ici, c'est la RÉPONSE — elle charge en
+            // mémoire tout le coffre chiffré, pièces jointes comprises (voir get_recovery_data).
+            // DefaultBodyLimit ne borne que les corps entrants, il ne protège donc de rien ici.
             .merge(Router::new()
                 .route("/recovery/data", post(handlers::get_recovery_data))
+                .route_layer(ConcurrencyLimitLayer::new(HEAVY_BODY_MAX_CONCURRENCY))
                 .route_layer(GovernorLayer::new(sensitive_governor.clone())))
             // Gestion du kit par son titulaire (authentifié, coffre déverrouillé).
             .route("/recovery-kit", put(handlers::save_recovery_kit).delete(handlers::delete_recovery_kit))
