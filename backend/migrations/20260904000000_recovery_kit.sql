@@ -1,0 +1,21 @@
+-- KIT DE RECUPERATION : permet de retrouver son coffre apres un mot de passe maitre oublie.
+--
+-- Contexte : la cle qui chiffre le coffre est DERIVEE du mot de passe maitre (voir
+-- crypto-core/src/crypto.rs::derive_keys). L'oublier condamnait donc le coffre —
+-- POST /auth/reset-password ne pouvait que le VIDER integralement, faute de la moindre cle pour
+-- re-chiffrer quoi que ce soit (voir docs/API.md, section reset-password).
+--
+-- Cette colonne stocke la cle du coffre SCELLEE avec un code de recuperation aleatoire, que
+-- l'utilisateur imprime et range physiquement (voir crypto-core/src/recovery.rs). Le serveur ne
+-- voit JAMAIS ce code : il ne detient qu'un blob qu'il ne peut pas ouvrir. Le modele
+-- Zero-Knowledge est donc intact — et si le code est perdu EN MEME TEMPS que le mot de passe
+-- maitre, le coffre reste definitivement irrecuperable. Ce n'est pas une porte derobee.
+--
+-- NULL = aucun kit configure pour ce compte (etat par defaut, y compris pour tous les comptes
+-- existants au moment de cette migration). La fonctionnalite est donc opt-in : personne ne se
+-- retrouve avec un kit qu'il n'a pas demande.
+--
+-- Le blob embarque son propre sel Argon2id et son propre nonce AES-GCM (voir
+-- crypto::seal_with_password) : rien d'autre n'est a stocker a cote, d'ou une seule colonne.
+
+ALTER TABLE users ADD COLUMN recovery_sealed_vault_key TEXT;

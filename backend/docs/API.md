@@ -126,6 +126,7 @@ Crée un compte. **Aucune authentification requise.**
 **Erreurs** : `400` validation, `409` email déjà utilisé.
 **Effet de bord** : envoie un code de vérification à 6 chiffres par email (expire en 30 min).
 
+
 ### `POST /auth/verify-email`
 
 Confirme le code reçu à l'inscription.
@@ -334,9 +335,13 @@ données liées (coffre, appareils de confiance, logs d'audit...).
   "can_change_email_via_extension": false,
   "can_choose_server_in_settings": false,
   "is_admin": false,
-  "preferred_theme": "dark"
+  "preferred_theme": "dark",
+  "has_recovery_kit": false
 }
 ```
+`has_recovery_kit` : indique seulement si un kit de récupération est configuré (voir
+`PUT /auth/recovery-kit`), afin que le client propose « générer un kit » ou « kit déjà en place ».
+Le blob scellé lui-même n'est JAMAIS exposé ici — il ne sort qu'au terme du flux de récupération.
 `is_moderator` : seule source fiable pour qu'un client sache s'il doit afficher une interface
 d'administration — jamais déduit du JWT lui-même (qui ne porte pas ce champ, voir la section
 Authentification plus haut). `max_trusted_devices` : le plafond d'appareils de confiance
@@ -407,6 +412,86 @@ déjà émis.
 ## Endpoints — Coffre-fort (vault)
 
 Toutes les routes ci-dessous nécessitent une authentification.
+
+
+## Kit de récupération
+
+Sans kit, oublier son mot de passe maître **condamne le coffre** : `POST /auth/reset-password`
+ci-dessus ne peut que le vider, faute de la moindre clé pour re-chiffrer quoi que ce soit.
+
+Le kit stocke la clé du coffre **scellée par un code de récupération** que l'utilisateur imprime et
+range physiquement (voir `crypto-core/src/recovery.rs`). Le serveur ne voit jamais ce code : il ne
+détient qu'un blob qu'il ne peut pas ouvrir — le modèle Zero-Knowledge est intact.
+
+⚠️ **Ce n'est pas une porte dérobée.** Si le code est perdu **en même temps** que le mot de passe
+maître, le coffre reste définitivement irrécupérable.
+
+### `PUT /auth/recovery-kit`
+
+*Authentification requise.* Enregistre (ou remplace) le kit. Le client scelle lui-même la clé de son
+coffre — le serveur ne reçoit que le résultat.
+
+| Champ | Type | Requis | Contraintes |
+|---|---|---|---|
+| `sealed_vault_key` | string | oui | 1 à 8192 caractères |
+
+**Réponse** : `204 No Content`. Une alerte de sécurité est envoyée par email au titulaire.
+
+### `DELETE /auth/recovery-kit`
+
+*Authentification requise.* Supprime le kit ; le code imprimé devient inopérant (feuille égarée,
+code peut-être vu par quelqu'un).
+
+**Réponse** : `204 No Content`.
+
+### `POST /auth/recovery/data`
+
+Étape **1** de la récupération. Le code reçu par email (via `POST /auth/forgot-password`) prouve la
+possession de l'adresse, et donne le blob scellé **plus une session** permettant de lire le coffre
+chiffré à re-chiffrer.
+
+Le code n'est **pas consommé** ici : l'étape 2 en a encore besoin pour s'autoriser. Il reste soumis
+au même verrouillage anti-bruteforce que la réinitialisation (5 tentatives).
+
+Délivrer une session n'accorde rien de nouveau : avec ce même code, `POST /auth/reset-password`
+permet déjà de fixer un nouveau mot de passe — donc d'obtenir une session — au prix de la
+destruction du coffre. Et ce que cette session rend lisible reste chiffré de bout en bout : sans le
+code de récupération, ces octets ne servent à rien.
+
+| Champ | Type | Requis |
+|---|---|---|
+| `email` | string | oui |
+| `code` | string | oui |
+| `device_id` | string | oui |
+
+**Réponse** : `200 OK` avec `sealed_vault_key`, `access_token` et `refresh_token`.
+`400` si aucun kit n'est configuré pour ce compte — la réinitialisation classique reste alors
+possible, mais elle videra le coffre.
+
+### `POST /auth/recovery/complete`
+
+Étape **2**. Le client a descellé la clé avec son code, tout re-chiffré avec la clé dérivée du
+**nouveau** mot de passe maître, et renvoie le résultat. Contrairement à `reset-password`, **le
+coffre est conservé**.
+
+Le code est cette fois **consommé**. Toutes les sessions tombent, y compris celle délivrée à
+l'étape 1, et le kit qui vient de servir est **invalidé** : il scelle la clé de l'ancien mot de
+passe et ne déchiffre plus rien. Le laisser en place donnerait un kit silencieusement inopérant —
+pire qu'aucun kit, puisqu'on se croirait couvert. L'utilisateur en régénère un après coup.
+
+| Champ | Type | Requis |
+|---|---|---|
+| `email` | string | oui |
+| `code` | string | oui |
+| `new_master_password_hash` | string | oui |
+| `reencrypted_entries` | tableau | oui |
+| `reencrypted_history` | tableau | oui |
+| `reencrypted_attachments` | tableau | oui |
+
+**Le re-chiffrement doit être exhaustif et sans doublon** — mêmes règles et même vérification par
+ensemble d'identifiants que `PUT /auth/password` (voir sa section). En cas d'écart : `400`, et
+**rien n'est modifié**. Mêmes plafonds de taille (512 Mo) et de concurrence (2 requêtes
+simultanées) que `PUT /auth/password`, pour la même raison.
 
 ### `GET /vault?limit=&offset=`
 

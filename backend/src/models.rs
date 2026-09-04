@@ -491,6 +491,69 @@ pub struct ConfirmResetPayload {
     pub new_master_password_hash: String, // Nouveau hash d'authentification, dérivé côté client
 }
 
+// =========================================================================
+// KIT DE RÉCUPÉRATION (voir handlers/auth/account.rs et la migration 20260904000000)
+// =========================================================================
+
+/// Enregistrement (ou remplacement) du kit — route AUTHENTIFIÉE : seul le titulaire, coffre
+/// déverrouillé, peut sceller sa propre clé. Le serveur ne reçoit que le blob : ni le code de
+/// récupération, ni la clé en clair ne lui parviennent jamais.
+///
+/// Plafond aligné sur les autres blobs chiffrés du projet : une clé de 32 octets scellée (sel 16 +
+/// nonce 12 + chiffré 32 + tag 16, en base64) fait moins de 120 caractères — 8192 laisse une marge
+/// confortable tout en bornant ce qu'un client peut y écrire.
+#[derive(Debug, Deserialize, Validate)]
+pub struct SaveRecoveryKitPayload {
+    #[validate(length(min = 1, max = 8192, message = "Kit de récupération invalide"))]
+    pub sealed_vault_key: String,
+}
+
+/// Première étape de la récupération : prouver la possession de l'email (par le code reçu) pour
+/// obtenir le blob scellé ET une session permettant de LIRE le coffre chiffré à re-chiffrer.
+///
+/// Délivrer une session ici n'accorde rien de nouveau : avec ce même code, /auth/reset-password
+/// permet DÉJÀ de fixer un nouveau mot de passe (donc d'obtenir une session), au prix de la
+/// destruction du coffre. Les données rendues lisibles restent par ailleurs chiffrées de bout en
+/// bout — sans le code de récupération, elles ne servent à rien.
+#[derive(Debug, Deserialize, Validate)]
+pub struct RecoveryDataPayload {
+    #[validate(email(message = "Format d'email invalide"))]
+    pub email: String,
+    pub code: String,
+    /// Identifie l'appareil, comme au login (voir AuthPayload) : la session délivrée ici doit être
+    /// rattachée à un appareil pour rester révocable comme les autres.
+    #[validate(length(min = 1, max = 128, message = "Identifiant d'appareil invalide"))]
+    pub device_id: String,
+}
+
+/// Seconde étape : le client a descellé la clé avec son code, tout re-chiffré avec la clé dérivée
+/// du NOUVEAU mot de passe maître, et renvoie le tout. Même exigence d'exhaustivité que le
+/// changement volontaire (voir ChangeMasterPasswordPayload) — c'est la même vérification par
+/// ensemble d'identifiants qui s'applique côté serveur.
+///
+/// `code` est redemandé, et cette fois CONSOMMÉ : la première étape ne l'a délibérément pas
+/// consommé, sans quoi cette seconde requête n'aurait plus rien pour s'autoriser.
+///
+/// Pas de `Debug` dérivé — volontairement, comme ChangeMasterPasswordPayload : cette structure
+/// porte le coffre ENTIER re-chiffré, elle n'a rien à faire dans un message de log, fût-ce par
+/// accident au détour d'un `{:?}` ajouté un jour pour déboguer.
+#[derive(Deserialize, Validate)]
+pub struct CompleteRecoveryPayload {
+    #[validate(email(message = "Format d'email invalide"))]
+    pub email: String,
+    pub code: String,
+
+    #[validate(
+        length(min = 6, max = 128, message = "Hash d'authentification invalide"),
+        regex(path = *crate::models::RE_PASSWORD)
+    )]
+    pub new_master_password_hash: String,
+
+    pub reencrypted_entries: Vec<ReencryptedVaultEntry>,
+    pub reencrypted_history: Vec<ReencryptedHistoryEntry>,
+    pub reencrypted_attachments: Vec<ReencryptedVaultAttachment>,
+}
+
 /// Données pour confirmer l'email fourni à l'inscription (voir handlers/auth.rs::verify_email()).
 /// Même mécanisme de code à 6 chiffres que VerifyTfaPayload/ConfirmResetPayload, réutilisant la
 /// table `tfa_codes` et son verrouillage anti-bruteforce (MAX_CODE_ATTEMPTS).

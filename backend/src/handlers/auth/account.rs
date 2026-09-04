@@ -7,12 +7,13 @@
 // pour la création de compte, session.rs pour login/2FA/refresh/logout.
 
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{StatusCode, HeaderMap},
     response::IntoResponse,
     Json
 };
 use std::sync::Arc;
+use std::net::SocketAddr;
 use crate::{AppState, crypto, mailer, error::AppError, middleware::AuthUser, repository::VaultRepository, models::*};
 use validator::Validate;
 use chrono::Utc;
@@ -20,7 +21,59 @@ use serde_json::json;
 use tracing::{instrument, warn, info};
 use rand::RngExt;
 use super::{MAX_CODE_ATTEMPTS, PURPOSE_PASSWORD_RESET, RESET_CODE_LIFETIME_MINUTES, is_code_within_cooldown};
-use super::super::common::is_extension_origin;
+use super::super::common::{get_user_agent, is_extension_origin};
+
+/// Vérifie un code de réinitialisation reçu par email : verrouillage après trop d'essais,
+/// comparaison en temps constant, contrôle d'expiration. `consume` supprime le code en cas de
+/// succès.
+///
+/// Extrait de confirm_password_reset() pour être partagé avec la RÉCUPÉRATION, qui se déroule en
+/// DEUX requêtes (obtenir le kit, puis renvoyer le coffre re-chiffré) et doit donc valider le même
+/// code deux fois : la première SANS le consommer — sinon la seconde n'aurait plus rien pour
+/// s'autoriser — la seconde en le consommant. Une seule implémentation pour les trois appels : le
+/// verrouillage anti-bruteforce ne peut pas diverger d'un chemin à l'autre.
+async fn verify_reset_code(state: &AppState, email: &str, code: &str, consume: bool) -> Result<(), AppError> {
+    let tfa: TfaCode = sqlx::query_as("SELECT * FROM tfa_codes WHERE email = ? AND purpose = ?")
+        .bind(email)
+        .bind(PURPOSE_PASSWORD_RESET)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or(AppError::ValidationError("Code invalide ou expiré".to_string()))?;
+
+    if tfa.attempts >= MAX_CODE_ATTEMPTS {
+        sqlx::query("DELETE FROM tfa_codes WHERE email = ? AND purpose = ?")
+            .bind(email)
+            .bind(PURPOSE_PASSWORD_RESET)
+            .execute(&state.db)
+            .await?;
+        warn!("Code de reset verrouillé après trop de tentatives pour {}", email);
+        return Err(AppError::ValidationError("Trop de tentatives, veuillez redemander un code".to_string()));
+    }
+
+    if !crypto::constant_time_eq(code, &tfa.code) {
+        sqlx::query("UPDATE tfa_codes SET attempts = attempts + 1 WHERE email = ? AND purpose = ?")
+            .bind(email)
+            .bind(PURPOSE_PASSWORD_RESET)
+            .execute(&state.db)
+            .await?;
+        return Err(AppError::ValidationError("Code incorrect".to_string()));
+    }
+
+    let expires_at = chrono::NaiveDateTime::parse_from_str(&tfa.expires_at, "%Y-%m-%dT%H:%M:%SZ")
+        .map_err(|_| AppError::Internal("Erreur technique de date".to_string()))?;
+    if Utc::now().naive_utc() > expires_at {
+        return Err(AppError::ValidationError("Le code a expiré".to_string()));
+    }
+
+    if consume {
+        sqlx::query("DELETE FROM tfa_codes WHERE email = ? AND purpose = ?")
+            .bind(email)
+            .bind(PURPOSE_PASSWORD_RESET)
+            .execute(&state.db)
+            .await?;
+    }
+    Ok(())
+}
 
 // --- ROUTE : MISE À JOUR DU MOT DE PASSE (PASSWORD UPDATE) ---
 
@@ -278,8 +331,8 @@ pub async fn update_email(
 /// moyen de connaître son propre plafond actuel avant de le modifier (voir update_device_limit()) —
 /// PUT /devices/limit ne renvoie qu'un 200 vide, jamais la valeur en vigueur.
 pub async fn get_me(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
-    let (max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, preferred_theme): (i64, bool, bool, String) = sqlx::query_as(
-        "SELECT max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, preferred_theme FROM users WHERE email = ?"
+    let (max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, preferred_theme, recovery_kit): (i64, bool, bool, String, Option<String>) = sqlx::query_as(
+        "SELECT max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, preferred_theme, recovery_sealed_vault_key FROM users WHERE email = ?"
     )
         .bind(&user.email)
         .fetch_one(&state.db)
@@ -295,6 +348,10 @@ pub async fn get_me(State(state): State<Arc<AppState>>, user: AuthUser) -> Resul
         // décider d'afficher la section (voir pages/Settings.tsx), is_admin étant déjà exposé
         // séparément juste en dessous.
         "can_choose_server_in_settings": can_choose_server_in_settings,
+        // PRÉSENCE d'un kit de récupération, jamais son contenu : le client n'a besoin que de
+        // savoir s'il doit proposer "générer un kit" ou "kit déjà configuré". Le blob scellé, lui,
+        // ne sort qu'au bout du flux de récupération (voir get_recovery_data).
+        "has_recovery_kit": recovery_kit.is_some(),
         // Retour utilisateur : "que le thème soit appliqué partout" — voir
         // handlers/theme_customization.rs::update_preferred_theme et la migration
         // 20260903070000_users_preferred_theme.sql. Appliqué par le CLIENT à l'établissement de
@@ -407,43 +464,10 @@ pub async fn confirm_password_reset(
     // ligne `users` à mettre à jour.
     let email = payload.email.to_lowercase();
 
-    // 1. Recherche du code de réinitialisation associé
-    let tfa: TfaCode = sqlx::query_as("SELECT * FROM tfa_codes WHERE email = ? AND purpose = ?")
-        .bind(&email)
-        .bind(PURPOSE_PASSWORD_RESET)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(AppError::ValidationError("Code invalide ou expiré".to_string()))?;
-
-    // Verrouillage : trop de tentatives échouées sur ce code -> on le supprime
-    if tfa.attempts >= MAX_CODE_ATTEMPTS {
-        sqlx::query("DELETE FROM tfa_codes WHERE email = ? AND purpose = ?")
-            .bind(&email)
-            .bind(PURPOSE_PASSWORD_RESET)
-            .execute(&state.db)
-            .await?;
-        warn!("Code de reset verrouillé après trop de tentatives pour {}", email);
-        return Err(AppError::ValidationError("Trop de tentatives, veuillez redemander un code".to_string()));
-    }
-
-    // Vérification de la correspondance du code fourni (temps constant : voir crypto::constant_time_eq)
-    if !crypto::constant_time_eq(&payload.code, &tfa.code) {
-        // Tentative échouée : on incrémente le compteur avant de rejeter la requête
-        sqlx::query("UPDATE tfa_codes SET attempts = attempts + 1 WHERE email = ? AND purpose = ?")
-            .bind(&email)
-            .bind(PURPOSE_PASSWORD_RESET)
-            .execute(&state.db)
-            .await?;
-        return Err(AppError::ValidationError("Code incorrect".to_string()));
-    }
-
-    // Vérification de la validité de l'heure
-    let expires_at = chrono::NaiveDateTime::parse_from_str(&tfa.expires_at, "%Y-%m-%dT%H:%M:%SZ")
-        .map_err(|_| AppError::Internal("Erreur technique de date".to_string()))?;
-
-    if Utc::now().naive_utc() > expires_at {
-        return Err(AppError::ValidationError("Le code a expiré".to_string()));
-    }
+    // Vérification du code reçu par email — factorisée (voir verify_reset_code en tête de
+    // fichier), partagée avec le flux de RÉCUPÉRATION. Consommé ici : ce chemin va détruire le
+    // coffre, le code ne doit pas pouvoir resservir.
+    verify_reset_code(&state, &email, &payload.code, true).await?;
 
     // 2. Calcul du hash du nouveau mot de passe maître
     let new_hash = crypto::hash_password(&payload.new_master_password_hash, &state.config.password_pepper)
@@ -485,6 +509,226 @@ pub async fn confirm_password_reset(
 // =========================================================================
 // TESTS
 // =========================================================================
+// =========================================================================
+// KIT DE RÉCUPÉRATION (voir crypto-core/src/recovery.rs et la migration 20260904000000)
+// =========================================================================
+// Sans kit, oublier son mot de passe maître condamne le coffre : confirm_password_reset() ci-dessus
+// ne peut que le VIDER, faute de la moindre clé pour re-chiffrer quoi que ce soit. Le kit stocke la
+// clé du coffre SCELLÉE par un code que seul l'utilisateur détient — le serveur n'en voit jamais
+// que des octets qu'il ne peut pas ouvrir.
+//
+// La récupération se fait en DEUX requêtes, parce que le travail cryptographique a lieu ENTRE les
+// deux, côté client : obtenir le blob + de quoi lire le coffre (get_recovery_data), desceller et
+// tout re-chiffrer localement, puis renvoyer le résultat (complete_recovery).
+
+/// Enregistre (ou remplace) le kit. Route authentifiée : seul le titulaire, coffre déverrouillé,
+/// peut sceller sa propre clé — le serveur ne reçoit que le blob déjà scellé.
+pub async fn save_recovery_kit(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(payload): Json<SaveRecoveryKitPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    payload.validate()?;
+
+    sqlx::query("UPDATE users SET recovery_sealed_vault_key = ? WHERE email = ?")
+        .bind(&payload.sealed_vault_key)
+        .bind(&user.email)
+        .execute(&state.db)
+        .await?;
+
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, "RECOVERY_KIT_CREATED", addr.to_string(), agent).await;
+
+    let _ = mailer::send_security_alert(
+        &user.email,
+        "Un kit de récupération vient d'être généré pour votre coffre. Si vous n'êtes pas à l'origine de cette action, changez immédiatement votre mot de passe maître.",
+        &state.config,
+    ).await;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Supprime le kit. L'ancien code imprimé devient alors inopérant — c'est précisément l'intérêt
+/// (feuille égarée, code peut-être vu par quelqu'un).
+pub async fn delete_recovery_kit(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    sqlx::query("UPDATE users SET recovery_sealed_vault_key = NULL WHERE email = ?")
+        .bind(&user.email)
+        .execute(&state.db)
+        .await?;
+
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, "RECOVERY_KIT_DELETED", addr.to_string(), agent).await;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Étape 1 de la récupération : le code reçu par email prouve la possession de l'adresse, et donne
+/// le blob scellé PLUS une session permettant de lire le coffre chiffré à re-chiffrer.
+///
+/// Le code n'est PAS consommé ici : complete_recovery() en a encore besoin pour s'autoriser. Il
+/// reste soumis au même verrouillage anti-bruteforce (voir verify_reset_code).
+///
+/// Délivrer une session n'accorde rien de nouveau : avec ce même code, confirm_password_reset()
+/// permet déjà de fixer un nouveau mot de passe — donc d'obtenir une session — au prix de la
+/// destruction du coffre. Et ce que cette session rend lisible reste chiffré de bout en bout :
+/// sans le code de récupération, ces octets ne servent à rien.
+pub async fn get_recovery_data(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(payload): Json<RecoveryDataPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    payload.validate()?;
+    let email = payload.email.to_lowercase();
+
+    verify_reset_code(&state, &email, &payload.code, false).await?;
+
+    let sealed: Option<String> = sqlx::query_scalar("SELECT recovery_sealed_vault_key FROM users WHERE email = ?")
+        .bind(&email)
+        .fetch_optional(&state.db)
+        .await?
+        .flatten();
+    let sealed = sealed.ok_or_else(|| {
+        AppError::ValidationError(
+            "Aucun kit de récupération n'est configuré pour ce compte. La réinitialisation du mot de passe reste possible, mais elle videra le coffre.".to_string(),
+        )
+    })?;
+
+    // Session rattachée à l'appareil, exactement comme un login (voir session.rs) : révocable
+    // depuis GET /devices, et de durée courte — la récupération est une opération d'un seul tenant.
+    let access_token = crypto::create_jwt(&email, &state.encoding_key, state.config.access_token_seconds)?;
+    let refresh_token = crypto::create_refresh_token();
+    let expires_at = (Utc::now() + chrono::Duration::seconds(state.config.refresh_token_short_seconds))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ? AND device_id = ?")
+        .bind(&email)
+        .bind(&payload.device_id)
+        .execute(&state.db)
+        .await?;
+    sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, 0)")
+        .bind(crypto::hash_token(&refresh_token))
+        .bind(&email)
+        .bind(&payload.device_id)
+        .bind(expires_at)
+        .execute(&state.db)
+        .await?;
+
+    let agent = get_user_agent(&headers);
+    state.log_audit(&email, "RECOVERY_STARTED", addr.to_string(), agent).await;
+
+    Ok(Json(json!({
+        "sealed_vault_key": sealed,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+    })))
+}
+
+/// Étape 2 : le client a descellé la clé avec son code et tout re-chiffré avec la clé dérivée du
+/// NOUVEAU mot de passe maître. On applique le tout — et le coffre est CONSERVÉ, contrairement à
+/// confirm_password_reset().
+///
+/// Réutilise exactement le même garde-fou que le changement volontaire de mot de passe
+/// (check_reencrypted_ids, dans la transaction, après une écriture qui prend le verrou) : une
+/// récupération qui oublierait une entrée la laisserait chiffrée avec une clé désormais
+/// inaccessible — la perte serait définitive et silencieuse.
+pub async fn complete_recovery(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(payload): Json<CompleteRecoveryPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    payload.validate()?;
+    for entry in &payload.reencrypted_entries {
+        entry.validate()?;
+    }
+    for entry in &payload.reencrypted_history {
+        entry.validate()?;
+    }
+    for attachment in &payload.reencrypted_attachments {
+        attachment.validate()?;
+    }
+
+    let email = payload.email.to_lowercase();
+    // Consommé cette fois : la récupération va aboutir, le code ne doit pas pouvoir resservir.
+    verify_reset_code(&state, &email, &payload.code, true).await?;
+
+    let new_password_hash = crypto::hash_password(&payload.new_master_password_hash, &state.config.password_pepper)
+        .await
+        .map_err(|_| AppError::HashError)?;
+
+    let mut tx = state.db.begin().await?;
+
+    // Première écriture de la transaction : prend le verrou d'écriture SQLite avant les lectures
+    // ci-dessous (voir update_password pour le raisonnement détaillé).
+    sqlx::query("UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE email = ?")
+        .bind(&new_password_hash)
+        .bind(&email)
+        .execute(&mut *tx)
+        .await?;
+
+    let active_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ? AND deleted_at IS NULL")
+        .bind(&email)
+        .fetch_all(&mut *tx)
+        .await?;
+    let history_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_password_history WHERE user_email = ?")
+        .bind(&email)
+        .fetch_all(&mut *tx)
+        .await?;
+    let attachment_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_attachments WHERE user_email = ?")
+        .bind(&email)
+        .fetch_all(&mut *tx)
+        .await?;
+
+    check_reencrypted_ids("des entrées", &active_ids, payload.reencrypted_entries.iter().map(|e| e.id.as_str()))?;
+    check_reencrypted_ids("de l'historique", &history_ids, payload.reencrypted_history.iter().map(|e| e.id.as_str()))?;
+    check_reencrypted_ids("des pièces jointes", &attachment_ids, payload.reencrypted_attachments.iter().map(|a| a.id.as_str()))?;
+
+    for entry in &payload.reencrypted_entries {
+        VaultRepository::reencrypt(&mut tx, &email, entry).await?;
+    }
+    for entry in &payload.reencrypted_history {
+        VaultRepository::reencrypt_history_row(&mut tx, &email, entry).await?;
+    }
+    for attachment in &payload.reencrypted_attachments {
+        VaultRepository::reencrypt_attachment(&mut tx, &email, attachment).await?;
+    }
+
+    // Le kit qui vient de servir est INVALIDÉ : il scelle la clé de l'ANCIEN mot de passe, qui ne
+    // déchiffre plus rien. Le laisser en place donnerait un kit silencieusement inopérant — pire
+    // qu'aucun kit, puisqu'on croirait être couvert. L'utilisateur en régénère un après coup.
+    sqlx::query("UPDATE users SET recovery_sealed_vault_key = NULL WHERE email = ?")
+        .bind(&email)
+        .execute(&mut *tx)
+        .await?;
+
+    // Toutes les sessions tombent, y compris celle délivrée à l'étape 1.
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?").bind(&email).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM tfa_codes WHERE email = ?").bind(&email).execute(&mut *tx).await?;
+
+    tx.commit().await?;
+
+    let agent = get_user_agent(&headers);
+    state.log_audit(&email, "RECOVERY_COMPLETED", addr.to_string(), agent).await;
+
+    let _ = mailer::send_security_alert(
+        &email,
+        "Votre coffre vient d'être récupéré à l'aide de votre kit de récupération, et votre mot de passe maître a été changé. Si vous n'êtes pas à l'origine de cette action, sécurisez immédiatement votre compte.",
+        &state.config,
+    ).await;
+
+    info!("Récupération du coffre menée à bien pour : {}", email);
+    Ok(StatusCode::OK)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,6 +784,16 @@ mod tests {
     /// Crée un utilisateur de test via le VRAI handler register() (donc avec le hachage réel),
     /// puis marque directement le compte comme vérifié en BDD (voir register.rs::tests pour
     /// l'explication détaillée — dupliqué ici volontairement, chaque module de tests reste autonome).
+    /// Lit le corps JSON d'une réponse — même petit utilitaire que dans les autres modules de
+    /// tests de ce projet (voir handlers/auth/session.rs), recopié par module pour éviter un
+    /// module de test partagé juste pour trois lignes.
+    async fn read_json_body(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("lecture du corps de la réponse");
+        serde_json::from_slice(&bytes).expect("le corps doit être du JSON valide")
+    }
+
     async fn register_test_user(state: &Arc<AppState>, email: &str, password: &str) {
         let payload = AuthPayload {
             email: email.to_string(),
@@ -1404,4 +1658,263 @@ mod tests {
         assert_eq!(logs[0]["action"], "VAULT_UPDATE", "la plus récente doit être en premier");
         assert_eq!(logs[1]["action"], "VAULT_ADD");
     }
+
+    // =========================================================================
+    // KIT DE RÉCUPÉRATION
+    // =========================================================================
+
+    /// Prépare un compte avec un kit enregistré et un code de reset valide en base, et renvoie ce
+    /// code. Reproduit ce que ferait request_password_reset(), sans passer par l'envoi d'email.
+    async fn setup_recovery(state: &Arc<AppState>, email: &str, sealed: &str) -> String {
+        sqlx::query("UPDATE users SET recovery_sealed_vault_key = ? WHERE email = ?")
+            .bind(sealed)
+            .bind(email)
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let code = "424242".to_string();
+        let expires_at = (Utc::now() + chrono::Duration::minutes(15)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+            .bind(email)
+            .bind(PURPOSE_PASSWORD_RESET)
+            .bind(&code)
+            .bind(expires_at)
+            .execute(&state.db)
+            .await
+            .unwrap();
+        code
+    }
+
+    fn addr() -> SocketAddr {
+        "127.0.0.1:1".parse().unwrap()
+    }
+
+    /// get_recovery_data() doit rendre le blob scellé ET une session utilisable, SANS consommer le
+    /// code — complete_recovery() en a encore besoin juste après.
+    #[tokio::test]
+    async fn test_recovery_data_returns_kit_and_does_not_consume_the_code() {
+        let state = build_test_state().await;
+        let email = "recovery-data@example.com";
+        register_test_user(&state, email, "mot_de_passe_initial_123").await;
+        let code = setup_recovery(&state, email, "blob-scelle-de-test").await;
+
+        let result = get_recovery_data(
+            State(state.clone()),
+            ConnectInfo(addr()),
+            HeaderMap::new(),
+            Json(RecoveryDataPayload { email: email.to_string(), code: code.clone(), device_id: "dev-1".to_string() }),
+        )
+        .await
+        .expect("la première étape doit réussir");
+
+        let value = read_json_body(result.into_response()).await;
+        assert_eq!(value["sealed_vault_key"], "blob-scelle-de-test");
+        assert!(value["access_token"].as_str().is_some_and(|t| !t.is_empty()), "une session doit être délivrée");
+
+        let still_there: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE email = ? AND purpose = ?")
+            .bind(email)
+            .bind(PURPOSE_PASSWORD_RESET)
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(still_there, 1, "le code ne doit PAS être consommé par la première étape");
+    }
+
+    /// Sans kit configuré, la récupération doit être refusée explicitement — et surtout ne rien
+    /// détruire : l'utilisateur garde le choix de la réinitialisation classique.
+    #[tokio::test]
+    async fn test_recovery_data_rejects_account_without_kit() {
+        let state = build_test_state().await;
+        let email = "no-kit@example.com";
+        register_test_user(&state, email, "mot_de_passe_initial_123").await;
+
+        let code = "424242".to_string();
+        let expires_at = (Utc::now() + chrono::Duration::minutes(15)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+            .bind(email).bind(PURPOSE_PASSWORD_RESET).bind(&code).bind(expires_at)
+            .execute(&state.db).await.unwrap();
+
+        let result = get_recovery_data(
+            State(state.clone()),
+            ConnectInfo(addr()),
+            HeaderMap::new(),
+            Json(RecoveryDataPayload { email: email.to_string(), code, device_id: "dev-1".to_string() }),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::ValidationError(_))), "sans kit, la récupération doit être refusée");
+    }
+
+    #[tokio::test]
+    async fn test_recovery_data_rejects_wrong_code() {
+        let state = build_test_state().await;
+        let email = "wrong-code@example.com";
+        register_test_user(&state, email, "mot_de_passe_initial_123").await;
+        setup_recovery(&state, email, "blob").await;
+
+        let result = get_recovery_data(
+            State(state.clone()),
+            ConnectInfo(addr()),
+            HeaderMap::new(),
+            Json(RecoveryDataPayload { email: email.to_string(), code: "999999".to_string(), device_id: "dev-1".to_string() }),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::ValidationError(_))), "un code faux doit être rejeté");
+    }
+
+    /// LE test qui compte : contrairement à confirm_password_reset(), le coffre doit SURVIVRE —
+    /// c'est toute la raison d'être du kit. Le mot de passe change, le contenu est remplacé par sa
+    /// version re-chiffrée, et le kit consommé est invalidé.
+    #[tokio::test]
+    async fn test_complete_recovery_preserves_vault_and_invalidates_kit() {
+        let state = build_test_state().await;
+        let email = "recovered@example.com";
+        register_test_user(&state, email, "ancien_mot_de_passe_123").await;
+        let code = setup_recovery(&state, email, "blob").await;
+
+        // Deux entrées, chiffrées avec l'ANCIENNE clé.
+        for site in ["Site1", "Site2"] {
+            let entry = VaultEntryInput {
+                encrypted_site_name: site.to_string(), encrypted_username: None, encrypted_login_email: None,
+                encrypted_folder: None, encrypted_notes: None, encrypted_url: None, password_changed: false,
+                expected_version: None, entry_type: "login".to_string(), encrypted_extra_fields: None,
+                encrypted_password: "ancien_chiffre".to_string(),
+                encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
+            };
+            crate::handlers::vault::add_to_vault(
+                State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+                AuthUser { email: email.to_string(), is_moderator: false }, Json(entry),
+            ).await.expect("l'ajout doit réussir");
+        }
+
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
+            .bind(email).fetch_all(&state.db).await.unwrap();
+
+        let reencrypted: Vec<crate::models::ReencryptedVaultEntry> = ids.iter().map(|id| crate::models::ReencryptedVaultEntry {
+            id: id.clone(),
+            encrypted_site_name: "re_chiffre".to_string(),
+            encrypted_username: None, encrypted_login_email: None, encrypted_folder: None,
+            encrypted_notes: None, encrypted_url: None,
+            encrypted_password: "nouveau_chiffre".to_string(),
+            encrypted_preferred_login_type: "email".to_string(),
+            encrypted_extra_fields: None,
+        }).collect();
+
+        complete_recovery(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            Json(CompleteRecoveryPayload {
+                email: email.to_string(), code,
+                new_master_password_hash: "nouveau_mot_de_passe_789".to_string(),
+                reencrypted_entries: reencrypted,
+                reencrypted_history: vec![], reencrypted_attachments: vec![],
+            }),
+        ).await.expect("la récupération doit aboutir");
+
+        // 1. Le coffre a SURVÉCU, avec le contenu re-chiffré.
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_email = ?")
+            .bind(email).fetch_one(&state.db).await.unwrap();
+        assert_eq!(remaining, 2, "le coffre ne doit PAS être vidé — c'est toute la raison d'être du kit");
+        let stored: String = sqlx::query_scalar("SELECT encrypted_password FROM vault WHERE id = ?")
+            .bind(&ids[0]).fetch_one(&state.db).await.unwrap();
+        assert_eq!(stored, "nouveau_chiffre", "le contenu re-chiffré doit avoir été appliqué");
+
+        // 2. Le nouveau mot de passe est en vigueur.
+        let user: User = sqlx::query_as("SELECT * FROM users WHERE email = ?")
+            .bind(email).fetch_one(&state.db).await.unwrap();
+        assert!(
+            crypto::verify_password("nouveau_mot_de_passe_789", &user.password_hash, &state.config.password_pepper).await,
+            "le nouveau mot de passe maître doit être en vigueur"
+        );
+
+        // 3. Le kit consommé est invalidé : il scelle une clé qui ne déchiffre plus rien.
+        let kit: Option<String> = sqlx::query_scalar("SELECT recovery_sealed_vault_key FROM users WHERE email = ?")
+            .bind(email).fetch_one(&state.db).await.unwrap();
+        assert!(kit.is_none(), "le kit utilisé doit être invalidé, jamais laissé silencieusement inopérant");
+    }
+
+    /// Le garde-fou du re-chiffrement s'applique AUSSI à la récupération : un identifiant envoyé
+    /// deux fois laisserait une entrée chiffrée avec une clé désormais perdue à jamais.
+    #[tokio::test]
+    async fn test_complete_recovery_rejects_duplicate_entry_ids() {
+        let state = build_test_state().await;
+        let email = "recovery-dup@example.com";
+        register_test_user(&state, email, "ancien_mot_de_passe_123").await;
+        let code = setup_recovery(&state, email, "blob").await;
+
+        for site in ["Site1", "Site2"] {
+            let entry = VaultEntryInput {
+                encrypted_site_name: site.to_string(), encrypted_username: None, encrypted_login_email: None,
+                encrypted_folder: None, encrypted_notes: None, encrypted_url: None, password_changed: false,
+                expected_version: None, entry_type: "login".to_string(), encrypted_extra_fields: None,
+                encrypted_password: "ancien_chiffre".to_string(),
+                encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
+            };
+            crate::handlers::vault::add_to_vault(
+                State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+                AuthUser { email: email.to_string(), is_moderator: false }, Json(entry),
+            ).await.unwrap();
+        }
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
+            .bind(email).fetch_all(&state.db).await.unwrap();
+
+        let make = |id: &str| crate::models::ReencryptedVaultEntry {
+            id: id.to_string(),
+            encrypted_site_name: "re_chiffre".to_string(),
+            encrypted_username: None, encrypted_login_email: None, encrypted_folder: None,
+            encrypted_notes: None, encrypted_url: None,
+            encrypted_password: "nouveau_chiffre".to_string(),
+            encrypted_preferred_login_type: "email".to_string(),
+            encrypted_extra_fields: None,
+        };
+
+        let result = complete_recovery(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            Json(CompleteRecoveryPayload {
+                email: email.to_string(), code,
+                new_master_password_hash: "nouveau_mot_de_passe_789".to_string(),
+                reencrypted_entries: vec![make(&ids[0]), make(&ids[0])],
+                reencrypted_history: vec![], reencrypted_attachments: vec![],
+            }),
+        ).await;
+
+        assert!(matches!(result, Err(AppError::ValidationError(_))), "un identifiant dupliqué doit être refusé");
+
+        let untouched: String = sqlx::query_scalar("SELECT encrypted_password FROM vault WHERE id = ?")
+            .bind(&ids[1]).fetch_one(&state.db).await.unwrap();
+        assert_eq!(untouched, "ancien_chiffre", "rien ne doit avoir été modifié");
+        let user: User = sqlx::query_as("SELECT * FROM users WHERE email = ?")
+            .bind(email).fetch_one(&state.db).await.unwrap();
+        assert!(
+            crypto::verify_password("ancien_mot_de_passe_123", &user.password_hash, &state.config.password_pepper).await,
+            "l'ancien mot de passe doit rester en vigueur, la transaction devant être annulée en entier"
+        );
+    }
+
+    /// save_recovery_kit()/delete_recovery_kit() : le titulaire enregistre puis retire son kit, et
+    /// GET /me reflète la présence sans jamais exposer le blob.
+    #[tokio::test]
+    async fn test_save_then_delete_recovery_kit_is_reflected_in_get_me() {
+        let state = build_test_state().await;
+        let email = "kit-lifecycle@example.com";
+        register_test_user(&state, email, "mot_de_passe_initial_123").await;
+        let user = || AuthUser { email: email.to_string(), is_moderator: false };
+
+        let me = read_json_body(get_me(State(state.clone()), user()).await.unwrap().into_response()).await;
+        assert_eq!(me["has_recovery_kit"], false, "aucun kit au départ");
+
+        save_recovery_kit(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), user(),
+            Json(SaveRecoveryKitPayload { sealed_vault_key: "blob-scelle".to_string() }),
+        ).await.expect("l'enregistrement doit réussir");
+
+        let me = read_json_body(get_me(State(state.clone()), user()).await.unwrap().into_response()).await;
+        assert_eq!(me["has_recovery_kit"], true, "le kit doit être signalé comme présent");
+        assert!(me.get("recovery_sealed_vault_key").is_none(), "GET /me ne doit JAMAIS exposer le blob lui-même");
+
+        delete_recovery_kit(State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), user())
+            .await.expect("la suppression doit réussir");
+        let me = read_json_body(get_me(State(state.clone()), user()).await.unwrap().into_response()).await;
+        assert_eq!(me["has_recovery_kit"], false, "après suppression, plus de kit");
+    }
+
 }

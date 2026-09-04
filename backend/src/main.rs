@@ -640,9 +640,21 @@ fn build_router(state: Arc<AppState>) -> Router {
             // l'appelant) — /password ne bénéficiait avant que du auth_governor plus large.
             .merge(Router::new()
                 .route("/password", put(handlers::update_password))
+                // Récupération après mot de passe maître oublié (voir handlers/auth/account.rs et
+                // crypto-core/src/recovery.rs). `/recovery/complete` renvoie TOUT le coffre
+                // re-chiffré, exactement comme /password : mêmes plafonds de taille et de
+                // concurrence, pour la même raison.
+                .route("/recovery/complete", post(handlers::complete_recovery))
                 .route_layer(DefaultBodyLimit::max(512 * 1024 * 1024))
                 .route_layer(ConcurrencyLimitLayer::new(HEAVY_BODY_MAX_CONCURRENCY))
                 .route_layer(GovernorLayer::new(sensitive_governor.clone())))
+            // `/recovery/data` est NON authentifiée et vérifie un code à 6 chiffres : elle relève
+            // du même palier strict que /login et /reset-password (brute-force de code).
+            .merge(Router::new()
+                .route("/recovery/data", post(handlers::get_recovery_data))
+                .route_layer(GovernorLayer::new(sensitive_governor.clone())))
+            // Gestion du kit par son titulaire (authentifié, coffre déverrouillé).
+            .route("/recovery-kit", put(handlers::save_recovery_kit).delete(handlers::delete_recovery_kit))
             // Rate limiter appliqué à TOUT le groupe /auth ; les routes sensibles ci-dessus
             // cumulent donc les deux limiteurs (le plus strict des deux s'applique de fait).
             .layer(GovernorLayer::new(auth_governor)))
