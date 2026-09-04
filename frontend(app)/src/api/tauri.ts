@@ -260,3 +260,40 @@ export function sealForBlindShare(plaintext: string, recipientPublicKey: string)
 export function unsealBlindShare(sealedB64: string, encryptedPrivateKey: string): Promise<string> {
   return invoke<string>("unseal_blind_share", { sealedB64, encryptedPrivateKey });
 }
+
+// --- KIT DE RÉCUPÉRATION (voir src-tauri/src/lib.rs et crypto-core/src/recovery.rs) -------------
+// Le code et la clé du coffre ne traversent jamais cette frontière, à une exception près et
+// volontaire : `recovery_code`, qu'il faut bien afficher pour que l'utilisateur l'imprime.
+
+export interface RecoveryKitResult {
+  /** À montrer UNE SEULE FOIS puis à imprimer. Stocké nulle part — ni ici, ni sur le serveur. */
+  recovery_code: string;
+  /** La clé du coffre scellée par ce code, à confier au serveur. */
+  sealed_vault_key: string;
+}
+
+export function generateRecoveryKit(): Promise<RecoveryKitResult> {
+  return invoke<RecoveryKitResult>("generate_recovery_kit");
+}
+
+/** Descelle la clé et la garde côté Rust, dans un état DÉDIÉ à la récupération — jamais dans celui
+ * du coffre local, qui reste verrouillé à ce stade. Ne renvoie rien : cette clé n'a aucune raison
+ * de traverser vers le JS. */
+export function unsealRecoveryKit(sealedVaultKey: string, recoveryCode: string): Promise<void> {
+  return invoke<void>("unseal_recovery_kit", { sealedVaultKey, recoveryCode });
+}
+
+/** Pendant de preparePasswordChange(), mais en déchiffrant avec la clé RETROUVÉE plutôt qu'avec
+ * celle d'un ancien mot de passe — que l'utilisateur a justement oublié. */
+export function prepareRecoveryReencryption(
+  email: string,
+  newPassword: string,
+  ciphertexts: string[],
+): Promise<PasswordChangeResult> {
+  return invoke<PasswordChangeResult>("prepare_recovery_reencryption", { email, newPassword, ciphertexts });
+}
+
+/** À appeler dès que la récupération aboutit OU est abandonnée : cette clé ouvre le coffre. */
+export function clearRecoveryKey(): Promise<void> {
+  return invoke<void>("clear_recovery_key");
+}

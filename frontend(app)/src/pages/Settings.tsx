@@ -5,6 +5,7 @@ import ChangeEmailForm from "../components/ChangeEmailForm";
 import ChangePasswordForm from "../components/ChangePasswordForm";
 import DeviceList from "../components/DeviceList";
 import AutoLockSettings from "../components/AutoLockSettings";
+import RecoveryKitSettings from "../components/RecoveryKitSettings";
 import AutoBackupSettings from "../components/AutoBackupSettings";
 import EmergencyAccessSettings from "../components/EmergencyAccessSettings";
 import SecurityHistorySettings from "../components/SecurityHistorySettings";
@@ -94,6 +95,7 @@ export default function Settings() {
 
         <Section title="Sécurité">
           <AutoLockSettings />
+          <RecoveryKitSettings />
         </Section>
 
         <Section title="Appareils de confiance">

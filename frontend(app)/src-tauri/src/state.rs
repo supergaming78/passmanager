@@ -60,6 +60,29 @@ impl VaultKeyState {
 /// clé du coffre de quelqu'un d'autre que je consulte en urgence", même par erreur de câblage
 /// d'une commande. `None` = pas de consultation d'urgence en cours (état initial, et après
 /// lock_emergency_vault()).
+/// Pendant de VaultKeyState pour la clé retrouvée via le KIT DE RÉCUPÉRATION (voir
+/// crypto-core/src/recovery.rs). Type DISTINCT pour la même raison qu'EmergencyVaultKeyState
+/// ci-dessous : Tauri route les commandes par TYPE d'état, si bien qu'une commande de récupération
+/// ne peut pas, même par erreur de câblage, recevoir la clé du coffre local — ni l'inverse.
+///
+/// La distinction compte particulièrement ici : pendant une récupération, le coffre LOCAL est
+/// verrouillé (l'utilisateur a justement oublié son mot de passe), alors que cette clé-là, elle,
+/// est déverrouillée. Les confondre re-chiffrerait le coffre avec la mauvaise clé.
+#[derive(Default)]
+pub struct RecoveryVaultKeyState(VaultKeyState);
+
+impl RecoveryVaultKeyState {
+    pub fn set(&self, key: [u8; KEY_LEN]) {
+        self.0.set(key);
+    }
+    pub fn get(&self) -> Option<[u8; KEY_LEN]> {
+        self.0.get()
+    }
+    pub fn clear(&self) {
+        self.0.clear();
+    }
+}
+
 #[derive(Default)]
 pub struct EmergencyVaultKeyState(VaultKeyState);
 

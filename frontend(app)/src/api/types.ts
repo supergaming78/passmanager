@@ -204,6 +204,9 @@ export interface MeResponse {
    * Voir lib/theme.ts::Theme pour les valeurs possibles, et
    * backend/src/handlers/theme_customization.rs::update_preferred_theme pour l'écriture. */
   preferred_theme: string;
+  /** PRÉSENCE d'un kit de récupération, jamais son contenu (voir GET /me côté backend) : sert au
+   * client à proposer "générer un kit" ou "kit déjà en place". */
+  has_recovery_kit: boolean;
   /** Vrai UNIQUEMENT pour le compte configuré via ADMIN_EMAIL — il n'existe qu'UN SEUL "Admin",
    * SEUL compte autorisé à changer un rôle modérateur (voir handlers/admin.rs::update_user_role()).
    * Utilisé par Admin.tsx pour masquer les boutons promouvoir/rétrograder pour tout le monde d'autre. */
@@ -618,4 +621,38 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/** Kit de récupération — voir crypto-core/src/recovery.rs et docs/API.md. */
+export interface SaveRecoveryKitPayload {
+  sealed_vault_key: string;
+}
+
+export interface RecoveryDataPayload {
+  email: string;
+  code: string;
+  device_id: string;
+}
+
+/** Réponse de POST /auth/recovery/data : le blob scellé ET le contenu chiffré du coffre.
+ *
+ * Le coffre est joint ici parce que les routes d'export exigent le hash du mot de passe maître —
+ * précisément ce que l'utilisateur a oublié. Aucune session n'est délivrée : elle serait inutile,
+ * donc à ne pas accorder. */
+export interface RecoveryDataResponse {
+  sealed_vault_key: string;
+  entries: VaultEntry[];
+  history: PasswordHistoryEntry[];
+  attachments: VaultAttachment[];
+}
+
+/** Seconde étape : mêmes exigences d'exhaustivité que ChangeMasterPasswordPayload — le serveur
+ * vérifie que l'ensemble des identifiants recouvre EXACTEMENT celui en base. */
+export interface CompleteRecoveryPayload {
+  email: string;
+  code: string;
+  new_master_password_hash: string;
+  reencrypted_entries: ReencryptedVaultEntry[];
+  reencrypted_history: ReencryptedHistoryEntry[];
+  reencrypted_attachments: ReencryptedVaultAttachment[];
 }

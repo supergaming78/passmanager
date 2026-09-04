@@ -447,16 +447,17 @@ code peut-être vu par quelqu'un).
 ### `POST /auth/recovery/data`
 
 Étape **1** de la récupération. Le code reçu par email (via `POST /auth/forgot-password`) prouve la
-possession de l'adresse, et donne le blob scellé **plus une session** permettant de lire le coffre
-chiffré à re-chiffrer.
+possession de l'adresse, et donne le blob scellé **ainsi que le contenu chiffré du coffre** à
+re-chiffrer.
 
 Le code n'est **pas consommé** ici : l'étape 2 en a encore besoin pour s'autoriser. Il reste soumis
 au même verrouillage anti-bruteforce que la réinitialisation (5 tentatives).
 
-Délivrer une session n'accorde rien de nouveau : avec ce même code, `POST /auth/reset-password`
-permet déjà de fixer un nouveau mot de passe — donc d'obtenir une session — au prix de la
-destruction du coffre. Et ce que cette session rend lisible reste chiffré de bout en bout : sans le
-code de récupération, ces octets ne servent à rien.
+Pourquoi joindre le coffre plutôt que laisser le client le récupérer ensuite : les routes d'export
+(`POST /vault/export`, `POST /vault/history/export`) exigent le hash du mot de passe maître —
+précisément ce que l'utilisateur a oublié. Les renvoyer ici évite au passage d'avoir à délivrer une
+session, donc d'élargir ce que ce code autorise. Ces octets restent chiffrés de bout en bout : sans
+le code de récupération, ils ne servent à rien.
 
 | Champ | Type | Requis |
 |---|---|---|
@@ -464,7 +465,7 @@ code de récupération, ces octets ne servent à rien.
 | `code` | string | oui |
 | `device_id` | string | oui |
 
-**Réponse** : `200 OK` avec `sealed_vault_key`, `access_token` et `refresh_token`.
+**Réponse** : `200 OK` avec `sealed_vault_key`, `entries`, `history` et `attachments`.
 `400` si aucun kit n'est configuré pour ce compte — la réinitialisation classique reste alors
 possible, mais elle videra le coffre.
 

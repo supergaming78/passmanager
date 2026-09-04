@@ -10,6 +10,10 @@ import {
   type AdminUserView,
   type ApiErrorBody,
   type AuditLog,
+  type CompleteRecoveryPayload,
+  type RecoveryDataPayload,
+  type RecoveryDataResponse,
+  type SaveRecoveryKitPayload,
   type AuthTokens,
   type ChangeMasterPasswordPayload,
   type EmergencyContact,
@@ -383,6 +387,37 @@ export function updatePassword(accessToken: string, payload: ChangeMasterPasswor
   return request<void>("/auth/password", {
     method: "PUT",
     headers: authHeaders(accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function saveRecoveryKit(accessToken: string, payload: SaveRecoveryKitPayload): Promise<void> {
+  return request<void>("/auth/recovery-kit", {
+    method: "PUT",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteRecoveryKit(accessToken: string): Promise<void> {
+  return request<void>("/auth/recovery-kit", { method: "DELETE", headers: authHeaders(accessToken) });
+}
+
+/** Étape 1 de la récupération — NON authentifiée : le code reçu par email fait office de preuve. */
+export function getRecoveryData(payload: RecoveryDataPayload): Promise<RecoveryDataResponse> {
+  return request<RecoveryDataResponse>("/auth/recovery/data", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Étape 2 — NON authentifiée pour la même raison. Le coffre est CONSERVÉ, contrairement à
+ * confirmPasswordReset() qui le vide. */
+export function completeRecovery(payload: CompleteRecoveryPayload): Promise<void> {
+  return request<void>("/auth/recovery/complete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 }

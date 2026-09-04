@@ -4,14 +4,14 @@
 // résolvables depuis N'IMPORTE QUEL module de CE crate (ex: quick_unlock.rs, qui importe
 // `crate::crypto::KEY_LEN`) exactement comme avant cette extraction — aucun autre fichier de ce
 // crate n'a eu besoin d'être modifié.
-pub use crypto_core::{crypto, emergency, sharing, shared_vault, blind_share};
+pub use crypto_core::{crypto, emergency, sharing, shared_vault, blind_share, recovery};
 mod state;
 #[cfg(target_os = "windows")]
 mod dpapi;
 #[cfg(target_os = "windows")]
 mod quick_unlock;
 
-use state::{EmergencyVaultKeyState, VaultKeyState};
+use state::{EmergencyVaultKeyState, RecoveryVaultKeyState, VaultKeyState};
 use tauri::State;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use zeroize::Zeroize;
@@ -533,6 +533,122 @@ fn unseal_blind_share(sealed_b64: String, encrypted_private_key: String, vault_s
     result
 }
 
+// =========================================================================
+// KIT DE RÉCUPÉRATION (voir crypto-core/src/recovery.rs)
+// =========================================================================
+// Le code de récupération et la clé du coffre ne traversent JAMAIS la frontière vers le JS : la
+// génération scelle ici même, et le descellement dépose la clé retrouvée dans un état Rust dédié
+// (RecoveryVaultKeyState). Le JS ne manipule que le CODE — qu'il doit bien afficher à l'utilisateur
+// pour qu'il l'imprime — et des blobs déjà scellés.
+
+/// Résultat de generate_recovery_kit : le code à MONTRER UNE SEULE FOIS à l'utilisateur, et le blob
+/// à confier au serveur.
+#[derive(serde::Serialize)]
+pub struct RecoveryKitResult {
+    /// À imprimer et ranger physiquement. N'est stocké NULLE PART — ni ici, ni sur le serveur.
+    pub recovery_code: String,
+    /// La clé du coffre scellée par ce code (voir PUT /auth/recovery-kit côté serveur).
+    pub sealed_vault_key: String,
+}
+
+/// Engendre un code de récupération et scelle avec lui la clé du coffre ACTUELLEMENT déverrouillée.
+/// Échoue si le coffre est verrouillé : on ne peut sceller que ce qu'on détient.
+#[tauri::command]
+fn generate_recovery_kit(vault_state: State<VaultKeyState>) -> Result<RecoveryKitResult, String> {
+    let mut key = vault_state
+        .get()
+        .ok_or_else(|| "Le coffre doit être déverrouillé pour générer un kit de récupération".to_string())?;
+
+    let recovery_code = recovery::generate_recovery_code();
+    let sealed = recovery::seal_vault_key(&key, &recovery_code);
+    key.zeroize();
+
+    Ok(RecoveryKitResult { recovery_code, sealed_vault_key: sealed? })
+}
+
+/// Descelle la clé du coffre à partir du blob rendu par le serveur et du code saisi, et la garde
+/// dans l'état DÉDIÉ à la récupération — jamais dans VaultKeyState, qui reste le coffre local
+/// (verrouillé à ce stade, puisque l'utilisateur a justement oublié son mot de passe).
+///
+/// Ne renvoie rien : la clé retrouvée n'a aucune raison de traverser vers le JS. Un code faux
+/// produit une erreur explicite, à afficher tel quel.
+#[tauri::command]
+fn unseal_recovery_kit(
+    sealed_vault_key: String,
+    recovery_code: String,
+    recovery_state: State<RecoveryVaultKeyState>,
+) -> Result<(), String> {
+    let key = recovery::unseal_vault_key(&sealed_vault_key, &recovery_code)?;
+    recovery_state.set(key);
+    Ok(())
+}
+
+/// Re-chiffre le coffre avec la clé dérivée du NOUVEAU mot de passe maître, en déchiffrant avec la
+/// clé RETROUVÉE (voir unseal_recovery_kit ci-dessus).
+///
+/// Pendant de prepare_password_change(), à une différence près : l'ancienne clé ne vient pas d'un
+/// mot de passe — l'utilisateur l'a justement oublié — mais du kit. Renvoie le hash
+/// d'authentification du nouveau mot de passe (à envoyer au serveur) et les blobs re-chiffrés,
+/// DANS LE MÊME ORDRE que `ciphertexts` (voir lib/passwordChangeCrypto.ts côté frontend, qui
+/// reconstruit les entrées à partir de cet ordre).
+#[tauri::command]
+fn prepare_recovery_reencryption(
+    email: String,
+    new_password: String,
+    ciphertexts: Vec<String>,
+    recovery_state: State<RecoveryVaultKeyState>,
+) -> Result<PasswordChangeResult, String> {
+    let mut old_key = recovery_state
+        .get()
+        .ok_or_else(|| "Aucune clé récupérée en mémoire — recommencez la récupération.".to_string())?;
+
+    let mut new_keys = crypto::derive_keys(&email, &new_password);
+
+    let mut reencrypted = Vec::with_capacity(ciphertexts.len());
+    for ciphertext in &ciphertexts {
+        // Le `?` interrompt à la première erreur : un seul blob illisible signifie que la clé
+        // retrouvée n'est pas la bonne (ou que la donnée est corrompue). Continuer produirait un
+        // coffre à moitié re-chiffré — que le serveur refuserait de toute façon, mais autant
+        // échouer ici avec un message clair.
+        let plaintext = match crypto::decrypt_field(&old_key, ciphertext) {
+            Ok(p) => p,
+            Err(e) => {
+                old_key.zeroize();
+                new_keys.vault_key.zeroize();
+                return Err(e);
+            }
+        };
+        match crypto::encrypt_field(&new_keys.vault_key, &plaintext) {
+            Ok(c) => reencrypted.push(c),
+            Err(e) => {
+                old_key.zeroize();
+                new_keys.vault_key.zeroize();
+                return Err(e);
+            }
+        }
+    }
+
+    let result = PasswordChangeResult {
+        // Aucun ancien hash d'authentification à fournir : le serveur autorise cette opération par
+        // le code reçu par email, pas par l'ancien mot de passe (voir complete_recovery côté
+        // backend). Champ laissé vide plutôt que d'inventer une valeur.
+        old_auth_hash: String::new(),
+        new_auth_hash: new_keys.auth_hash_hex.clone(),
+        reencrypted_ciphertexts: reencrypted,
+    };
+
+    old_key.zeroize();
+    new_keys.vault_key.zeroize();
+    Ok(result)
+}
+
+/// Efface la clé retrouvée de la mémoire. À appeler dès que la récupération aboutit ou est
+/// abandonnée — cette clé ouvre le coffre, elle n'a aucune raison de survivre à l'opération.
+#[tauri::command]
+fn clear_recovery_key(recovery_state: State<RecoveryVaultKeyState>) {
+    recovery_state.clear();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -554,8 +670,13 @@ pub fn run() {
     builder
         .manage(VaultKeyState::default())
         .manage(EmergencyVaultKeyState::default())
+        .manage(RecoveryVaultKeyState::default())
         .invoke_handler(tauri::generate_handler![
             derive_keys,
+            generate_recovery_kit,
+            unseal_recovery_kit,
+            prepare_recovery_reencryption,
+            clear_recovery_key,
             compute_auth_hash,
             lock_vault,
             is_vault_unlocked,

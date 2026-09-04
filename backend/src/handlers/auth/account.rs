@@ -23,6 +23,11 @@ use rand::RngExt;
 use super::{MAX_CODE_ATTEMPTS, PURPOSE_PASSWORD_RESET, RESET_CODE_LIFETIME_MINUTES, is_code_within_cooldown};
 use super::super::common::{get_user_agent, is_extension_origin};
 
+/// Plafond de lecture pour la récupération — aligné sur MAX_VAULT_ENTRIES_PER_USER
+/// (handlers/vault.rs) : un compte ne peut pas dépasser ce nombre d'entrées, donc une seule page
+/// suffit toujours à tout couvrir, sans avoir à paginer un flux qui doit rester d'un seul tenant.
+const MAX_VAULT_ENTRIES_FOR_RECOVERY: i64 = 5000;
+
 /// Vérifie un code de réinitialisation reçu par email : verrouillage après trop d'essais,
 /// comparaison en temps constant, contrôle d'expiration. `consume` supprime le code en cas de
 /// succès.
@@ -601,34 +606,25 @@ pub async fn get_recovery_data(
         )
     })?;
 
-    // Session rattachée à l'appareil, exactement comme un login (voir session.rs) : révocable
-    // depuis GET /devices, et de durée courte — la récupération est une opération d'un seul tenant.
-    let access_token = crypto::create_jwt(&email, &state.encoding_key, state.config.access_token_seconds)?;
-    let refresh_token = crypto::create_refresh_token();
-    let expires_at = (Utc::now() + chrono::Duration::seconds(state.config.refresh_token_short_seconds))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
-
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ? AND device_id = ?")
-        .bind(&email)
-        .bind(&payload.device_id)
-        .execute(&state.db)
-        .await?;
-    sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, 0)")
-        .bind(crypto::hash_token(&refresh_token))
-        .bind(&email)
-        .bind(&payload.device_id)
-        .bind(expires_at)
-        .execute(&state.db)
-        .await?;
+    // CONTENU CHIFFRÉ du coffre, joint à cette réponse plutôt que laissé au client à récupérer
+    // ensuite : les routes d'export habituelles exigent le hash du mot de passe maître (voir
+    // ExportVaultPayload), précisément ce que l'utilisateur a oublié. Les renvoyer ici évite aussi
+    // d'avoir à délivrer une session — ce qui aurait élargi inutilement ce que ce code autorise.
+    //
+    // Ces octets restent chiffrés de bout en bout : sans le code de récupération, ils ne servent à
+    // rien. Volume comparable à celui de PUT /auth/password, d'où les mêmes plafonds sur la route.
+    let entries = VaultRepository::get_all(&state.db, &email, MAX_VAULT_ENTRIES_FOR_RECOVERY, 0).await?;
+    let history = VaultRepository::get_all_history_for_user(&state.db, &email).await?;
+    let attachments = VaultRepository::get_all_attachments_for_user(&state.db, &email).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&email, "RECOVERY_STARTED", addr.to_string(), agent).await;
 
     Ok(Json(json!({
         "sealed_vault_key": sealed,
-        "access_token": access_token,
-        "refresh_token": refresh_token,
+        "entries": entries,
+        "history": history,
+        "attachments": attachments,
     })))
 }
 
@@ -1693,7 +1689,7 @@ mod tests {
     /// get_recovery_data() doit rendre le blob scellé ET une session utilisable, SANS consommer le
     /// code — complete_recovery() en a encore besoin juste après.
     #[tokio::test]
-    async fn test_recovery_data_returns_kit_and_does_not_consume_the_code() {
+    async fn test_recovery_data_returns_kit_with_vault_and_does_not_consume_the_code() {
         let state = build_test_state().await;
         let email = "recovery-data@example.com";
         register_test_user(&state, email, "mot_de_passe_initial_123").await;
@@ -1710,7 +1706,12 @@ mod tests {
 
         let value = read_json_body(result.into_response()).await;
         assert_eq!(value["sealed_vault_key"], "blob-scelle-de-test");
-        assert!(value["access_token"].as_str().is_some_and(|t| !t.is_empty()), "une session doit être délivrée");
+        // Le contenu chiffré du coffre accompagne la réponse : les routes d'export habituelles
+        // exigent le hash du mot de passe maître, précisément ce que l'utilisateur a oublié.
+        assert!(value["entries"].is_array(), "les entrées chiffrées doivent accompagner le kit");
+        assert!(value["history"].is_array(), "l'historique chiffré doit accompagner le kit");
+        assert!(value["attachments"].is_array(), "les pièces jointes chiffrées doivent accompagner le kit");
+        assert!(value.get("access_token").is_none(), "aucune session ne doit être délivrée : inutile, donc à ne pas accorder");
 
         let still_there: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE email = ? AND purpose = ?")
             .bind(email)

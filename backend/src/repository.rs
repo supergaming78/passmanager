@@ -289,6 +289,24 @@ impl VaultRepository {
         .map_err(AppError::from)
     }
 
+    /// Toutes les pièces jointes d'un utilisateur, CONTENU CHIFFRÉ COMPRIS.
+    ///
+    /// Réservée à la RÉCUPÉRATION (voir handlers/auth/account.rs::get_recovery_data) : c'est le
+    /// seul flux où le client doit tout re-chiffrer SANS pouvoir passer par les routes d'export
+    /// habituelles, lesquelles exigent le hash du mot de passe maître — précisément ce que
+    /// l'utilisateur a oublié. Ailleurs, les pièces jointes se récupèrent une par une (voir
+    /// list_attachments/get_attachment), pour ne pas charger des dizaines de mégaoctets sans raison.
+    pub async fn get_all_attachments_for_user(db: &SqlitePool, email: &str) -> Result<Vec<VaultAttachment>, AppError> {
+        sqlx::query_as::<_, VaultAttachment>(
+            "SELECT id, vault_id, encrypted_filename, encrypted_content, content_size, created_at
+             FROM vault_attachments WHERE user_email = ?",
+        )
+        .bind(email)
+        .fetch_all(db)
+        .await
+        .map_err(AppError::from)
+    }
+
     // NOTE : `count_history_for_user()` a été supprimée ici. Elle ne servait qu'au garde-fou du
     // changement de mot de passe, qui ne compte plus les lignes mais compare l'ENSEMBLE des
     // identifiants re-chiffrés à ceux réellement en base, et le fait DANS la transaction — voir
