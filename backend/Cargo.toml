@@ -168,3 +168,4 @@ regex = "1.13.1"
 # Avec `webpki-roots`,0.11.23esoin d'AUCUN paquet système pour le TLS, donc plus d'OpenSSL du
 # tout dans l'image finale.
 lettre = { version = "0.11.22", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls", "rustls-tls", "webpki-roots", "hostname", "builder"] }
+maxminddb = "0.30.3"

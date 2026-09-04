@@ -110,6 +110,7 @@ cp .env.example .env
 | `ALLOWED_ORIGINS` | non | `http://localhost:5173` | Origines CORS autorisées, séparées par des virgules — voir l'avertissement ci-dessous, le défaut seul NE SUFFIT PAS pour l'app packagée |
 | `ADMIN_EMAIL` | non | — | Email promu administrateur automatiquement (à l'inscription, ou immédiatement si le compte existe déjà) |
 | `TRUST_PROXY_HEADERS` | non | `false` | Voir avertissement ci-dessous — ne concerne que le rate limiting |
+| `GEOIP_DATABASE_PATH` | non | *(vide)* | Base MMDB locale pour l'origine des IP du panneau Administration — voir plus bas |
 
 `PASSWORD_PEPPER` et `JWT_SECRET` font l'objet d'une vérification stricte au démarrage : le
 programme refuse de démarrer si l'un des deux fait moins de 32 caractères.
@@ -125,6 +126,59 @@ elle semblerait "ne rien faire" au clic sur Connexion/Inscription, sans message 
 dans le défaut de `docker-compose.yml` (voir juste au-dessus) — à vérifier/ajouter manuellement
 si tu configures `ALLOWED_ORIGINS` autrement (Portainer, `.env` local...), voir `.env.example`
 pour la valeur complète recommandée.
+
+### Géolocalisation des adresses IP (`GEOIP_DATABASE_PATH`)
+
+Le panneau Administration peut afficher l'origine estimée des adresses IP d'un compte. **La
+résolution se fait entièrement sur ton serveur, contre un fichier local** : aucune adresse de tes
+utilisateurs n'est jamais envoyée à un service tiers.
+
+C'est le point important. La méthode habituelle — interroger une API de géolocalisation — reviendrait
+à transmettre à une entreprise inconnue la liste des adresses de ta famille, c'est-à-dire, dans le
+temps, la carte de leurs déplacements. Dans un gestionnaire de mots de passe à divulgation nulle,
+le chiffrement protégerait le contenu pendant qu'un canal annexe divulguerait le contexte.
+
+**Optionnel** : sans ce réglage, la colonne « Origine » reste vide, rien n'est téléchargé, et le
+reste fonctionne à l'identique.
+
+#### Installer une base
+
+DB-IP publie une base pays libre, sans compte à créer (~8 Mo) :
+
+```bash
+cd backend/data
+curl -L -o dbip-country.mmdb.gz \
+  "https://download.db-ip.com/free/dbip-country-lite-$(date +%Y-%m).mmdb.gz"
+gunzip dbip-country.mmdb.gz
+```
+
+Puis dans ton `.env` :
+
+```
+GEOIP_DATABASE_PATH=/app/data/dbip-country.mmdb
+```
+
+`./data` est déjà monté sur `/app/data` dans `docker-compose.yml` : il n'y a pas de volume à
+ajouter. Redémarre le backend — au démarrage, il journalise le type de base chargée et sa date de
+construction.
+
+MaxMind GeoLite2 fonctionne aussi (format identique) mais demande la création d'un compte. La
+variante « City » ajoute les villes, au prix d'un fichier bien plus gros ; la base pays suffit
+largement pour ce qu'on cherche ici.
+
+Le fichier vieillit : les attributions d'adresses changent. Le rafraîchir tous les quelques mois
+suffit — une base périmée donne des origines fausses, pas des erreurs.
+
+#### Ce qu'il ne faut pas en conclure
+
+Une géolocalisation d'IP est une **estimation**, jamais une position. Un VPN affiche le pays de son
+serveur ; une connexion mobile est souvent rattachée à un équipement opérateur à des centaines de
+kilomètres ; le CGNAT partage une même adresse entre des milliers d'abonnés. C'est utile pour
+repérer un pays manifestement improbable, pas pour affirmer où quelqu'un se trouvait.
+
+Si le serveur tourne derrière un reverse proxy sans `TRUST_PROXY_HEADERS=true`, toutes les adresses
+enregistrées sont celles du proxy : la géolocalisation n'y changera rien, et le panneau te le
+signalera.
 
 **`TRUST_PROXY_HEADERS`** contrôle la façon dont le rate limiting identifie un client : par défaut
 (`false`), il utilise l'IP du pair TCP direct — le seul choix sûr si ce backend est exposé

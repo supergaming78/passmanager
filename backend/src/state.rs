@@ -28,6 +28,10 @@ pub struct AppState {
     // empêcher l'accumulation illimitée de connexions (buggées ou abusives) sur le canal
     // broadcast partagé ci-dessus.
     pub ws_connections: Arc<Mutex<HashMap<String, u32>>>,
+    // Base de géolocalisation hors ligne, chargée UNE fois au démarrage et gardée en mémoire
+    // (voir geoip.rs). Inerte tant que GEOIP_DATABASE_PATH n'est pas configuré. Aucune requête
+    // réseau n'est émise, ni au chargement ni à la consultation.
+    pub geoip: Arc<crate::geoip::GeoIpResolver>,
 }
 
 impl AppState {
@@ -150,6 +154,7 @@ mod tests {
             allowed_origins: vec!["http://localhost:5173".to_string()],
             admin_email: None,
             trust_proxy_headers: false,
+            geoip_database_path: None,
         };
         let state = AppState {
             encoding_key: EncodingKey::from_secret(config.jwt_secret.as_bytes()),
@@ -160,6 +165,7 @@ mod tests {
             sync_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
+            geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
         };
 
         state.log_audit("audituser@example.com", "TEST_ACTION", "127.0.0.1".to_string(), Some("test-agent".to_string())).await;

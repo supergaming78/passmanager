@@ -1430,4 +1430,10 @@ pub struct UserIpHistoryEntry {
     pub success_count: i64,
     pub failure_count: i64,
     pub other_accounts: i64,
+    /// Origine estimée, résolue HORS LIGNE contre une base locale (voir geoip.rs). `None` si
+    /// aucune base n'est configurée, si l'adresse est privée, ou si la base ne la connaît pas.
+    /// Rempli APRÈS la requête SQL, jamais lu depuis une colonne — d'où `#[sqlx(skip)]`, qui
+    /// dispense le type d'implémenter Decode (contrairement à `default`).
+    #[sqlx(skip)]
+    pub location: Option<crate::geoip::IpLocation>,
 }

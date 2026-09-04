@@ -44,6 +44,7 @@ mod error;
 mod repository;
 mod state;
 mod maintenance;
+mod geoip;
 pub use state::AppState;
 
 // =========================================================================
@@ -250,6 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sync_tx,
         shutdown_tx: shutdown_tx.clone(),
         ws_connections: Arc::new(Mutex::new(HashMap::new())),
+        geoip: Arc::new(geoip::GeoIpResolver::load(config.geoip_database_path.as_deref())),
     });
 
     let app = build_router(state);
@@ -1071,6 +1073,7 @@ mod tests {
             allowed_origins: vec!["http://localhost:5173".to_string()],
             admin_email: None,
             trust_proxy_headers: false,
+            geoip_database_path: None,
         };
 
         Arc::new(AppState {
@@ -1082,6 +1085,7 @@ mod tests {
             sync_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
+            geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
         })
     }
 
@@ -1115,6 +1119,7 @@ mod tests {
             allowed_origins: vec!["http://localhost:5173".to_string()],
             admin_email: None,
             trust_proxy_headers: true,
+            geoip_database_path: None,
         };
 
         Arc::new(AppState {
@@ -1126,6 +1131,7 @@ mod tests {
             sync_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
+            geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
         })
     }
 

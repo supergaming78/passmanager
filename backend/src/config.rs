@@ -35,6 +35,11 @@ pub struct Config {
     // `false` par défaut : comportement actuel inchangé (IP du pair TCP direct) tant que cette
     // variable n'est pas explicitement activée.
     pub trust_proxy_headers: bool,
+    // Chemin d'un fichier MMDB pour la géolocalisation HORS LIGNE des adresses IP affichées dans
+    // le panneau Administration (voir geoip.rs). `None` par défaut : sans ce réglage, aucune
+    // géolocalisation n'a lieu et rien n'est téléchargé — une installation existante ne change
+    // pas de comportement. Le fichier est lu localement, aucune requête réseau n'est jamais émise.
+    pub geoip_database_path: Option<String>,
 }
 
 // =========================================================================
@@ -120,6 +125,14 @@ impl Config {
             .map(|v| v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
+        // 10. Base de géolocalisation hors ligne (voir geoip.rs). Une valeur vide est traitée
+        // comme absente : dans un docker-compose, une variable non renseignée arrive souvent
+        // comme chaîne vide plutôt que comme variable manquante.
+        let geoip_database_path = env::var("GEOIP_DATABASE_PATH")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+
         // Instanciation et renvoi de la structure Config avec toutes les données chargées
         Self {
             database_url,
@@ -136,6 +149,7 @@ impl Config {
             allowed_origins,
             admin_email,
             trust_proxy_headers,
+            geoip_database_path,
         }
     }
 

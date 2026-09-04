@@ -1743,19 +1743,35 @@ volontairement conservé — le garder serait de la rétention de données perso
   "event_count": 12,
   "success_count": 4,
   "failure_count": 8,
-  "other_accounts": 1
+  "other_accounts": 1,
+  "location": { "country_code": "FR", "country_name": "France", "city": null }
 }]
 ```
+
+`location` vaut `null` si aucune base de géolocalisation n'est configurée, si l'adresse est privée,
+ou si la base ne la connaît pas. `city` est `null` avec une base « Country », qui n'en contient pas.
 Horodatages en UTC au format SQLite (`YYYY-MM-DD HH:MM:SS`), pas ISO 8601.
 
 **Erreurs** : `403` si l'appelant n'est pas modérateur. Un compte inconnu ou sans activité renvoie
 une liste vide, pas `404` — l'absence d'activité n'est pas une erreur.
 
-**Pas de géolocalisation côté serveur, délibérément.** Localiser une adresse demande d'interroger
-un service tiers, donc de lui transmettre les adresses des utilisateurs — dans un gestionnaire de
-mots de passe à divulgation nulle, faire fuiter par un canal annexe ce que le chiffrement protège
-serait contradictoire. Le client propose à la place un lien « Localiser » que l'administrateur
-ouvre lui-même dans son navigateur, et le dit explicitement à l'écran.
+**Géolocalisation entièrement hors ligne.** L'origine est résolue contre un fichier MMDB **local**
+(voir `GEOIP_DATABASE_PATH` dans `../README.md` et le module `geoip.rs`) : aucune requête réseau
+n'est émise, ni au démarrage ni à la consultation, et aucune adresse d'utilisateur ne quitte jamais
+le serveur. C'est la seule forme acceptable ici — interroger une API de géolocalisation
+transmettrait à un tiers la carte des connexions des utilisateurs, faisant fuiter par un canal
+annexe le contexte que le chiffrement du coffre protège.
+
+La base est optionnelle et lue une seule fois au démarrage, puis gardée en mémoire : une
+consultation ne coûte qu'une lecture d'arbre par adresse. Un chemin configuré mais illisible n'est
+pas fatal — le serveur démarre sans géolocalisation et le journalise. Sans base, le client propose
+un lien « Localiser » que l'administrateur ouvre lui-même dans son navigateur, et le dit à l'écran.
+
+**La consultation est elle-même auditée.** Chaque appel réussi écrit
+`IP_HISTORY_VIEWED:<compte consulté>` dans le journal, sous l'email du consultant. Sans cela,
+éplucher les adresses des autres comptes serait le seul accès privilégié de l'application à ne
+laisser aucune trace. Un appel refusé (403) n'écrit rien : un accès qui n'a pas eu lieu ne doit pas
+noyer ceux qui ont eu lieu.
 
 **Piège de déploiement** : derrière un reverse proxy sans `TRUST_PROXY_HEADERS=true`, le serveur
 enregistre l'IP du **proxy**, identique pour tous les comptes. La route ne peut pas le détecter ;

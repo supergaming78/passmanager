@@ -693,4 +693,16 @@ export interface UserIpHistoryEntry {
   /** Nombre d'AUTRES comptes ayant utilisé la même adresse. Sur un serveur familial, tout le monde
    * partage l'IP de la maison : c'est le croisement avec les échecs qui parle, pas le partage. */
   other_accounts: number;
+  /** Origine estimée, résolue HORS LIGNE par le serveur contre une base locale. `null` si aucune
+   * base n'est configurée, si l'adresse est privée, ou si la base ne la connaît pas. Aucune
+   * requête vers un service tiers n'est faite pour l'obtenir. */
+  location: IpLocation | null;
+}
+
+/** Origine estimée d'une adresse. Volontairement pauvre : ni coordonnées, ni fuseau — une
+ * géolocalisation d'IP est une estimation, pas une position. */
+export interface IpLocation {
+  country_code: string | null;
+  country_name: string | null;
+  city: string | null;
 }

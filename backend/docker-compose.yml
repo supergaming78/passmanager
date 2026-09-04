@@ -49,6 +49,8 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:5173,http://tauri.localhost,tauri://localhost}
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
       - TRUST_PROXY_HEADERS=${TRUST_PROXY_HEADERS:-false}
+      # Vide par defaut : sans base montee ci-dessous, la geolocalisation reste simplement absente.
+      - GEOIP_DATABASE_PATH=${GEOIP_DATABASE_PATH:-}
       # "info" par défaut : le niveau "debug" a un coût réel (formatage de chaînes, bookkeeping
       # de spans) sur CHAQUE requête d'un service qui tourne en continu — à réserver à une session
       # de débogage ponctuelle (repasser cette ligne en debug temporairement), pas à la prod.

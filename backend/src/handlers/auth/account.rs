@@ -782,6 +782,7 @@ mod tests {
             allowed_origins: vec!["http://localhost:5173".to_string()],
             admin_email: None,
             trust_proxy_headers: false,
+            geoip_database_path: None,
         };
 
         Arc::new(AppState {
@@ -793,6 +794,7 @@ mod tests {
             sync_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
+            geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
         })
     }
 
@@ -1627,6 +1629,7 @@ mod tests {
             sync_tx: base_state.sync_tx.clone(),
             shutdown_tx: base_state.shutdown_tx.clone(),
             ws_connections: base_state.ws_connections.clone(),
+            geoip: base_state.geoip.clone(),
         });
 
         sqlx::query("INSERT INTO users (email, password_hash, is_moderator) VALUES (?, ?, ?)")

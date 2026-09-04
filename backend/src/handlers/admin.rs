@@ -614,6 +614,8 @@ pub async fn update_registration_open(
 /// prévient (voir Admin.tsx).
 pub async fn get_user_ip_history(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     user: AuthUser,
     Path(target_email): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -632,6 +634,26 @@ pub async fn get_user_ip_history(
     .bind(&target_email)
     .fetch_all(&state.db)
     .await?;
+
+    // Résolution de l'origine APRÈS la requête, en mémoire : la base MMDB est déjà chargée (voir
+    // geoip.rs), donc chaque adresse coûte une lecture d'arbre, sans I/O ni réseau. Inerte tant
+    // qu'aucune base n'est configurée.
+    let history: Vec<_> = history
+        .into_iter()
+        .map(|mut row| {
+            row.location = state.geoip.lookup(&row.ip_address);
+            row
+        })
+        .collect();
+
+    // Surveiller les surveillants : consulter les adresses de quelqu'un est un acte privilégié, il
+    // laisse donc lui-même une trace. Sans cela, un modérateur pourrait éplucher les déplacements
+    // des autres comptes sans qu'il en reste rien — la seule catégorie d'accès de l'application
+    // qui échapperait au journal. Tracé sous l'email du CONSULTANT, avec la cible en clair.
+    let agent = get_user_agent(&headers);
+    state
+        .log_audit(&user.email, &format!("IP_HISTORY_VIEWED:{target_email}"), addr.to_string(), agent)
+        .await;
 
     Ok(Json(history))
 }
@@ -719,6 +741,7 @@ mod tests {
             allowed_origins: vec!["http://localhost:5173".to_string()],
             admin_email: None,
             trust_proxy_headers: false,
+            geoip_database_path: None,
         };
 
         Arc::new(AppState {
@@ -730,6 +753,7 @@ mod tests {
             sync_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
+            geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
         })
     }
 
@@ -806,6 +830,7 @@ mod tests {
             sync_tx: state.sync_tx.clone(),
             shutdown_tx: state.shutdown_tx.clone(),
             ws_connections: state.ws_connections.clone(),
+            geoip: state.geoip.clone(),
         })
     }
 
@@ -1523,6 +1548,8 @@ mod tests {
     async fn ip_history_of(state: &Arc<AppState>, caller_is_moderator: bool, target: &str) -> serde_json::Value {
         let result = get_user_ip_history(
             State(state.clone()),
+            ConnectInfo(addr()),
+            HeaderMap::new(),
             AuthUser { email: "boss@example.com".to_string(), is_moderator: caller_is_moderator },
             Path(target.to_string()),
         ).await.expect("la consultation doit réussir");
@@ -1536,6 +1563,8 @@ mod tests {
         let state = build_test_state().await;
         let result = get_user_ip_history(
             State(state.clone()),
+            ConnectInfo(addr()),
+            HeaderMap::new(),
             AuthUser { email: "curieux@example.com".to_string(), is_moderator: false },
             Path("cible@example.com".to_string()),
         ).await;
@@ -1637,6 +1666,64 @@ mod tests {
 
         let history = ip_history_of(&state, true, "cible@example.com").await;
         assert_eq!(history.as_array().unwrap().len(), 1, "l'historique IP doit survivre à la purge du journal");
+    }
+
+    /// Surveiller les surveillants : consulter les adresses de quelqu'un est un acte privilégié et
+    /// doit donc laisser lui-même une trace. Sans ce test, rien n'empêcherait la trace de
+    /// disparaître à la prochaine refonte, et ce serait le seul accès privilégié de l'application
+    /// à échapper au journal.
+    #[tokio::test]
+    async fn test_viewing_ip_history_is_itself_audited() {
+        let state = build_test_state().await;
+        register_test_user(&state, "moderateur@example.com", true).await;
+        register_test_user(&state, "surveille@example.com", false).await;
+
+        get_user_ip_history(
+            State(state.clone()),
+            ConnectInfo(addr()),
+            HeaderMap::new(),
+            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+            Path("surveille@example.com".to_string()),
+        )
+        .await
+        .expect("la consultation doit réussir");
+
+        let (actor, action): (String, String) = sqlx::query_as(
+            "SELECT user_email, action FROM audit_logs WHERE action LIKE 'IP_HISTORY_VIEWED%'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .expect("la consultation doit avoir laissé une entrée d'audit");
+
+        assert_eq!(actor, "moderateur@example.com", "la trace doit désigner CELUI QUI CONSULTE");
+        assert_eq!(
+            action, "IP_HISTORY_VIEWED:surveille@example.com",
+            "la trace doit nommer le compte consulté, sinon elle ne dit pas grand-chose"
+        );
+    }
+
+    /// Un refus ne doit PAS laisser de trace de consultation : sinon le journal se remplirait
+    /// d'accès qui n'ont jamais eu lieu, et une vraie consultation s'y noierait.
+    #[tokio::test]
+    async fn test_refused_ip_history_is_not_audited_as_a_view() {
+        let state = build_test_state().await;
+
+        let _ = get_user_ip_history(
+            State(state.clone()),
+            ConnectInfo(addr()),
+            HeaderMap::new(),
+            AuthUser { email: "curieux@example.com".to_string(), is_moderator: false },
+            Path("cible@example.com".to_string()),
+        )
+        .await;
+
+        let traces: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM audit_logs WHERE action LIKE 'IP_HISTORY_VIEWED%'",
+        )
+        .fetch_one(&state.db)
+        .await
+        .unwrap();
+        assert_eq!(traces, 0, "un accès refusé n'est pas une consultation");
     }
 
     /// Suppression d'un compte : son historique IP part avec lui (ON DELETE CASCADE), contrairement

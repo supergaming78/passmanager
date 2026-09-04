@@ -270,6 +270,7 @@ mod tests {
             allowed_origins: vec!["http://localhost:5173".to_string()],
             admin_email: None,
             trust_proxy_headers: false,
+            geoip_database_path: None,
         };
 
         Arc::new(AppState {
@@ -281,6 +282,7 @@ mod tests {
             sync_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
+            geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
         })
     }
 
@@ -313,6 +315,7 @@ mod tests {
             allowed_origins: vec!["http://localhost:5173".to_string()],
             admin_email: Some(admin_email.to_lowercase()),
             trust_proxy_headers: false,
+            geoip_database_path: None,
         };
 
         Arc::new(AppState {
@@ -324,6 +327,7 @@ mod tests {
             sync_tx: tokio::sync::broadcast::channel(16).0,
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
+            geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
         })
     }
 

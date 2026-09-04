@@ -418,6 +418,21 @@ function UsersSection() {
     const parseUtc = (ts: string) => new Date(`${ts.replace(" ", "T")}Z`);
     const isPrivate = (ip: string) =>
       /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|fc|fd)/i.test(ip);
+
+    // Le drapeau se dérive du code pays : chaque lettre A-Z correspond à un « indicateur régional »
+    // Unicode, et deux d'entre eux accolés forment le drapeau. Aucune image à embarquer.
+    const flagOf = (code: string | null) => {
+      if (!code || code.length !== 2 || !/^[a-z]{2}$/i.test(code)) return "";
+      return String.fromCodePoint(...[...code.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
+    };
+
+    const describeOrigin = (row: UserIpHistoryEntry) => {
+      if (!row.location) return null;
+      const { city, country_name, country_code } = row.location;
+      const country = country_name ?? country_code;
+      if (city && country) return `${city}, ${country}`;
+      return city ?? country ?? null;
+    };
     const looksLikeProxy = ipHistory !== null && ipHistory.length === 1 && isPrivate(ipHistory[0].ip_address);
 
     // Une adresse qui a échoué PUIS réussi. C'est le seul motif qu'on met en rouge : tout
@@ -497,14 +512,19 @@ function UsersSection() {
                       <td className="py-1 pr-3 text-neutral-600 dark:text-neutral-400">
                         {row.other_accounts === 0 ? "—" : row.other_accounts}
                       </td>
-                      <td className="py-1 pr-3">
+                      <td className="whitespace-nowrap py-1 pr-3">
                         {isPrivate(row.ip_address) ? (
                           <span className="text-neutral-400">réseau local</span>
+                        ) : describeOrigin(row) ? (
+                          <span className="text-neutral-700 dark:text-neutral-200">
+                            {flagOf(row.location?.country_code ?? null)} {describeOrigin(row)}
+                          </span>
                         ) : (
                           <button
                             type="button"
                             onClick={() => void openUrl(`https://ipinfo.io/${encodeURIComponent(row.ip_address)}`)}
-                            className="text-neutral-600 underline hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+                            title="Ouvre un service tiers dans ton navigateur et lui transmet cette adresse"
+                            className="text-neutral-500 underline hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
                           >
                             Localiser
                           </button>
@@ -517,12 +537,12 @@ function UsersSection() {
             </div>
 
             <p className="mt-2 text-neutral-400">
-              « Localiser » ouvre un service tiers dans ton navigateur et lui transmet donc
-              l'adresse consultée : c'est pour cela que rien n'est localisé automatiquement — ton
-              serveur n'envoie jamais les adresses de tes utilisateurs à qui que ce soit. La
-              localisation d'une IP reste approximative (un VPN ou une connexion mobile la place
-              souvent dans une autre ville), et une connexion mobile change d'adresse souvent :
-              plusieurs adresses n'ont rien d'anormal en soi.
+              {ipHistory.some((row) => row.location)
+                ? "Les origines sont résolues par ton serveur contre une base locale : aucune adresse n'est envoyée à un service tiers."
+                : "Aucune base de géolocalisation n'est installée sur ton serveur — voir GEOIP_DATABASE_PATH dans le README. En attendant, « Localiser » ouvre un service tiers dans ton navigateur et lui transmet l'adresse : ton serveur, lui, n'envoie jamais rien."}
+              {" "}La localisation d'une IP reste une estimation : un VPN affiche le pays de son
+              serveur, et une connexion mobile est souvent rattachée à une autre ville — elle
+              change aussi d'adresse souvent, donc plusieurs adresses n'ont rien d'anormal en soi.
             </p>
           </>
         )}
