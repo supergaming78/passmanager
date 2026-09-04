@@ -108,6 +108,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // produits (même préfixe "server.json", même rotation quotidienne), mais purge automatiquement
     // le plus ancien dès qu'un 15e existerait — 14 jours de logs (~2 semaines) largement suffisant
     // pour diagnostiquer un problème récent, sans laisser ce dossier grossir sans fin.
+    // Créé AVANT de construire l'appender : sa purge des vieux fichiers (max_log_files) liste le
+    // dossier dès l'initialisation, avant que la première écriture ne l'ait créé. Sur un conteneur
+    // neuf — donc à CHAQUE redéploiement, ./logs n'étant pas un volume — cela affichait en tout
+    // premier "Error reading the log directory/files: No such file or directory", juste avant les
+    // lignes de démarrage normales. Sans conséquence (le dossier était créé à la première
+    // écriture), mais c'est la première chose qu'on lit dans Portainer après un déploiement, et
+    // une erreur en tête de journal fait légitimement croire à un démarrage raté.
+    if let Err(e) = std::fs::create_dir_all("./logs") {
+        eprintln!("Impossible de créer ./logs ({e}) — les logs fichier seront indisponibles, stdout reste actif.");
+    }
+
     let file_appender = tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .filename_prefix("server.json")
