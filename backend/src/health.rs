@@ -77,6 +77,14 @@ pub struct ActivityStats {
 
 #[derive(serde::Serialize)]
 pub struct BackupStatus {
+    /// Faux quand le dossier n'est pas accessible au serveur — typiquement un volume non monté.
+    ///
+    /// Sans cette distinction, « le dossier n'est pas monté » (problème de configuration) et
+    /// « le service de sauvegarde ne produit rien » (problème grave) donnaient le MÊME message.
+    /// C'est arrivé : l'écran annonçait « aucune sauvegarde trouvée » alors que les sauvegardes
+    /// existaient — l'api ne montait simplement pas le dossier. Une fausse alerte sur la seule
+    /// chose qu'on ne veut surtout pas croire à tort.
+    pub directory_present: bool,
     pub count: u64,
     /// Âge de la plus récente. `None` s'il n'y en a aucune — ce qui est en soi l'information la
     /// plus importante que cet écran puisse donner.
@@ -192,7 +200,7 @@ fn directory_size(dossier: &Path) -> u64 {
 /// semaines veut dire que le service s'est arrêté sans que personne ne s'en aperçoive.
 fn backup_status(dossier: &Path) -> BackupStatus {
     let Ok(entrees) = std::fs::read_dir(dossier) else {
-        return BackupStatus { count: 0, newest_age_hours: None, newest_bytes: None };
+        return BackupStatus { directory_present: false, count: 0, newest_age_hours: None, newest_bytes: None };
     };
     let fichiers: Vec<_> = entrees
         .filter_map(Result::ok)
@@ -205,6 +213,7 @@ fn backup_status(dossier: &Path) -> BackupStatus {
         .max_by_key(|(t, _)| *t);
 
     BackupStatus {
+        directory_present: true,
         count: fichiers.len() as u64,
         newest_age_hours: plus_recent
             .and_then(|(t, _)| t.elapsed().ok())
@@ -293,12 +302,26 @@ mod tests {
     }
 
     /// Un dossier absent vaut 0, pas une erreur : ni ./backups ni ./logs n'existent forcément.
+    ///
+    /// Surtout, un dossier ABSENT doit se distinguer d'un dossier VIDE : le premier est un volume
+    /// non monté (problème de configuration), le second une sauvegarde qui ne se fait plus
+    /// (problème grave). Ils ont donné le même message une fois, et l'écran a annoncé « aucune
+    /// sauvegarde » à quelqu'un dont les sauvegardes se portaient très bien.
     #[test]
-    fn test_missing_directory_counts_as_zero() {
+    fn test_missing_directory_is_distinguishable_from_empty_one() {
         assert_eq!(directory_size(Path::new("/dossier/qui/n/existe/pas")), 0);
-        let vide = backup_status(Path::new("/dossier/qui/n/existe/pas"));
-        assert_eq!(vide.count, 0);
-        assert!(vide.newest_age_hours.is_none());
+
+        let absent = backup_status(Path::new("/dossier/qui/n/existe/pas"));
+        assert!(!absent.directory_present, "un dossier illisible doit être signalé comme tel");
+        assert_eq!(absent.count, 0);
+        assert!(absent.newest_age_hours.is_none());
+
+        let base = std::env::temp_dir().join(format!("sauvegardes-vides-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let vide = backup_status(&base);
+        assert!(vide.directory_present, "un dossier existant mais vide n'est PAS un dossier absent");
+        assert_eq!(vide.count, 0, "et il ne contient bien aucune sauvegarde");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// La taille d'un dossier additionne ses fichiers, et ignore les sous-dossiers.

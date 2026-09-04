@@ -739,6 +739,9 @@ export interface ServerHealth {
     active_sessions: number;
   };
   backup: {
+    /** Faux = le dossier n'est pas accessible au serveur (volume non monté), ce qui est un
+     * problème de configuration et non une sauvegarde manquante. */
+    directory_present: boolean;
     count: number;
     newest_age_hours: number | null;
     newest_bytes: number | null;

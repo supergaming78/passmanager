@@ -573,6 +573,9 @@ function UsersSection() {
     const disqueTendu = pourcentUtilise !== null && pourcentUtilise >= 85;
     // Le service de sauvegarde tourne toutes les 24 h : au-delà de 48 h, il a manqué un cycle.
     const sauvegardeMuette = backup.newest_age_hours === null || backup.newest_age_hours > 48;
+    // Un dossier inaccessible n'est PAS une sauvegarde manquante : c'est un volume non monté, et
+    // le conseil à donner est l'inverse (corriger la configuration, pas s'inquiéter des données).
+    const dossierAbsent = !backup.directory_present;
 
     const ligne = (label: string, valeur: string) => (
       <div className="flex items-baseline justify-between gap-3 border-t border-neutral-100 py-1 dark:border-neutral-800">
@@ -633,9 +636,11 @@ function UsersSection() {
 
         {sauvegardeMuette && (
           <p className="mb-2 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
-            {backup.newest_age_hours === null
-              ? "Aucune sauvegarde trouvée. Vérifie que le conteneur « backup » tourne — une base perdue sans sauvegarde ne se récupère pas."
-              : `La dernière sauvegarde date de ${backup.newest_age_hours} h, alors qu'il s'en fait normalement une toutes les 24 h. Le service s'est peut-être arrêté sans prévenir.`}
+            {dossierAbsent
+              ? "Le serveur ne voit pas le dossier des sauvegardes — il n'est probablement pas monté dans son conteneur. Tes sauvegardes existent peut-être très bien ; c'est cet écran qui ne peut pas les lire. Ajoute « ./backups:/app/backups:ro » aux volumes du service api, puis redéploie."
+              : backup.newest_age_hours === null
+                ? "Le dossier des sauvegardes est vide. Vérifie que le conteneur « backup » tourne — une base perdue sans sauvegarde ne se récupère pas."
+                : `La dernière sauvegarde date de ${backup.newest_age_hours} h, alors qu'il s'en fait normalement une toutes les 24 h. Le service s'est peut-être arrêté sans prévenir.`}
           </p>
         )}
 

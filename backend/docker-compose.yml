@@ -57,6 +57,11 @@ services:
       - RUST_LOG=backend=info,tower_http=info
     volumes:
       - ./data:/app/data # Stockage persistant de la base SQLite
+      # :ro — l'écran d'état lit l'âge et la taille des sauvegardes (voir health.rs) ; il ne doit
+      # jamais pouvoir y écrire. Sans ce montage, l'api ne voit AUCUN fichier et annonce « aucune
+      # sauvegarde trouvée » même quand le service backup fonctionne parfaitement : une fausse
+      # alerte sur la seule chose qu'on ne veut surtout pas croire à tort.
+      - ./backups:/app/backups:ro
     restart: always
     # Utilise le HEALTHCHECK défini dans le Dockerfile (appelle GET /health) pour que Docker
     # sache si le conteneur est réellement opérationnel, pas juste "démarré".

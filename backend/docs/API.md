@@ -1859,7 +1859,7 @@ place disque.
     "websocket_connections": 2, "failed_logins_24h": 3,
     "rate_limited_24h": 0, "active_sessions": 6
   },
-  "backup": { "count": 7, "newest_age_hours": 3, "newest_bytes": 1765432 }
+  "backup": { "directory_present": true, "count": 7, "newest_age_hours": 3, "newest_bytes": 1765432 }
 }
 ```
 
@@ -1868,6 +1868,14 @@ place disque.
 client qui les confondrait afficherait un disque plein sur une machine de développement.
 `newest_age_hours` vaut `null` quand aucune sauvegarde n'existe, ce qui est l'information la plus
 importante que cette route puisse donner.
+
+`directory_present` distingue deux situations que rien ne séparait au départ : le dossier n'est pas
+accessible au serveur (volume non monté — un problème de CONFIGURATION), ou il est accessible mais
+vide (le service de sauvegarde ne produit plus rien — un problème GRAVE). Les confondre a produit
+une fausse alerte « aucune sauvegarde trouvée » sur un serveur dont les sauvegardes se portaient
+très bien : le service `api` ne montait simplement pas `./backups`. Le montage a été ajouté à
+`docker-compose.yml` en lecture seule — l'écran d'état lit l'âge et la taille des sauvegardes, il
+ne doit jamais pouvoir y écrire.
 
 `reclaimable_bytes` = `freelist_count × page_size` : de la place libérée par des suppressions que
 SQLite conserve pour ses prochaines écritures. Un `VACUUM` la rendrait au disque, mais c'est inutile
