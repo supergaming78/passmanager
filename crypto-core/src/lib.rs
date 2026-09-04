@@ -13,5 +13,6 @@
 pub mod crypto;
 pub mod emergency;
 pub mod sharing;
+pub mod recovery;
 pub mod shared_vault;
 pub mod blind_share;

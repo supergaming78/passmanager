@@ -180,7 +180,18 @@ pub const ENCRYPTED_EXPORT_MAGIC: &str = "PMVAULT-ENC-V1";
 /// passe choisi par l'utilisateur au moment de l'export — indépendant du mot de passe maître.
 /// Renvoie le contenu prêt à écrire tel quel dans le fichier : une ligne de marqueur, puis le blob
 /// base64 (sel Argon2id 16 octets || nonce AES-GCM 12 octets || texte chiffré+tag).
-pub fn encrypt_export_content(plaintext: &str, password: &str) -> Result<String, String> {
+/// Scelle des octets quelconques avec un MOT DE PASSE (pas une clé déjà dérivée) : Argon2id sur un
+/// sel aléatoire, puis AES-256-GCM. Le blob renvoyé est auto-suffisant — `sel(16) || nonce(12) ||
+/// chiffré+tag`, en base64 — donc rien d'autre n'est à stocker à côté.
+///
+/// Extrait de encrypt_export_content() pour être partagé avec le KIT DE RÉCUPÉRATION (voir
+/// recovery.rs), qui a besoin exactement de la même construction : sceller la clé du coffre avec un
+/// code que seul l'utilisateur détient. Factorisé plutôt que recopié — deux implémentations
+/// parallèles de la même cryptographie finissent toujours par diverger.
+///
+/// Le FORMAT est inchangé par rapport à ce que produisait encrypt_export_content avant cette
+/// extraction : les fichiers d'export déjà créés restent lisibles.
+pub fn seal_with_password(plaintext: &[u8], password: &str) -> Result<String, String> {
     let mut salt = [0u8; 16];
     rand::fill(&mut salt);
 
@@ -198,7 +209,7 @@ pub fn encrypt_export_content(plaintext: &str, password: &str) -> Result<String,
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_bytes())
+        .encrypt(nonce, plaintext)
         .map_err(|_| "Échec du chiffrement".to_string())?;
 
     let mut blob = Vec::with_capacity(salt.len() + nonce_bytes.len() + ciphertext.len());
@@ -206,23 +217,16 @@ pub fn encrypt_export_content(plaintext: &str, password: &str) -> Result<String,
     blob.extend_from_slice(&nonce_bytes);
     blob.extend_from_slice(&ciphertext);
 
-    Ok(format!("{ENCRYPTED_EXPORT_MAGIC}\n{}", BASE64.encode(blob)))
+    Ok(BASE64.encode(blob))
 }
 
-/// Déchiffre un contenu produit par encrypt_export_content(). `content` doit commencer par
-/// ENCRYPTED_EXPORT_MAGIC (à vérifier par l'appelant AVANT — voir lib/vaultFile.ts — pour pouvoir
-/// distinguer "mauvais mot de passe" d'"pas un export chiffré du tout").
-pub fn decrypt_export_content(content: &str, password: &str) -> Result<String, String> {
-    let body = content
-        .strip_prefix(ENCRYPTED_EXPORT_MAGIC)
-        .ok_or_else(|| "Ce fichier n'est pas un export chiffré reconnu".to_string())?
-        .trim_start_matches('\r')
-        .trim_start_matches('\n')
-        .trim_start_matches('\r');
-
-    let blob = BASE64.decode(body).map_err(|_| "Fichier chiffré invalide (base64)".to_string())?;
+/// Pendant de seal_with_password(). Message d'erreur volontairement identique pour "mauvais mot de
+/// passe" et "données corrompues" : GCM ne permet pas de les distinguer, et prétendre le contraire
+/// induirait l'utilisateur en erreur.
+pub fn open_with_password(blob_b64: &str, password: &str) -> Result<Vec<u8>, String> {
+    let blob = BASE64.decode(blob_b64).map_err(|_| "Contenu chiffré invalide (base64)".to_string())?;
     if blob.len() < 16 + 12 {
-        return Err("Fichier chiffré trop court".to_string());
+        return Err("Contenu chiffré trop court".to_string());
     }
     let (salt, rest) = blob.split_at(16);
     let (nonce_bytes, ciphertext) = rest.split_at(12);
@@ -237,10 +241,28 @@ pub fn decrypt_export_content(content: &str, password: &str) -> Result<String, S
     key.zeroize();
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let plaintext = cipher
+    cipher
         .decrypt(nonce, ciphertext)
-        .map_err(|_| "Mot de passe incorrect, ou fichier corrompu".to_string())?;
+        .map_err(|_| "Mot de passe incorrect, ou données corrompues".to_string())
+}
 
+pub fn encrypt_export_content(plaintext: &str, password: &str) -> Result<String, String> {
+    let blob_b64 = seal_with_password(plaintext.as_bytes(), password)?;
+    Ok(format!("{ENCRYPTED_EXPORT_MAGIC}\n{blob_b64}"))
+}
+
+/// Déchiffre un contenu produit par encrypt_export_content(). `content` doit commencer par
+/// ENCRYPTED_EXPORT_MAGIC (à vérifier par l'appelant AVANT — voir lib/vaultFile.ts — pour pouvoir
+/// distinguer "mauvais mot de passe" d'"pas un export chiffré du tout").
+pub fn decrypt_export_content(content: &str, password: &str) -> Result<String, String> {
+    let body = content
+        .strip_prefix(ENCRYPTED_EXPORT_MAGIC)
+        .ok_or_else(|| "Ce fichier n'est pas un export chiffré reconnu".to_string())?
+        .trim_start_matches('\r')
+        .trim_start_matches('\n')
+        .trim_start_matches('\r');
+
+    let plaintext = open_with_password(body, password)?;
     String::from_utf8(plaintext).map_err(|_| "Contenu déchiffré invalide (UTF-8)".to_string())
 }
 
