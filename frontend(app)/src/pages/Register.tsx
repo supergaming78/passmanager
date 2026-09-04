@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
+import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
 import AuthCard from "../components/AuthCard";
 import PasswordStrengthMeter from "../components/PasswordStrengthMeter";
@@ -14,6 +15,22 @@ export default function Register() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Inscriptions fermées : prévenir AVANT que le formulaire ne soit rempli, plutôt que de le
+  // rejeter après coup (voir handlers/admin.rs::update_registration_open côté serveur, qui reste
+  // la vraie autorité — ceci n'est qu'un confort d'affichage).
+  const [registrationOpen, setRegistrationOpen] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getPublicConfig()
+      .then((config) => {
+        if (!cancelled) setRegistrationOpen(config.registration_open);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -41,6 +58,12 @@ export default function Register() {
 
   return (
     <AuthCard title="Créer un compte">
+      {registrationOpen === false && (
+        <p className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+          Les inscriptions sont fermées sur ce serveur. Demande à son administrateur de les rouvrir
+          le temps de créer ton compte.
+        </p>
+      )}
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <div>
           <label htmlFor="email" className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">

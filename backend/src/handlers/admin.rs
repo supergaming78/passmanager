@@ -53,7 +53,7 @@ pub async fn list_users(
     }
 
     let mut users = sqlx::query_as::<_, AdminUserView>(
-        "SELECT email, is_moderator, email_verified, created_at, max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, has_beta_access, is_suspended FROM users ORDER BY created_at DESC"
+        "SELECT email, is_moderator, email_verified, created_at, max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, is_suspended FROM users ORDER BY created_at DESC"
     )
     .fetch_all(&state.db)
     .await?;
@@ -592,93 +592,6 @@ pub async fn update_registration_open(
     Ok(StatusCode::OK)
 }
 
-/// Interrupteur GLOBAL des fonctionnalités en rodage (Admin uniquement) — permet de tout couper
-/// d'un coup si l'une d'elles dérape, sans repasser sur chaque compte. Un accès n'est effectif que
-/// si CE réglage ET le drapeau du compte sont vrais (voir has_beta_access dans GET /me).
-pub async fn update_beta_features_enabled(
-    State(state): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    user: AuthUser,
-    Json(payload): Json<UpdateBetaFeaturesEnabledPayload>,
-) -> Result<impl IntoResponse, AppError> {
-    if !user.is_admin(&state) {
-        warn!("Tentative de modification de l'interrupteur bêta global par {} (pas l'Admin)", user.email);
-        return Err(AppError::Forbidden);
-    }
-
-    sqlx::query("UPDATE app_settings SET beta_features_enabled = ? WHERE id = 1")
-        .bind(payload.enabled)
-        .execute(&state.db)
-        .await?;
-
-    let action = if payload.enabled { "BETA_FEATURES_ENABLED" } else { "BETA_FEATURES_DISABLED" };
-    let agent = get_user_agent(&headers);
-    state.log_audit(&user.email, action, addr.to_string(), agent).await;
-    info!("Fonctionnalités bêta (global) réglées par {} (enabled={})", user.email, payload.enabled);
-
-    Ok(StatusCode::OK)
-}
-
-/// Accorde ou retire l'accès bêta à UN compte (Admin uniquement — désigner qui essuie les plâtres
-/// n'est pas une décision de modération courante).
-pub async fn update_beta_access(
-    State(state): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    user: AuthUser,
-    Path(target_email): Path<String>,
-    Json(payload): Json<UpdateBetaAccessPayload>,
-) -> Result<impl IntoResponse, AppError> {
-    if !user.is_admin(&state) {
-        warn!("Tentative de modification d'accès bêta par {} (pas l'Admin)", user.email);
-        return Err(AppError::Forbidden);
-    }
-    let target_email = target_email.to_lowercase();
-
-    let res = sqlx::query("UPDATE users SET has_beta_access = ? WHERE email = ?")
-        .bind(payload.has_beta_access)
-        .bind(&target_email)
-        .execute(&state.db)
-        .await?;
-    if res.rows_affected() == 0 {
-        return Err(AppError::NotFound);
-    }
-
-    let action = if payload.has_beta_access { "BETA_ACCESS_GRANTED" } else { "BETA_ACCESS_REVOKED" };
-    let agent = get_user_agent(&headers);
-    state.log_audit(&user.email, action, addr.to_string(), agent).await;
-    info!("Accès bêta de {} modifié par {} (has_beta_access={})", target_email, user.email, payload.has_beta_access);
-
-    Ok(StatusCode::OK)
-}
-
-/// Même réglage, appliqué à TOUS les comptes d'un coup (Admin uniquement).
-pub async fn update_beta_access_all(
-    State(state): State<Arc<AppState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    user: AuthUser,
-    Json(payload): Json<UpdateBetaAccessPayload>,
-) -> Result<impl IntoResponse, AppError> {
-    if !user.is_admin(&state) {
-        warn!("Tentative de modification d'accès bêta GLOBALE par {} (pas l'Admin)", user.email);
-        return Err(AppError::Forbidden);
-    }
-
-    sqlx::query("UPDATE users SET has_beta_access = ?")
-        .bind(payload.has_beta_access)
-        .execute(&state.db)
-        .await?;
-
-    let action = if payload.has_beta_access { "BETA_ACCESS_GRANTED_ALL" } else { "BETA_ACCESS_REVOKED_ALL" };
-    let agent = get_user_agent(&headers);
-    state.log_audit(&user.email, action, addr.to_string(), agent).await;
-    info!("Accès bêta de TOUS les comptes modifié par {} (has_beta_access={})", user.email, payload.has_beta_access);
-
-    Ok(StatusCode::OK)
-}
-
 /// Suspend ou réactive un compte — marche intermédiaire entre "ne rien faire" et la suppression
 /// définitive, qui cascade sur tout le coffre et ne se rattrape pas.
 ///
@@ -820,11 +733,6 @@ mod tests {
     // =========================================================================
     // TESTS SUR LA GESTION ADMIN DES COMPTES UTILISATEURS
     // =========================================================================
-
-    async fn read_json_body(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("lecture du corps");
-        serde_json::from_slice(&bytes).expect("le corps doit être du JSON valide")
-    }
 
     async fn register_test_user(state: &Arc<AppState>, email: &str, is_moderator: bool) {
         sqlx::query("INSERT INTO users (email, password_hash, is_moderator) VALUES (?, ?, ?)")
@@ -1410,7 +1318,7 @@ mod tests {
     }
 
     // =========================================================================
-    // CONTRÔLES D'ADMINISTRATION (inscriptions, bêta, suspension)
+    // CONTRÔLES D'ADMINISTRATION (inscriptions, suspension)
     // =========================================================================
 
     fn ctrl_addr() -> SocketAddr {
@@ -1544,9 +1452,9 @@ mod tests {
         assert!(matches!(result, Err(AppError::Forbidden)), "un modérateur ne doit pas pouvoir suspendre l'Admin");
     }
 
-    /// Les réglages bêta et d'inscription sont réservés au SEUL Admin, pas aux modérateurs.
+    /// Ouvrir/fermer les inscriptions est réservé au SEUL Admin, pas aux modérateurs.
     #[tokio::test]
-    async fn test_global_admin_settings_refused_to_moderators() {
+    async fn test_registration_setting_refused_to_moderators() {
         let state = build_test_state().await;
         let moderator = || AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true };
 
@@ -1556,51 +1464,7 @@ mod tests {
         ).await;
         assert!(matches!(r1, Err(AppError::Forbidden)), "ouvrir les inscriptions est réservé à l'Admin");
 
-        let r2 = update_beta_features_enabled(
-            State(state.clone()), ConnectInfo(ctrl_addr()), HeaderMap::new(), moderator(),
-            Json(UpdateBetaFeaturesEnabledPayload { enabled: true }),
-        ).await;
-        assert!(matches!(r2, Err(AppError::Forbidden)), "l'interrupteur bêta est réservé à l'Admin");
-
-        let r3 = update_beta_access(
-            State(state.clone()), ConnectInfo(ctrl_addr()), HeaderMap::new(), moderator(),
-            Path("quelquun@example.com".to_string()),
-            Json(UpdateBetaAccessPayload { has_beta_access: true }),
-        ).await;
-        assert!(matches!(r3, Err(AppError::Forbidden)), "accorder un accès bêta est réservé à l'Admin");
     }
 
-    /// L'accès bêta n'est effectif que si les DEUX niveaux sont vrais — le drapeau du compte ET
-    /// l'interrupteur global. C'est ce qui permet de tout couper d'un coup sans repasser sur
-    /// chaque compte.
-    #[tokio::test]
-    async fn test_beta_access_requires_both_levels() {
-        let state = build_test_state().await;
-        let email = "testeur@example.com";
-        register_test_user(&state, email, false).await;
-        let user = || AuthUser { email: email.to_string(), is_moderator: false };
-
-        let read_beta = |state: Arc<AppState>| async move {
-            let me = crate::handlers::auth::get_me(State(state), AuthUser { email: "testeur@example.com".to_string(), is_moderator: false })
-                .await
-                .unwrap()
-                .into_response();
-            read_json_body(me).await["has_beta_access"].as_bool().unwrap()
-        };
-
-        // Drapeau du compte seul : pas suffisant.
-        sqlx::query("UPDATE users SET has_beta_access = 1 WHERE email = ?").bind(email).execute(&state.db).await.unwrap();
-        assert!(!read_beta(state.clone()).await, "sans l'interrupteur global, l'accès ne doit pas être effectif");
-
-        // Interrupteur global seul : pas suffisant non plus.
-        sqlx::query("UPDATE users SET has_beta_access = 0 WHERE email = ?").bind(email).execute(&state.db).await.unwrap();
-        sqlx::query("UPDATE app_settings SET beta_features_enabled = 1 WHERE id = 1").execute(&state.db).await.unwrap();
-        assert!(!read_beta(state.clone()).await, "sans le drapeau du compte, l'accès ne doit pas être effectif");
-
-        // Les deux : accès accordé.
-        sqlx::query("UPDATE users SET has_beta_access = 1 WHERE email = ?").bind(email).execute(&state.db).await.unwrap();
-        assert!(read_beta(state.clone()).await, "les deux niveaux réunis doivent accorder l'accès");
-        let _ = user;
-    }
 
 }

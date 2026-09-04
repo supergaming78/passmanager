@@ -20,6 +20,9 @@ function UsersSection() {
   // que de laisser un bouton qui échouerait toujours avec 403 (voir handlers/admin.rs::update_user_role()).
   const { email: myEmail, isAdmin, authorizedRequest } = useAuth();
   const [users, setUsers] = useState<AdminUserView[]>([]);
+  // Réglage GLOBAL des inscriptions, lu depuis /public-config (voir son commentaire côté backend :
+  // volontairement sans cache, pour que la valeur affichée ici soit toujours la vraie).
+  const [registrationOpen, setRegistrationOpen] = useState<boolean | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyEmail, setBusyEmail] = useState<string | null>(null);
@@ -41,6 +44,22 @@ function UsersSection() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Réglage global lu séparément de la liste des comptes : il vient de /public-config (route
+  // publique), pas du listage administrateur. Best-effort — un échec laisse simplement
+  // l'interrupteur en attente plutôt que de faire échouer tout l'écran.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getPublicConfig()
+      .then((config) => {
+        if (!cancelled) setRegistrationOpen(config.registration_open);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleToggleRole(user: AdminUserView) {
     const action = user.is_moderator ? "retirer le rôle modérateur de" : "promouvoir modérateur";
@@ -126,6 +145,43 @@ function UsersSection() {
     }
   }
 
+  /** Ouvre ou ferme les inscriptions sur tout le serveur. Fermées, seul l'Admin configuré peut
+   * encore s'inscrire — sans quoi un serveur neuf se retrouverait sans administrateur possible. */
+  async function handleToggleRegistration() {
+    if (registrationOpen === null) return;
+    const opening = !registrationOpen;
+    if (opening && !confirm("Rouvrir les inscriptions ? N'importe qui connaissant l'adresse du serveur pourra créer un compte.")) {
+      return;
+    }
+    setError(null);
+    try {
+      await authorizedRequest((token) => api.updateRegistrationOpen(token, { enabled: opening }));
+      setRegistrationOpen(opening);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }
+
+  /** Suspend ou réactive un compte. Marche intermédiaire entre "ne rien faire" et la suppression
+   * définitive, qui cascade sur tout le coffre et ne se rattrape pas — ici les données sont
+   * conservées, et la suspension coupe immédiatement les sessions en cours (voir le backend). */
+  async function handleToggleSuspended(user: AdminUserView) {
+    const suspending = !user.is_suspended;
+    if (suspending && !confirm(`Suspendre ${user.email} ? Ses sessions seront coupées immédiatement et il ne pourra plus se connecter. Ses données sont conservées.`)) {
+      return;
+    }
+    setBusyEmail(user.email);
+    setError(null);
+    try {
+      await authorizedRequest((token) => api.updateSuspended(token, user.email, { is_suspended: suspending }));
+      await load();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setBusyEmail(null);
+    }
+  }
+
   async function handleChangeEmail(user: AdminUserView) {
     const newEmail = window.prompt(`Nouvel email pour ${user.email} :`, user.email);
     if (!newEmail || newEmail.trim().toLowerCase() === user.email) return;
@@ -191,6 +247,21 @@ function UsersSection() {
           <button
             type="button"
             disabled={isSelf || isBusy}
+            onClick={() => void handleToggleSuspended(user)}
+            title={isSelf ? "Impossible de se suspendre soi-même" : "Suspendre ce compte sans supprimer ses données — réversible"}
+            className={`rounded-lg border px-2 py-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40 ${
+              user.is_suspended
+                ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                : "border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950"
+            }`}
+          >
+            {user.is_suspended ? "Réactiver" : "Suspendre"}
+          </button>
+        )}
+        {canActOnTarget && (
+          <button
+            type="button"
+            disabled={isSelf || isBusy}
             onClick={() => void handleToggleExtensionEmailChange(user)}
             title={isSelf ? "Impossible de modifier ce réglage sur son propre compte ici" : "Autoriser/interdire le changement d'email depuis l'extension navigateur pour ce compte"}
             className="rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
@@ -235,6 +306,14 @@ function UsersSection() {
     );
   }
 
+  /** Espace occupé par un compte, en une ligne lisible. Sur un serveur auto-hébergé, voir qui
+   * approche des plafonds évite de découvrir le problème par un disque plein. */
+  function formatUsage(user: AdminUserView) {
+    const mb = user.attachment_bytes / (1024 * 1024);
+    const size = user.attachment_bytes === 0 ? "aucune pièce jointe" : mb < 0.1 ? "< 0,1 Mo de pièces jointes" : `${mb.toFixed(1)} Mo de pièces jointes`;
+    return `${user.entry_count} entrée${user.entry_count > 1 ? "s" : ""} · ${size}`;
+  }
+
   /** Badges "Admin"/"Modérateur"/"(toi)" — communs aux deux dispositions, même raisonnement que
    * renderUserActions ci-dessus. */
   function renderUserBadges(user: AdminUserView, isSelf: boolean) {
@@ -246,6 +325,11 @@ function UsersSection() {
         {user.is_moderator && !user.is_admin && (
           <span className="ml-2 rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">Modérateur</span>
         )}
+        {user.is_suspended && (
+          <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+            Suspendu
+          </span>
+        )}
         {isSelf && <span className="ml-2 text-xs text-neutral-400">(toi)</span>}
       </>
     );
@@ -254,6 +338,27 @@ function UsersSection() {
   return (
     <div>
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {isAdmin && registrationOpen !== null && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-900">
+          <span className="text-neutral-600 dark:text-neutral-400">Inscriptions sur ce serveur :</span>
+          <span className={registrationOpen ? "font-medium text-amber-600 dark:text-amber-400" : "font-medium text-emerald-600 dark:text-emerald-400"}>
+            {registrationOpen ? "ouvertes" : "fermées"}
+          </span>
+          <button
+            type="button"
+            onClick={() => void handleToggleRegistration()}
+            className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            {registrationOpen ? "Fermer" : "Ouvrir"}
+          </button>
+          <span className="basis-full text-neutral-400">
+            {registrationOpen
+              ? "N'importe qui connaissant l'adresse du serveur peut créer un compte. À fermer une fois tes comptes créés."
+              : "Seul ton compte administrateur peut encore s'inscrire. Rouvre le temps d'ajouter quelqu'un."}
+          </span>
+        </div>
+      )}
 
       {isAdmin && (
         <div className="mb-3 flex items-center gap-2 text-xs text-neutral-500">
@@ -321,7 +426,7 @@ function UsersSection() {
                   {renderUserBadges(user, isSelf)}
                 </p>
                 <p className="mt-1 text-xs text-neutral-500">
-                  Vérifié : {user.email_verified ? "Oui" : "Non"} · Créé le {new Date(user.created_at).toLocaleDateString()}
+                  Vérifié : {user.email_verified ? "Oui" : "Non"} · Créé le {new Date(user.created_at).toLocaleDateString()} · {formatUsage(user)}
                 </p>
                 <div className="mt-3">{renderUserActions(user, isSelf, isBusy, canActOnTarget)}</div>
               </div>
@@ -339,6 +444,7 @@ function UsersSection() {
                 <th className={`${listLayout === "compact" ? "py-1" : "py-2"} pr-3 font-medium`}>Compte</th>
                 <th className={`${listLayout === "compact" ? "py-1" : "py-2"} pr-3 font-medium`}>Vérifié</th>
                 <th className={`${listLayout === "compact" ? "py-1" : "py-2"} pr-3 font-medium`}>Créé le</th>
+                <th className={`${listLayout === "compact" ? "py-1" : "py-2"} pr-3 font-medium`}>Espace</th>
                 <th className={`${listLayout === "compact" ? "py-1" : "py-2"} pr-3 font-medium`}>Actions</th>
               </tr>
             </thead>
@@ -360,6 +466,7 @@ function UsersSection() {
                     </td>
                     <td className={`${cellPad} pr-3 text-neutral-600 dark:text-neutral-400`}>{user.email_verified ? "Oui" : "Non"}</td>
                     <td className={`${cellPad} pr-3 text-neutral-600 dark:text-neutral-400`}>{new Date(user.created_at).toLocaleDateString()}</td>
+                    <td className={`${cellPad} pr-3 text-neutral-600 dark:text-neutral-400`}>{formatUsage(user)}</td>
                     <td className={`${cellPad} pr-3`}>{renderUserActions(user, isSelf, isBusy, canActOnTarget)}</td>
                   </tr>
                 );

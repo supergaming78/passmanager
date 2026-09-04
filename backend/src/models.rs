@@ -116,10 +116,6 @@ pub struct AdminUserView {
     /// colonne de ce nom dans la ligne).
     #[sqlx(default)]
     pub is_admin: bool,
-    /// Accès aux fonctionnalités en cours de rodage (voir la migration 20260904100000). Combiné
-    /// côté serveur avec l'interrupteur GLOBAL `beta_features_enabled` : les deux doivent être
-    /// vrais pour qu'un accès soit effectivement accordé.
-    pub has_beta_access: bool,
     /// Compte suspendu : connexion refusée et sessions coupées, mais données CONSERVÉES —
     /// contrairement à la suppression, qui cascade sur tout le coffre et ne se rattrape pas.
     pub is_suspended: bool,
@@ -704,17 +700,6 @@ pub struct UpdateServerChoiceAtLoginPayload {
 #[derive(Debug, Deserialize)]
 pub struct UpdateRegistrationOpenPayload {
     pub enabled: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateBetaFeaturesEnabledPayload {
-    pub enabled: bool,
-}
-
-/// Accès bêta d'UN compte (ou de tous, voir la route .../beta-access-all).
-#[derive(Debug, Deserialize)]
-pub struct UpdateBetaAccessPayload {
-    pub has_beta_access: bool,
 }
 
 /// Suspension d'un compte : refuse la connexion et coupe les sessions, sans rien supprimer.

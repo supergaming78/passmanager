@@ -14,6 +14,8 @@ import {
   type RecoveryDataPayload,
   type RecoveryDataResponse,
   type SaveRecoveryKitPayload,
+  type UpdateRegistrationOpenPayload,
+  type UpdateSuspendedPayload,
   type AuthTokens,
   type ChangeMasterPasswordPayload,
   type EmergencyContact,
@@ -418,6 +420,22 @@ export function completeRecovery(payload: CompleteRecoveryPayload): Promise<void
   return request<void>("/auth/recovery/complete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateRegistrationOpen(accessToken: string, payload: UpdateRegistrationOpenPayload): Promise<void> {
+  return request<void>("/admin/registration-open", {
+    method: "PUT",
+    headers: authHeaders(accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateSuspended(accessToken: string, email: string, payload: UpdateSuspendedPayload): Promise<void> {
+  return request<void>(`/admin/users/${encodeURIComponent(email)}/suspended`, {
+    method: "PUT",
+    headers: authHeaders(accessToken),
     body: JSON.stringify(payload),
   });
 }

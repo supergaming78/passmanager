@@ -76,7 +76,7 @@ explicitement déclaré derrière un reverse proxy de confiance) :
 
 | Palier | Routes concernées | Limite |
 |---|---|---|
-| Sensible | `POST /auth/register`, `/login`, `/verify-email`, `/resend-verification`, `/forgot-password`, `/reset-password`, `/verify-device` ; `PUT /auth/email`, `/auth/password` ; `PUT /admin/users/{email}/role`, `/admin/users/{email}/email`, `/admin/users/{email}/extension-email-change`, `/admin/users/extension-email-change-all`, `/admin/users/{email}/server-choice`, `/admin/users/server-choice-all`, `/admin/server-choice-at-login` ; `POST /admin/users/{email}/revoke-sessions` ; `DELETE /admin/users/{email}` | 10 req/s, rafale de 30 |
+| Sensible | `POST /auth/register`, `/login`, `/verify-email`, `/resend-verification`, `/forgot-password`, `/reset-password`, `/verify-device` ; `PUT /auth/email`, `/auth/password` ; `PUT /admin/users/{email}/role`, `/admin/users/{email}/email`, `/admin/users/{email}/extension-email-change`, `/admin/users/extension-email-change-all`, `/admin/users/{email}/server-choice`, `/admin/users/server-choice-all`, `/admin/server-choice-at-login`, `/admin/registration-open`, `/admin/users/{email}/suspended` ; `POST /admin/users/{email}/revoke-sessions` ; `DELETE /admin/users/{email}` | 10 req/s, rafale de 30 |
 | Signalement de bug | `POST /bug-reports` | 8 req/s, rafale de 16 — palier dédié, plus permissif que "Sensible" (pas de risque de brute-force ici, juste éviter qu'une famille derrière la même IP se bloque mutuellement) mais toujours en deçà du palier Global |
 | Auth (reste) | `POST /auth/logout`, `/refresh` | 60 req/s, rafale de 150 |
 | Global | Toutes les autres routes (`/vault/*`, `/devices/*`, `/ws/*`, `/me`, `/audit`, `GET /admin/users`, `/theme-profiles*`, `/theme-preference`...) | 200 req/s, rafale de 500 |
@@ -1253,11 +1253,23 @@ Liste tous les comptes de l'application. **Ne contient jamais `password_hash`**,
   "max_trusted_devices": 10,
   "can_change_email_via_extension": false,
   "can_choose_server_in_settings": false,
-  "is_admin": false
+  "is_admin": false,
+  "is_suspended": false,
+  "entry_count": 42,
+  "attachment_bytes": 1048576
 }]
 ```
 `is_admin` : voir la note de terminologie en tête de cette section — vrai UNIQUEMENT sur
 la ligne du compte `ADMIN_EMAIL` (l'"Admin"), jamais sur un simple "Modérateur".
+
+`is_suspended` : voir `PUT /admin/users/{email}/suspended` plus bas.
+
+`entry_count` (entrées de coffre non supprimées) et `attachment_bytes` (somme des pièces jointes)
+donnent l'espace occupé par chaque compte — sur un serveur auto-hébergé, voir qui approche des
+plafonds évite de découvrir le problème par un disque plein. Ils sont calculés par deux agrégats
+GROUP BY distincts recroisés en mémoire, et non par des sous-requêtes corrélées par ligne : le coût
+reste le même que le serveur ait 3 comptes ou 300. Un compte sans aucune entrée n'apparaît dans
+aucun des deux agrégats et reçoit donc `0`, pas une absence de champ.
 **Erreurs** : `403` si l'appelant n'est pas administrateur.
 
 ### `PUT /admin/users/{email}/role`
@@ -1683,6 +1695,53 @@ joignable.
 
 **Réponse** : `200 OK { "status": "ok" }`, ou `503 Service Unavailable { "status": "db_unreachable" }`.
 
+### `PUT /admin/registration-open`
+
+*Authentification requise, réservé à l'Admin (`ADMIN_EMAIL`) — PAS un simple modérateur.* Ouvre ou
+ferme les inscriptions sur tout le serveur.
+
+Ouvert par défaut, et la migration laisse volontairement cette valeur pour ne rien casser sur un
+serveur existant — un serveur qui se fermerait tout seul après une mise à jour serait une mauvaise
+surprise. Sur un déploiement familial exposé sur Internet, laisser ouvert permet à quiconque trouve
+l'URL de créer un compte, donc de consommer l'espace disque, de déclencher des envois depuis ton
+SMTP (brûlant ton quota et la réputation de ton domaine) et de remplir le journal d'audit : à
+refermer une fois tes comptes créés.
+
+Le refus est appliqué **avant** le hachage Argon2id de `POST /auth/register`, pour qu'un serveur
+fermé ne serve pas d'amplificateur de charge. Le compte `ADMIN_EMAIL` reste **toujours** autorisé à
+s'inscrire, même fermé : sans cette exception, un serveur neuf livré fermé n'aurait aucun
+administrateur possible.
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `enabled` | boolean | oui |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `403` appelant autre que l'Admin.
+**Audit** : `REGISTRATION_OPENED` / `REGISTRATION_CLOSED`.
+
+### `PUT /admin/users/{email}/suspended`
+
+*Authentification requise, modérateur.* Suspend ou réactive un compte — marche intermédiaire entre
+"ne rien faire" et `DELETE /admin/users/{email}`, qui cascade sur tout le coffre et ne se rattrape
+pas. Les données sont **conservées** : l'opération est réversible.
+
+Une suspension **coupe aussi les sessions en cours** (suppression des `refresh_tokens` dans la même
+transaction que la mise à jour du drapeau) ; sans cela, le compte resterait utilisable jusqu'à
+l'expiration de son jeton d'accès. Le middleware d'authentification refuse par ailleurs tout jeton
+d'un compte suspendu, avec `401 Ce compte est suspendu.`
+
+Même hiérarchie que les autres actions sur un compte tiers (`check_can_act_on_target`) : l'Admin ne
+peut jamais être la cible, et un modérateur ne peut pas suspendre un autre modérateur.
+
+| Champ | Type | Obligatoire |
+|---|---|---|
+| `is_suspended` | boolean | oui |
+
+**Réponse** : `200 OK`, corps vide.
+**Erreurs** : `403` non-modérateur, ou cible protégée par la hiérarchie. `404` email inconnu.
+**Audit** : `ACCOUNT_SUSPENDED` / `ACCOUNT_UNSUSPENDED`.
+
 ### `GET /public-config`
 
 *Aucune authentification requise* — volontairement séparé de `GET /health` ci-dessus (rôles
@@ -1693,5 +1752,11 @@ pour savoir s'il doit afficher le lien "Configurer le serveur" (voir
 
 **Réponse** : `200 OK` :
 ```json
-{ "server_choice_at_login_enabled": false }
+{ "server_choice_at_login_enabled": false, "registration_open": true }
 ```
+
+`registration_open` est lu **frais à chaque appel**, contrairement à
+`server_choice_at_login_enabled` qui est mis en cache : l'écran Administration affiche cette valeur
+comme l'état réel du serveur, et un cache la rendrait trompeuse juste après un basculement.
+L'écran d'inscription s'en sert pour prévenir avant que le formulaire ne soit rempli — mais c'est
+un pur confort d'affichage, `POST /auth/register` reste la seule autorité.

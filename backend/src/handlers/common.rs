@@ -100,7 +100,20 @@ pub async fn get_public_config(State(state): State<Arc<AppState>>) -> Result<imp
         }
     };
 
-    Ok(Json(json!({ "server_choice_at_login_enabled": server_choice_at_login_enabled })))
+    // `registration_open` est lu À CHAQUE APPEL, volontairement SANS cache — contrairement au
+    // réglage ci-dessus. Le cache y est un correctif de performance qui impose, en contrepartie,
+    // de penser à l'invalider à chaque écriture (voir set_server_choice_at_login_cache) : c'est un
+    // piège à bug de valeur périmée. Ici le coût évité serait une lecture indexée d'une seule
+    // ligne, sur une route appelée à l'ouverture de l'écran de connexion — négligeable. Mieux vaut
+    // une valeur toujours juste qu'un cache à maintenir.
+    let registration_open: bool = sqlx::query_scalar("SELECT registration_open FROM app_settings WHERE id = 1")
+        .fetch_one(&state.db)
+        .await?;
+
+    Ok(Json(json!({
+        "server_choice_at_login_enabled": server_choice_at_login_enabled,
+        "registration_open": registration_open,
+    })))
 }
 
 // =========================================================================

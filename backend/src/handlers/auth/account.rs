@@ -348,14 +348,10 @@ pub async fn update_email(
 /// moyen de connaître son propre plafond actuel avant de le modifier (voir update_device_limit()) —
 /// PUT /devices/limit ne renvoie qu'un 200 vide, jamais la valeur en vigueur.
 pub async fn get_me(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
-    let (max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, preferred_theme, recovery_kit, has_beta_access): (i64, bool, bool, String, Option<String>, bool) = sqlx::query_as(
-        "SELECT max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, preferred_theme, recovery_sealed_vault_key, has_beta_access FROM users WHERE email = ?"
+    let (max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, preferred_theme, recovery_kit): (i64, bool, bool, String, Option<String>) = sqlx::query_as(
+        "SELECT max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, preferred_theme, recovery_sealed_vault_key FROM users WHERE email = ?"
     )
         .bind(&user.email)
-        .fetch_one(&state.db)
-        .await?;
-
-    let beta_features_enabled: bool = sqlx::query_scalar("SELECT beta_features_enabled FROM app_settings WHERE id = 1")
         .fetch_one(&state.db)
         .await?;
 
@@ -373,16 +369,6 @@ pub async fn get_me(State(state): State<Arc<AppState>>, user: AuthUser) -> Resul
         // savoir s'il doit proposer "générer un kit" ou "kit déjà configuré". Le blob scellé, lui,
         // ne sort qu'au bout du flux de récupération (voir get_recovery_data).
         "has_recovery_kit": recovery_kit.is_some(),
-        // ACCÈS BÊTA effectif : les DEUX niveaux combinés ICI, côté serveur (voir la migration
-        // 20260904100000) — le drapeau du compte désigne qui est volontaire, l'interrupteur global
-        // permet de tout couper d'un coup. Les combiner ici plutôt que d'exposer les deux évite
-        // qu'un client oublie l'un des deux et affiche une fonctionnalité que l'Admin croyait
-        // désactivée.
-        //
-        // RAPPEL pour toute fonctionnalité ajoutée derrière ce drapeau : ceci n'INFORME que le
-        // client. Une route serveur réservée à la bêta doit refaire cette vérification elle-même,
-        // sinon il suffit de l'appeler directement pour contourner la restriction.
-        "has_beta_access": has_beta_access && beta_features_enabled,
         // Retour utilisateur : "que le thème soit appliqué partout" — voir
         // handlers/theme_customization.rs::update_preferred_theme et la migration
         // 20260903070000_users_preferred_theme.sql. Appliqué par le CLIENT à l'établissement de

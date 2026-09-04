@@ -218,6 +218,10 @@ export interface MeResponse {
  * connexion (voir backend/src/handlers/admin.rs::update_server_choice_at_login(), Admin uniquement). */
 export interface PublicConfig {
   server_choice_at_login_enabled: boolean;
+  /** Inscriptions ouvertes sur ce serveur (voir handlers/admin.rs::update_registration_open).
+   * Public à dessein : l'écran d'inscription peut ainsi prévenir AVANT que le formulaire ne soit
+   * rempli, plutôt que de le rejeter après coup. */
+  registration_open: boolean;
 }
 
 export interface ChangeMasterPasswordPayload {
@@ -252,6 +256,13 @@ export interface AdminUserView {
   /** Voir le champ de même nom sur MeResponse — ici, la valeur pour CE compte listé, pas
    * l'appelant. */
   can_choose_server_in_settings: boolean;
+  /** Compte suspendu par un administrateur : connexion refusée et jetons rejetés, mais données
+   * CONSERVÉES — contrairement à la suppression, qui cascade sur tout le coffre. */
+  is_suspended: boolean;
+  /** Entrées actives (corbeille exclue) et poids total des pièces jointes, en octets — pour
+   * repérer un compte qui approche des plafonds avant que le disque ne se remplisse. */
+  entry_count: number;
+  attachment_bytes: number;
   /** Vrai UNIQUEMENT pour le compte ADMIN_EMAIL — il n'existe qu'UN SEUL "Admin" ; tout autre
    * compte avec is_moderator=true est un "Modérateur" (voir Admin.tsx). */
   is_admin: boolean;
@@ -655,4 +666,14 @@ export interface CompleteRecoveryPayload {
   reencrypted_entries: ReencryptedVaultEntry[];
   reencrypted_history: ReencryptedHistoryEntry[];
   reencrypted_attachments: ReencryptedVaultAttachment[];
+}
+
+/** Réglage GLOBAL d'ouverture des inscriptions (Admin uniquement). */
+export interface UpdateRegistrationOpenPayload {
+  enabled: boolean;
+}
+
+/** Suspension d'un compte — voir AdminUserView.is_suspended. */
+export interface UpdateSuspendedPayload {
+  is_suspended: boolean;
 }
