@@ -21,6 +21,7 @@ import { openEntryUrl } from "./lib/openExternalUrl";
 import { setTheme, setCachedCustomTheme, setCachedThemeProfiles, toValidTheme, isThemeSyncEnabled } from "./lib/theme";
 import type { VaultEntryFormValues } from "./components/VaultEntryForm";
 import UpdateBanner from "./components/UpdateBanner";
+import TotpCode from "./components/TotpCode";
 
 // CHARGEMENT À LA DEMANDE (voir LazyView plus bas pour le pourquoi).
 const VaultEntryForm = lazy(() => import("./components/VaultEntryForm"));
@@ -494,6 +495,7 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
   // même convention que pages/Vault.tsx côté app desktop.
   const [folderFilter, setFolderFilter] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedTotpId, setCopiedTotpId] = useState<string | null>(null);
   const [filledId, setFilledId] = useState<string | null>(null);
   const [view, setView] = useState<VaultView>({ kind: "list" });
 
@@ -548,6 +550,15 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
     setTimeout(() => setCopiedId((id) => (id === entry.id ? null : id)), 1500);
     // Best-effort, jamais attendu (voir lib/vaultUsage.ts) : ne doit jamais ralentir la copie.
     recordEntryUse(session.authorizedRequest, entry.id);
+  }
+
+  /** Copie le code à usage unique affiché. Même effacement automatique du presse-papiers que le
+   * mot de passe (voir lib/clipboard.ts) : un code TOTP oublié là reste valide jusqu'à la fin de
+   * sa tranche, et le presse-papiers est lisible par toute application. */
+  async function handleCopyTotp(entryId: string, code: string) {
+    await copyPasswordWithAutoClear(code);
+    setCopiedTotpId(entryId);
+    setTimeout(() => setCopiedTotpId((id) => (id === entryId ? null : id)), 1500);
   }
 
   async function handleFill(entry: PlainVaultEntry) {
@@ -1080,6 +1091,18 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
             <p className="truncate text-xs text-neutral-500">
               {getPreferredIdentifier(entry)}
             </p>
+            {/* Code à usage unique du site (voir lib/totp.ts) — affiché en permanence : c'est
+                précisément ce qu'on vient chercher au moment de se connecter, et il change de toute
+                façon toutes les 30 secondes. Le secret, lui, reste masqué dans le formulaire. */}
+            {entry.extraFields.totpSecret && (
+              <div className="mt-0.5">
+                <TotpCode
+                  secret={entry.extraFields.totpSecret}
+                  copied={copiedTotpId === entry.id}
+                  onCopy={(code) => void handleCopyTotp(entry.id, code)}
+                />
+              </div>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">

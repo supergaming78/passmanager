@@ -52,7 +52,15 @@ interface ExtraFieldDef {
 }
 
 const EXTRA_FIELDS_BY_TYPE: Record<EntryType, ExtraFieldDef[]> = {
-  login: [],
+  // Code à usage unique du SITE (voir lib/totp.ts) — même champ, même clé et même libellé que côté
+  // app desktop : une entrée créée d'un côté doit afficher son code de l'autre sans retouche.
+  login: [
+    {
+      key: "totpSecret",
+      label: "Code à usage unique (2FA du site)",
+      sensitive: true,
+    },
+  ],
   card: [
     { key: "expiryMonth", label: "Mois d'expiration", inputMode: "numeric", maxLength: 2 },
     { key: "expiryYear", label: "Année d'expiration", inputMode: "numeric", maxLength: 4 },

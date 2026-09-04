@@ -7,6 +7,7 @@ import { maybeRunAutoBackup } from "../lib/autoBackup";
 import { fuzzyIncludes } from "../lib/fuzzyMatch";
 import { getErrorMessage } from "../lib/errors";
 import { copyPasswordWithAutoClear } from "../lib/clipboard";
+import TotpCode from "../components/TotpCode";
 import { openEntryUrl } from "../lib/openExternalUrl";
 import { WEAK_THRESHOLD_BITS, estimatePasswordEntropyBits, rateEntropy } from "../lib/passwordGenerator";
 import { OLD_PASSWORD_DAYS, daysSince, formatRelativeAge } from "../lib/age";
@@ -178,6 +179,7 @@ export default function Vault() {
   const [revealedId, setRevealedId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedIdentifierId, setCopiedIdentifierId] = useState<string | null>(null);
+  const [copiedTotpId, setCopiedTotpId] = useState<string | null>(null);
   // Id de l'entrée dont le menu "⋯" (actions secondaires, voir EntryActionsMenu) est ouvert — un
   // seul à la fois, comme revealedId/copiedId ci-dessus.
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -483,6 +485,16 @@ export default function Vault() {
     recordEntryUse(authorizedRequest, entry.id);
   }
 
+  /** Copie le code à usage unique affiché. Passe par le MÊME effacement automatique du
+   * presse-papiers que le mot de passe (voir lib/clipboard.ts) : un code TOTP oublié dans le
+   * presse-papiers est un secret de moins courte portée qu'il n'y paraît — il reste valide
+   * jusqu'à la fin de sa tranche, et le presse-papiers, lui, est lisible par toute application. */
+  async function handleCopyTotp(entryId: string, code: string) {
+    await copyPasswordWithAutoClear(code);
+    setCopiedTotpId(entryId);
+    setTimeout(() => setCopiedTotpId((current) => (current === entryId ? null : current)), 1500);
+  }
+
   async function handleCopyIdentifier(entry: PlainVaultEntry) {
     const identifier = getPreferredIdentifier(entry);
     if (!identifier) return;
@@ -750,6 +762,19 @@ export default function Vault() {
               })()}
             {revealedId === entry.id && entry.entryType !== "note" && (
               <p className="mt-1 select-all font-mono text-sm text-neutral-700 dark:text-neutral-300">{entry.password}</p>
+            )}
+            {/* Code à usage unique du site (voir lib/totp.ts) — affiché en permanence, sans avoir à
+                révéler l'entrée : c'est précisément la valeur qu'on vient chercher au moment de se
+                connecter, et elle change de toute façon toutes les 30 secondes. Le secret, lui,
+                reste masqué (champ `sensitive` du formulaire). */}
+            {entry.extraFields.totpSecret && (
+              <div className="mt-1">
+                <TotpCode
+                  secret={entry.extraFields.totpSecret}
+                  copied={copiedTotpId === entry.id}
+                  onCopy={(code) => void handleCopyTotp(entry.id, code)}
+                />
+              </div>
             )}
           </div>
         </div>

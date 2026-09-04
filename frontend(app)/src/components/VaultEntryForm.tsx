@@ -29,7 +29,18 @@ const EXTRA_FIELDS_BY_TYPE: Record<
   EntryType,
   { key: string; label: string; placeholder?: string; sensitive?: boolean; inputType?: "text" | "date"; inputMode?: "numeric"; maxLength?: number }[]
 > = {
-  login: [],
+  // Code à usage unique du SITE (voir lib/totp.ts) — à ne pas confondre avec la 2FA du compte
+  // PassManager lui-même. Rangé dans extraFields comme les autres champs propres à un type : rien
+  // à changer côté serveur, qui ne voit qu'un blob chiffré de plus, déjà pris en compte par le
+  // re-chiffrement lors d'un changement de mot de passe maître.
+  login: [
+    {
+      key: "totpSecret",
+      label: "Code à usage unique (2FA du site)",
+      placeholder: "clé fournie par le site, ou lien otpauth://",
+      sensitive: true,
+    },
+  ],
   card: [
     { key: "expiryMonth", label: "Mois d'expiration", placeholder: "MM", inputMode: "numeric", maxLength: 2 },
     { key: "expiryYear", label: "Année d'expiration", placeholder: "AAAA", inputMode: "numeric", maxLength: 4 },
