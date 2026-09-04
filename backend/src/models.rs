@@ -73,6 +73,9 @@ pub struct User {
     pub email: String,
     pub password_hash: String,
     pub is_moderator: bool,    // Indicateur de rôle pour les privilèges de modérateur
+    /// Compte suspendu par un administrateur — connexion refusée et jetons rejetés (voir
+    /// middleware.rs et handlers/admin.rs::update_suspended). Les données sont CONSERVÉES.
+    pub is_suspended: bool,
     // Faux tant que le code envoyé à l'inscription n'a pas été confirmé via /auth/verify-email
     // (voir handlers/auth.rs::register()/verify_email()) — login() refuse les comptes non
     // vérifiés, pour empêcher quelqu'un de s'inscrire avec l'email de quelqu'un d'autre.
@@ -113,6 +116,21 @@ pub struct AdminUserView {
     /// colonne de ce nom dans la ligne).
     #[sqlx(default)]
     pub is_admin: bool,
+    /// Accès aux fonctionnalités en cours de rodage (voir la migration 20260904100000). Combiné
+    /// côté serveur avec l'interrupteur GLOBAL `beta_features_enabled` : les deux doivent être
+    /// vrais pour qu'un accès soit effectivement accordé.
+    pub has_beta_access: bool,
+    /// Compte suspendu : connexion refusée et sessions coupées, mais données CONSERVÉES —
+    /// contrairement à la suppression, qui cascade sur tout le coffre et ne se rattrape pas.
+    pub is_suspended: bool,
+    /// Nombre d'entrées ACTIVES (corbeille exclue) et poids total des pièces jointes, en octets.
+    /// Renseignés après coup par list_users() — pas de colonnes de ce nom sur `users`, d'où
+    /// `#[sqlx(default)]`. Sur un serveur auto-hébergé, voir qui approche des plafonds évite de
+    /// découvrir le problème par un disque plein.
+    #[sqlx(default)]
+    pub entry_count: i64,
+    #[sqlx(default)]
+    pub attachment_bytes: i64,
 }
 
 /// Représente une entrée de journal d'audit en base de données pour l'historique de sécurité.
@@ -679,6 +697,30 @@ pub struct UpdateServerChoiceInSettingsPayload {
 #[derive(Deserialize)]
 pub struct UpdateServerChoiceAtLoginPayload {
     pub enabled: bool,
+}
+
+/// Réglages GLOBAUX réservés à l'Admin (voir la migration 20260904100000) — même forme minimale
+/// que UpdateServerChoiceAtLoginPayload ci-dessus, un simple interrupteur.
+#[derive(Debug, Deserialize)]
+pub struct UpdateRegistrationOpenPayload {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateBetaFeaturesEnabledPayload {
+    pub enabled: bool,
+}
+
+/// Accès bêta d'UN compte (ou de tous, voir la route .../beta-access-all).
+#[derive(Debug, Deserialize)]
+pub struct UpdateBetaAccessPayload {
+    pub has_beta_access: bool,
+}
+
+/// Suspension d'un compte : refuse la connexion et coupe les sessions, sans rien supprimer.
+#[derive(Debug, Deserialize)]
+pub struct UpdateSuspendedPayload {
+    pub is_suspended: bool,
 }
 
 /// Données pour exporter l'intégralité du coffre (voir handlers/vault.rs::export_vault()).

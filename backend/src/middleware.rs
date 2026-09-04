@@ -82,8 +82,8 @@ where
         // volontaire (`sessions_revoked_at`, voir handlers/devices.rs::logout_all_devices()).
         // `MAX(a, b)` avec 2 arguments est la forme SCALAIRE (par ligne) de SQLite, pas la forme
         // agrégat à un seul argument — exactement ce qu'il faut ici.
-        let user_row = sqlx::query_as::<_, (String, bool, chrono::NaiveDateTime)>(
-            "SELECT email, is_moderator, MAX(password_changed_at, sessions_revoked_at) FROM users WHERE email = ?"
+        let user_row = sqlx::query_as::<_, (String, bool, chrono::NaiveDateTime, bool)>(
+            "SELECT email, is_moderator, MAX(password_changed_at, sessions_revoked_at), is_suspended FROM users WHERE email = ?"
         )
             // Le sujet (`sub`) du token contient l'email de l'utilisateur
             .bind(&token_data.claims.sub)
@@ -106,6 +106,16 @@ where
         // aussi les égalités) : au pire, un utilisateur qui se reconnecte immédiatement après un
         // changement de mot de passe doit réessayer une fois, ce qui reste un bien meilleur
         // compromis qu'un token potentiellement compromis qui resterait accepté.
+        // COMPTE SUSPENDU (voir handlers/admin.rs::update_suspended) : refusé ICI, au même endroit
+        // que la révocation par changement de mot de passe. La suspension supprime déjà les refresh
+        // tokens, mais un ACCESS token déjà émis resterait sinon valable jusqu'à sa propre
+        // expiration — soit une fenêtre résiduelle de plusieurs minutes pendant laquelle un compte
+        // suspendu continuerait d'agir. Le contrôle a lieu à CHAQUE requête, donc une suspension
+        // prend effet immédiatement.
+        if user_row.3 {
+            return Err((StatusCode::UNAUTHORIZED, "Ce compte est suspendu.".to_string()));
+        }
+
         let issued_at = chrono::DateTime::from_timestamp(token_data.claims.iat as i64, 0)
             .map(|dt| dt.naive_utc())
             .ok_or((StatusCode::UNAUTHORIZED, "Jeton invalide".to_string()))?;

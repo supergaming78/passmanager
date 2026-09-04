@@ -734,6 +734,13 @@ fn build_router(state: Arc<AppState>) -> Router {
             .route("/admin/users/{email}/server-choice", put(handlers::update_server_choice_in_settings)) // Autoriser/interdire le choix du serveur dans les Réglages, pour CE compte (Admin uniquement)
             .route("/admin/users/server-choice-all", put(handlers::update_server_choice_in_settings_all)) // Idem, pour TOUS les comptes d'un coup (Admin uniquement)
             .route("/admin/server-choice-at-login", put(handlers::update_server_choice_at_login)) // Réglage GLOBAL : visibilité du lien "Configurer le serveur" avant connexion (Admin uniquement)
+            // Contrôles ajoutés après la 1.0.0 (voir la migration 20260904100000_admin_controls.sql).
+            // Tous sur sensitive_governor comme le reste des mutations d'administration.
+            .route("/admin/registration-open", put(handlers::update_registration_open)) // GLOBAL : ouvrir/fermer les inscriptions (Admin uniquement)
+            .route("/admin/beta-features", put(handlers::update_beta_features_enabled)) // GLOBAL : interrupteur des fonctionnalités en rodage (Admin uniquement)
+            .route("/admin/users/{email}/beta-access", put(handlers::update_beta_access)) // Accès bêta d'UN compte (Admin uniquement)
+            .route("/admin/users/beta-access-all", put(handlers::update_beta_access_all)) // Idem, pour TOUS les comptes (Admin uniquement)
+            .route("/admin/users/{email}/suspended", put(handlers::update_suspended)) // Suspendre/réactiver un compte — données conservées, contrairement à la suppression
             .route("/admin/users/{email}/revoke-sessions", post(handlers::revoke_user_sessions)) // Déconnecter un compte à distance
             .route("/admin/users/{email}", delete(handlers::delete_user)) // Supprimer définitivement un compte
             .route_layer(GovernorLayer::new(sensitive_governor.clone())))

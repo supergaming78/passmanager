@@ -35,6 +35,28 @@ pub async fn register(
     // 1. Valide les contraintes du payload (ex: email valide, taille mdp) via le crate 'validator'
     payload.validate()?;
 
+    // 1bis. INSCRIPTIONS FERMÉES (voir handlers/admin.rs::update_registration_open) — vérifié
+    // AVANT le hachage Argon2id ci-dessous, qui coûte volontairement ~46 Mo et plusieurs dizaines
+    // de ms : sur une route publique, faire ce calcul pour le rejeter ensuite offrirait un vecteur
+    // d'amplification à qui insisterait sur un serveur fermé.
+    //
+    // L'Admin (ADMIN_EMAIL) reste TOUJOURS autorisé à s'inscrire : sur un serveur neuf dont les
+    // inscriptions seraient fermées, s'en exclure soi-même laisserait le déploiement sans aucun
+    // compte administrateur possible, sans autre issue qu'une modification manuelle de la base.
+    let email_for_gate = payload.email.to_lowercase();
+    let is_configured_admin = state.config.admin_email.as_deref() == Some(email_for_gate.as_str());
+    if !is_configured_admin {
+        let registration_open: bool = sqlx::query_scalar("SELECT registration_open FROM app_settings WHERE id = 1")
+            .fetch_one(&state.db)
+            .await?;
+        if !registration_open {
+            warn!("Inscription refusée (inscriptions fermées) pour {}", email_for_gate);
+            return Err(AppError::ValidationError(
+                "Les inscriptions sont fermées sur ce serveur.".to_string(),
+            ));
+        }
+    }
+
     // 2. Hache le mot de passe maître avec un "pepper" (grain de sel global) pour sécuriser le stockage
     let hash = crypto::hash_password(&payload.master_password_hash, &state.config.password_pepper)
         .await

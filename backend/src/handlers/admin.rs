@@ -53,16 +53,39 @@ pub async fn list_users(
     }
 
     let mut users = sqlx::query_as::<_, AdminUserView>(
-        "SELECT email, is_moderator, email_verified, created_at, max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings FROM users ORDER BY created_at DESC"
+        "SELECT email, is_moderator, email_verified, created_at, max_trusted_devices, can_change_email_via_extension, can_choose_server_in_settings, has_beta_access, is_suspended FROM users ORDER BY created_at DESC"
     )
     .fetch_all(&state.db)
     .await?;
+
+    // ESPACE OCCUPÉ par compte — deux agrégats séparés plutôt qu'une jointure sur la requête
+    // ci-dessus : joindre `vault` et `vault_attachments` à `users` en une fois multiplierait les
+    // lignes (une par entrée ET par pièce jointe) et fausserait les totaux sans un GROUP BY
+    // acrobatique. Deux petites requêtes agrégées, lues dans des tables de correspondance, restent
+    // plus simples à relire — et le panneau Administration n'est pas un chemin chaud.
+    let entry_counts: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT user_email, COUNT(*) FROM vault WHERE deleted_at IS NULL GROUP BY user_email",
+    )
+    .fetch_all(&state.db)
+    .await?;
+    let attachment_sizes: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT user_email, COALESCE(SUM(content_size), 0) FROM vault_attachments GROUP BY user_email",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let entry_counts: std::collections::HashMap<String, i64> = entry_counts.into_iter().collect();
+    let attachment_sizes: std::collections::HashMap<String, i64> = attachment_sizes.into_iter().collect();
 
     // is_admin n'est pas une colonne SQL (voir models.rs::AdminUserView) — un seul compte peut
     // jamais correspondre à ADMIN_EMAIL, rempli après coup plutôt que par une comparaison SQL
     // supplémentaire.
     for u in &mut users {
         u.is_admin = state.config.admin_email.as_deref() == Some(u.email.as_str());
+        // Absent des agrégats = aucune entrée / aucune pièce jointe, donc zéro (un GROUP BY ne
+        // renvoie pas de ligne pour un compte qui n'a rien).
+        u.entry_count = entry_counts.get(&u.email).copied().unwrap_or(0);
+        u.attachment_bytes = attachment_sizes.get(&u.email).copied().unwrap_or(0);
     }
 
     Ok(Json(users))
@@ -533,6 +556,179 @@ pub async fn delete_user(
 // =========================================================================
 // TESTS SUR L'ADMINISTRATION
 // =========================================================================
+// =========================================================================
+// CONTRÔLES D'ADMINISTRATION (voir la migration 20260904100000_admin_controls.sql)
+// =========================================================================
+
+/// Ouvre ou ferme les INSCRIPTIONS (réglage global, Admin uniquement).
+///
+/// L'inscription était ouverte à quiconque atteignait le serveur : sur un déploiement familial
+/// exposé sur Internet, n'importe qui trouvant l'URL pouvait créer un compte, donc consommer
+/// l'espace disque, déclencher des envois depuis le SMTP du propriétaire et remplir le journal
+/// d'audit. Le réglage reste OUVERT par défaut pour ne rien casser à la migration — c'est à
+/// l'Admin de refermer une fois ses comptes créés.
+pub async fn update_registration_open(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(payload): Json<UpdateRegistrationOpenPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin(&state) {
+        warn!("Tentative de modification de l'ouverture des inscriptions par {} (pas l'Admin)", user.email);
+        return Err(AppError::Forbidden);
+    }
+
+    sqlx::query("UPDATE app_settings SET registration_open = ? WHERE id = 1")
+        .bind(payload.enabled)
+        .execute(&state.db)
+        .await?;
+
+    let action = if payload.enabled { "REGISTRATION_OPENED" } else { "REGISTRATION_CLOSED" };
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, action, addr.to_string(), agent).await;
+    info!("Inscriptions réglées par {} (open={})", user.email, payload.enabled);
+
+    Ok(StatusCode::OK)
+}
+
+/// Interrupteur GLOBAL des fonctionnalités en rodage (Admin uniquement) — permet de tout couper
+/// d'un coup si l'une d'elles dérape, sans repasser sur chaque compte. Un accès n'est effectif que
+/// si CE réglage ET le drapeau du compte sont vrais (voir has_beta_access dans GET /me).
+pub async fn update_beta_features_enabled(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(payload): Json<UpdateBetaFeaturesEnabledPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin(&state) {
+        warn!("Tentative de modification de l'interrupteur bêta global par {} (pas l'Admin)", user.email);
+        return Err(AppError::Forbidden);
+    }
+
+    sqlx::query("UPDATE app_settings SET beta_features_enabled = ? WHERE id = 1")
+        .bind(payload.enabled)
+        .execute(&state.db)
+        .await?;
+
+    let action = if payload.enabled { "BETA_FEATURES_ENABLED" } else { "BETA_FEATURES_DISABLED" };
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, action, addr.to_string(), agent).await;
+    info!("Fonctionnalités bêta (global) réglées par {} (enabled={})", user.email, payload.enabled);
+
+    Ok(StatusCode::OK)
+}
+
+/// Accorde ou retire l'accès bêta à UN compte (Admin uniquement — désigner qui essuie les plâtres
+/// n'est pas une décision de modération courante).
+pub async fn update_beta_access(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Path(target_email): Path<String>,
+    Json(payload): Json<UpdateBetaAccessPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin(&state) {
+        warn!("Tentative de modification d'accès bêta par {} (pas l'Admin)", user.email);
+        return Err(AppError::Forbidden);
+    }
+    let target_email = target_email.to_lowercase();
+
+    let res = sqlx::query("UPDATE users SET has_beta_access = ? WHERE email = ?")
+        .bind(payload.has_beta_access)
+        .bind(&target_email)
+        .execute(&state.db)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    let action = if payload.has_beta_access { "BETA_ACCESS_GRANTED" } else { "BETA_ACCESS_REVOKED" };
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, action, addr.to_string(), agent).await;
+    info!("Accès bêta de {} modifié par {} (has_beta_access={})", target_email, user.email, payload.has_beta_access);
+
+    Ok(StatusCode::OK)
+}
+
+/// Même réglage, appliqué à TOUS les comptes d'un coup (Admin uniquement).
+pub async fn update_beta_access_all(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Json(payload): Json<UpdateBetaAccessPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin(&state) {
+        warn!("Tentative de modification d'accès bêta GLOBALE par {} (pas l'Admin)", user.email);
+        return Err(AppError::Forbidden);
+    }
+
+    sqlx::query("UPDATE users SET has_beta_access = ?")
+        .bind(payload.has_beta_access)
+        .execute(&state.db)
+        .await?;
+
+    let action = if payload.has_beta_access { "BETA_ACCESS_GRANTED_ALL" } else { "BETA_ACCESS_REVOKED_ALL" };
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, action, addr.to_string(), agent).await;
+    info!("Accès bêta de TOUS les comptes modifié par {} (has_beta_access={})", user.email, payload.has_beta_access);
+
+    Ok(StatusCode::OK)
+}
+
+/// Suspend ou réactive un compte — marche intermédiaire entre "ne rien faire" et la suppression
+/// définitive, qui cascade sur tout le coffre et ne se rattrape pas.
+///
+/// Une suspension coupe AUSSI les sessions en cours : sans cela, un compte suspendu resterait
+/// utilisable jusqu'à l'expiration de son jeton d'accès. Le middleware refuse par ailleurs tout
+/// jeton d'un compte suspendu (voir middleware.rs).
+///
+/// Passe par check_can_act_on_target() comme les autres actions sur un compte tiers : l'Admin ne
+/// peut pas être suspendu, et un modérateur ne peut pas suspendre un autre modérateur.
+pub async fn update_suspended(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    user: AuthUser,
+    Path(target_email): Path<String>,
+    Json(payload): Json<UpdateSuspendedPayload>,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_moderator {
+        warn!("Tentative de suspension de compte par {} (pas modérateur)", user.email);
+        return Err(AppError::Forbidden);
+    }
+    let target_email = target_email.to_lowercase();
+    check_can_act_on_target(&state, &user, &target_email).await?;
+
+    let mut tx = state.db.begin().await?;
+    let res = sqlx::query("UPDATE users SET is_suspended = ? WHERE email = ?")
+        .bind(payload.is_suspended)
+        .bind(&target_email)
+        .execute(&mut *tx)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+
+    if payload.is_suspended {
+        sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?")
+            .bind(&target_email)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+
+    let action = if payload.is_suspended { "ACCOUNT_SUSPENDED" } else { "ACCOUNT_UNSUSPENDED" };
+    let agent = get_user_agent(&headers);
+    state.log_audit(&user.email, action, addr.to_string(), agent).await;
+    info!("Compte {} suspendu={} par {}", target_email, payload.is_suspended, user.email);
+
+    Ok(StatusCode::OK)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -624,6 +820,11 @@ mod tests {
     // =========================================================================
     // TESTS SUR LA GESTION ADMIN DES COMPTES UTILISATEURS
     // =========================================================================
+
+    async fn read_json_body(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("lecture du corps");
+        serde_json::from_slice(&bytes).expect("le corps doit être du JSON valide")
+    }
 
     async fn register_test_user(state: &Arc<AppState>, email: &str, is_moderator: bool) {
         sqlx::query("INSERT INTO users (email, password_hash, is_moderator) VALUES (?, ?, ?)")
@@ -1207,4 +1408,199 @@ mod tests {
             .unwrap();
         assert!(persisted, "la valeur doit être réellement persistée en base, pas juste acceptée par le handler");
     }
+
+    // =========================================================================
+    // CONTRÔLES D'ADMINISTRATION (inscriptions, bêta, suspension)
+    // =========================================================================
+
+    fn ctrl_addr() -> SocketAddr {
+        "127.0.0.1:1".parse().unwrap()
+    }
+
+    /// Ce qui compte n'est pas d'enregistrer le réglage, mais qu'il soit APPLIQUÉ : inscriptions
+    /// fermées doit réellement refuser une inscription.
+    #[tokio::test]
+    async fn test_closed_registration_actually_blocks_signup() {
+        let state = build_test_state().await;
+        sqlx::query("UPDATE app_settings SET registration_open = 0 WHERE id = 1")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let result = crate::handlers::auth::register(
+            State(state.clone()),
+            Json(AuthPayload {
+                email: "intrus@example.com".to_string(),
+                master_password_hash: "mot_de_passe_test_123".to_string(),
+                device_id: "dev".to_string(),
+                remember_me: None,
+                max_trusted_devices: None,
+            }),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::ValidationError(_))), "inscriptions fermées : l'inscription doit être refusée");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE email = ?")
+            .bind("intrus@example.com")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "aucun compte ne doit avoir été créé");
+    }
+
+    /// L'Admin configuré reste toujours autorisé : sur un serveur neuf aux inscriptions fermées,
+    /// s'en exclure soi-même laisserait le déploiement sans aucun administrateur possible.
+    #[tokio::test]
+    async fn test_closed_registration_still_allows_configured_admin() {
+        let state = build_test_state().await;
+        let admin_email = "patron@example.com";
+        let state = Arc::new(AppState {
+            config: Config { admin_email: Some(admin_email.to_string()), ..state.config.clone() },
+            ..Arc::try_unwrap(state).ok().expect("état de test non partagé")
+        });
+        sqlx::query("UPDATE app_settings SET registration_open = 0 WHERE id = 1")
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        let result = crate::handlers::auth::register(
+            State(state.clone()),
+            Json(AuthPayload {
+                email: admin_email.to_string(),
+                master_password_hash: "mot_de_passe_test_123".to_string(),
+                device_id: "dev".to_string(),
+                remember_me: None,
+                max_trusted_devices: None,
+            }),
+        )
+        .await;
+        assert!(result.is_ok(), "l'Admin configuré doit pouvoir s'inscrire même inscriptions fermées");
+    }
+
+    /// La suspension doit COUPER les sessions en cours, pas seulement empêcher les suivantes.
+    #[tokio::test]
+    async fn test_suspending_account_revokes_its_sessions() {
+        let state = build_test_state().await;
+        let admin = AuthUser { email: "boss@example.com".to_string(), is_moderator: true };
+        register_test_user(&state, &admin.email, true).await;
+        register_test_user(&state, "cible@example.com", false).await;
+
+        sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, 0)")
+            .bind("un-hash-de-token")
+            .bind("cible@example.com")
+            .bind("dev")
+            .bind((chrono::Utc::now() + chrono::Duration::hours(1)).format("%Y-%m-%dT%H:%M:%SZ").to_string())
+            .execute(&state.db)
+            .await
+            .unwrap();
+
+        update_suspended(
+            State(state.clone()),
+            ConnectInfo(ctrl_addr()),
+            HeaderMap::new(),
+            admin,
+            Path("cible@example.com".to_string()),
+            Json(UpdateSuspendedPayload { is_suspended: true }),
+        )
+        .await
+        .expect("la suspension doit réussir");
+
+        let suspended: bool = sqlx::query_scalar("SELECT is_suspended FROM users WHERE email = ?")
+            .bind("cible@example.com")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert!(suspended, "le compte doit être marqué suspendu");
+
+        let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_email = ?")
+            .bind("cible@example.com")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(sessions, 0, "les sessions en cours doivent être coupées, pas seulement les suivantes");
+    }
+
+    /// La suspension passe par le même garde que les autres actions : l'Admin est intouchable.
+    #[tokio::test]
+    async fn test_moderator_cannot_suspend_the_admin() {
+        let state = build_test_state().await;
+        let admin_email = "patron@example.com";
+        let state = Arc::new(AppState {
+            config: Config { admin_email: Some(admin_email.to_string()), ..state.config.clone() },
+            ..Arc::try_unwrap(state).ok().expect("état de test non partagé")
+        });
+        register_test_user(&state, admin_email, true).await;
+        register_test_user(&state, "moderateur@example.com", true).await;
+
+        let result = update_suspended(
+            State(state.clone()),
+            ConnectInfo(ctrl_addr()),
+            HeaderMap::new(),
+            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+            Path(admin_email.to_string()),
+            Json(UpdateSuspendedPayload { is_suspended: true }),
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::Forbidden)), "un modérateur ne doit pas pouvoir suspendre l'Admin");
+    }
+
+    /// Les réglages bêta et d'inscription sont réservés au SEUL Admin, pas aux modérateurs.
+    #[tokio::test]
+    async fn test_global_admin_settings_refused_to_moderators() {
+        let state = build_test_state().await;
+        let moderator = || AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true };
+
+        let r1 = update_registration_open(
+            State(state.clone()), ConnectInfo(ctrl_addr()), HeaderMap::new(), moderator(),
+            Json(UpdateRegistrationOpenPayload { enabled: true }),
+        ).await;
+        assert!(matches!(r1, Err(AppError::Forbidden)), "ouvrir les inscriptions est réservé à l'Admin");
+
+        let r2 = update_beta_features_enabled(
+            State(state.clone()), ConnectInfo(ctrl_addr()), HeaderMap::new(), moderator(),
+            Json(UpdateBetaFeaturesEnabledPayload { enabled: true }),
+        ).await;
+        assert!(matches!(r2, Err(AppError::Forbidden)), "l'interrupteur bêta est réservé à l'Admin");
+
+        let r3 = update_beta_access(
+            State(state.clone()), ConnectInfo(ctrl_addr()), HeaderMap::new(), moderator(),
+            Path("quelquun@example.com".to_string()),
+            Json(UpdateBetaAccessPayload { has_beta_access: true }),
+        ).await;
+        assert!(matches!(r3, Err(AppError::Forbidden)), "accorder un accès bêta est réservé à l'Admin");
+    }
+
+    /// L'accès bêta n'est effectif que si les DEUX niveaux sont vrais — le drapeau du compte ET
+    /// l'interrupteur global. C'est ce qui permet de tout couper d'un coup sans repasser sur
+    /// chaque compte.
+    #[tokio::test]
+    async fn test_beta_access_requires_both_levels() {
+        let state = build_test_state().await;
+        let email = "testeur@example.com";
+        register_test_user(&state, email, false).await;
+        let user = || AuthUser { email: email.to_string(), is_moderator: false };
+
+        let read_beta = |state: Arc<AppState>| async move {
+            let me = crate::handlers::auth::get_me(State(state), AuthUser { email: "testeur@example.com".to_string(), is_moderator: false })
+                .await
+                .unwrap()
+                .into_response();
+            read_json_body(me).await["has_beta_access"].as_bool().unwrap()
+        };
+
+        // Drapeau du compte seul : pas suffisant.
+        sqlx::query("UPDATE users SET has_beta_access = 1 WHERE email = ?").bind(email).execute(&state.db).await.unwrap();
+        assert!(!read_beta(state.clone()).await, "sans l'interrupteur global, l'accès ne doit pas être effectif");
+
+        // Interrupteur global seul : pas suffisant non plus.
+        sqlx::query("UPDATE users SET has_beta_access = 0 WHERE email = ?").bind(email).execute(&state.db).await.unwrap();
+        sqlx::query("UPDATE app_settings SET beta_features_enabled = 1 WHERE id = 1").execute(&state.db).await.unwrap();
+        assert!(!read_beta(state.clone()).await, "sans le drapeau du compte, l'accès ne doit pas être effectif");
+
+        // Les deux : accès accordé.
+        sqlx::query("UPDATE users SET has_beta_access = 1 WHERE email = ?").bind(email).execute(&state.db).await.unwrap();
+        assert!(read_beta(state.clone()).await, "les deux niveaux réunis doivent accorder l'accès");
+        let _ = user;
+    }
+
 }

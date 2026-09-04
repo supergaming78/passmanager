@@ -242,6 +242,19 @@ pub async fn login(
             .await?;
     }
 
+    // 4quater. COMPTE SUSPENDU (voir handlers/admin.rs::update_suspended) — refusé APRÈS
+    // validation du mot de passe, comme le compte non vérifié juste en dessous : contrôler avant
+    // ferait de cette route un oracle indiquant quels comptes existent et lesquels sont suspendus.
+    // Le middleware refuse par ailleurs tout jeton déjà émis (voir middleware.rs) ; ce contrôle-ci
+    // évite simplement d'en émettre de nouveaux.
+    if user.is_suspended {
+        warn!("Tentative de connexion sur un compte suspendu : {}", user.email);
+        state.log_audit(&user.email, "LOGIN_BLOCKED_SUSPENDED", addr.to_string(), agent.clone()).await;
+        return Err(AppError::ValidationError(
+            "Ce compte est suspendu. Contactez l'administrateur du serveur.".to_string(),
+        ));
+    }
+
     // 4bis. Compte pas encore vérifié (voir register.rs) : on bloque APRÈS avoir validé le mot
     // de passe (pas avant), pour ne pas transformer ce check en un oracle d'énumération de
     // comptes plus fort que celui déjà accepté par le message d'erreur générique.
