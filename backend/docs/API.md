@@ -1697,34 +1697,65 @@ joignable.
 
 ### `GET /admin/users/{email}/ip-history`
 
-*Authentification requise, modérateur.* Les adresses IP vues pour UN compte, regroupées.
+*Authentification requise, modérateur.* Toutes les adresses IP vues pour UN compte, avec ce
+qu'elles ont produit.
 
-**N'ajoute aucune donnée personnelle et aucune rétention.** `audit_logs` enregistre déjà une IP par
-événement, et `GET /audit` les expose déjà aux modérateurs — en vrac, tous comptes mêlés, limité
-aux 100 derniers événements. Cette route ne fait que regrouper l'existant par compte et par IP, ce
-qui répond à la question utile (« cette activité vient-elle d'un endroit inhabituel ? ») là où une
-liste brute ne répond à rien. Même porte que `GET /audit` : la réserver à l'Admin donnerait
-l'illusion d'une protection alors que la même information reste lisible juste à côté.
+Lit `account_ip_history` (migration `20260904120000`), **pas** `audit_logs` : l'historique n'est
+donc plus tronqué à la purge de 10 jours du journal. C'était la limite de la première version — une
+adresse revenant tous les quinze jours y paraissait neuve à chaque fois, précisément le cas qu'on
+cherche à repérer.
 
-Conséquence directe : la vue est **bornée par la purge du journal** (`AUDIT_LOG_RETENTION_DAYS`,
-10 jours). Un historique perpétuel demanderait une nouvelle table, donc une nouvelle rétention de
-données personnelles et un passif en cas de fuite de la base — pour une valeur de sécurité qui se
-joue sur les jours récents. Ne pas le faire est un choix délibéré.
+**Pourquoi une table séparée plutôt qu'un agrégat du journal.** Le journal garde des ÉVÉNEMENTS
+récents en détail ; cette table garde une mémoire longue et compacte des ADRESSES. Le coût reste
+minuscule parce qu'on stocke une ligne par (compte, adresse) et non par événement : quelques
+dizaines de lignes pour un serveur familial, là où `audit_logs` en accumule des milliers. C'est ce
+qui rend la conservation longue acceptable ici alors qu'elle ne l'était pas pour le journal.
 
-**Réponse** : `200 OK`, trié par dernière activité décroissante, 200 lignes au maximum :
+Alimentée par `AppState::record_ip_seen()`, appelée depuis `log_audit()` — donc par tout événement
+audité, best-effort : un échec d'écriture n'interrompt jamais l'action de l'utilisateur.
+
+**Les trois chiffres, et pourquoi ils sont là.** Une IP nue ne dit rien :
+
+- `success_count` / `failure_count` — beaucoup d'échecs **puis** une réussite depuis la même
+  adresse est la signature d'une intrusion aboutie par tâtonnement. Sans ce couple, impossible de
+  distinguer cette situation d'un usage normal. Comptés comme échec : `LOGIN_FAILED`,
+  `LOGIN_BLOCKED_TOO_MANY_ATTEMPTS`, `LOGIN_BLOCKED_UNVERIFIED`, `LOGIN_BLOCKED_SUSPENDED`. Comme
+  succès : `LOGIN`, `LOGIN_SUCCESS`, `LOGIN_SUCCESS_REMEMBER`, `LOGIN_SUCCESS_SESSION`. Les autres
+  actions n'incrémentent que `event_count`.
+- `other_accounts` — combien d'AUTRES comptes ont utilisé la même adresse. **À lire avec prudence
+  sur un serveur familial** : tout le monde y partage l'IP publique de la maison, donc une adresse
+  commune est la norme et non une anomalie. Le signal utile est le croisement — une adresse
+  partagée qui porte AUSSI des échecs.
+
+**Rétention.** Pas de limite de temps, volontairement : c'est tout l'intérêt de la table. La borne
+est en nombre — `MAX_IPS_PER_ACCOUNT = 500` adresses par compte, élaguées par
+`maintenance::prune_account_ip_history()` sur les moins récemment vues. L'élagage a lieu dans le
+cycle de maintenance et non à l'écriture, qui est sur le chemin critique de chaque connexion.
+`ON DELETE CASCADE` : l'historique disparaît avec le compte, contrairement à `audit_logs`
+volontairement conservé — le garder serait de la rétention de données personnelles sans usage.
+
+**Réponse** : `200 OK`, trié par dernière activité décroissante, 500 lignes au maximum :
 ```json
 [{
   "ip_address": "203.0.113.7",
   "first_seen": "2026-09-01 08:00:00",
   "last_seen": "2026-09-03 11:00:00",
   "event_count": 12,
-  "last_action": "LOGIN"
+  "success_count": 4,
+  "failure_count": 8,
+  "other_accounts": 1
 }]
 ```
 Horodatages en UTC au format SQLite (`YYYY-MM-DD HH:MM:SS`), pas ISO 8601.
 
 **Erreurs** : `403` si l'appelant n'est pas modérateur. Un compte inconnu ou sans activité renvoie
 une liste vide, pas `404` — l'absence d'activité n'est pas une erreur.
+
+**Pas de géolocalisation côté serveur, délibérément.** Localiser une adresse demande d'interroger
+un service tiers, donc de lui transmettre les adresses des utilisateurs — dans un gestionnaire de
+mots de passe à divulgation nulle, faire fuiter par un canal annexe ce que le chiffrement protège
+serait contradictoire. Le client propose à la place un lien « Localiser » que l'administrateur
+ouvre lui-même dans son navigateur, et le dit explicitement à l'écran.
 
 **Piège de déploiement** : derrière un reverse proxy sans `TRUST_PROXY_HEADERS=true`, le serveur
 enregistre l'IP du **proxy**, identique pour tous les comptes. La route ne peut pas le détecter ;

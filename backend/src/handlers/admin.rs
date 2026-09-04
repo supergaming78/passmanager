@@ -592,21 +592,22 @@ pub async fn update_registration_open(
     Ok(StatusCode::OK)
 }
 
-/// Les adresses IP vues pour UN compte, sur la fenêtre du journal d'audit.
+/// Toutes les adresses IP vues pour UN compte, avec ce qu'elles ont produit.
 ///
-/// N'ajoute AUCUNE donnée personnelle : `audit_logs` enregistre déjà une IP par événement, et
-/// `GET /audit` les expose déjà aux modérateurs — en vrac, tous comptes mêlés, limité aux 100
-/// derniers événements. Cette route ne fait que regrouper ce qui existe par compte et par IP, ce
-/// qui répond à la question réellement utile ("cette connexion vient-elle d'un endroit
-/// inhabituel ?") là où une liste brute ne répond à rien.
+/// Lit `account_ip_history` (voir la migration 20260904120000), pas `audit_logs` : l'historique
+/// n'est donc plus tronqué à la purge de 10 jours du journal. Une adresse revenant tous les
+/// quinze jours n'apparaît plus comme neuve à chaque fois — c'est justement le cas à repérer.
 ///
-/// Conséquence directe : la vue est bornée par `AUDIT_LOG_RETENTION_DAYS` (purge à 10 jours). Un
-/// historique perpétuel demanderait une nouvelle table, donc une nouvelle rétention de données
-/// personnelles et un passif en cas de fuite de la base — pour une valeur de sécurité qui se joue
-/// sur les jours récents. Le choix de ne PAS le faire est délibéré.
+/// Trois chiffres par adresse, parce qu'une IP nue ne dit rien :
+/// - `success_count` / `failure_count` : beaucoup d'échecs PUIS une réussite depuis la même
+///   adresse est la signature d'une intrusion réussie par tâtonnement. C'est le signal qui répond
+///   réellement à "quelqu'un a-t-il réussi à entrer sur le compte d'un autre".
+/// - `other_accounts` : combien d'AUTRES comptes ont utilisé cette même adresse. À lire avec
+///   prudence sur un serveur familial, où tout le monde partage l'IP publique de la maison : c'est
+///   le croisement (adresse partagée QUI PORTE AUSSI des échecs) qui est parlant, pas le partage.
 ///
 /// Même porte que `GET /audit` (modérateur) : réserver celle-ci à l'Admin donnerait l'illusion
-/// d'une protection alors que la même information reste lisible en vrac juste à côté.
+/// d'une protection alors que les mêmes IP restent lisibles en vrac juste à côté.
 ///
 /// ATTENTION à l'interprétation : derrière un reverse proxy sans `TRUST_PROXY_HEADERS=true`, TOUS
 /// les comptes apparaissent avec l'IP du proxy. La route ne peut pas le deviner ; le client
@@ -622,10 +623,11 @@ pub async fn get_user_ip_history(
     }
     let target_email = target_email.to_lowercase();
 
-    // Plafond dur : un compte très actif pourrait sinon renvoyer autant de lignes que d'IP vues.
-    // 200 IP distinctes sur 10 jours dépasse déjà de loin tout usage familial.
+    // Plafond dur : un compte visé par une rotation d'adresses pourrait sinon renvoyer une réponse
+    // sans borne. 500 adresses distinctes dépassent de très loin tout usage réel, et la purge de
+    // maintenance ramène de toute façon la table sous ce seuil (voir maintenance.rs).
     let history = sqlx::query_as::<_, crate::models::UserIpHistoryEntry>(
-        "SELECT ip_address,                 MIN(created_at) AS first_seen,                 MAX(created_at) AS last_seen,                 COUNT(*) AS event_count,                 (SELECT action FROM audit_logs AS inner_log                   WHERE inner_log.user_email = audit_logs.user_email                     AND inner_log.ip_address = audit_logs.ip_address                   ORDER BY inner_log.created_at DESC LIMIT 1) AS last_action            FROM audit_logs           WHERE user_email = ?           GROUP BY ip_address           ORDER BY last_seen DESC           LIMIT 200",
+        "SELECT h.ip_address,                 h.first_seen,                 h.last_seen,                 h.event_count,                 h.success_count,                 h.failure_count,                 (SELECT COUNT(*) FROM account_ip_history AS o                   WHERE o.ip_address = h.ip_address AND o.user_email <> h.user_email) AS other_accounts            FROM account_ip_history AS h           WHERE h.user_email = ?           ORDER BY h.last_seen DESC           LIMIT 500",
     )
     .bind(&target_email)
     .fetch_all(&state.db)
@@ -1512,10 +1514,10 @@ mod tests {
 
     // ---- Historique des IP par compte -------------------------------------------------
 
-    async fn log_event(state: &Arc<AppState>, email: &str, action: &str, ip: &str, at: &str) {
-        sqlx::query("INSERT INTO audit_logs (user_email, action, ip_address, user_agent, created_at) VALUES (?, ?, ?, NULL, ?)")
-            .bind(email).bind(action).bind(ip).bind(at)
-            .execute(&state.db).await.unwrap();
+    /// Passe par le vrai chemin d'écriture (`log_audit` -> `record_ip_seen`) plutôt que par un
+    /// INSERT direct : c'est justement ce branchement qu'on veut voir marcher.
+    async fn seen(state: &Arc<AppState>, email: &str, action: &str, ip: &str) {
+        state.log_audit(email, action, ip.to_string(), None).await;
     }
 
     async fn ip_history_of(state: &Arc<AppState>, caller_is_moderator: bool, target: &str) -> serde_json::Value {
@@ -1540,45 +1542,119 @@ mod tests {
         assert!(matches!(result, Err(AppError::Forbidden)), "un non-modérateur ne doit pas voir les IP");
     }
 
-    /// Le regroupement est ce qui fait toute la valeur de la route : plusieurs événements depuis la
-    /// MÊME IP doivent donner UNE ligne comptée, pas plusieurs lignes identiques.
+    /// Le regroupement fait toute la valeur : plusieurs événements depuis la MÊME adresse donnent
+    /// UNE ligne comptée, pas une ligne par événement.
     #[tokio::test]
     async fn test_ip_history_groups_by_ip_and_counts() {
         let state = build_test_state().await;
         register_test_user(&state, "cible@example.com", false).await;
-        log_event(&state, "cible@example.com", "LOGIN", "10.0.0.1", "2026-09-01 08:00:00").await;
-        log_event(&state, "cible@example.com", "LOGIN", "10.0.0.1", "2026-09-01 09:00:00").await;
-        log_event(&state, "cible@example.com", "LOGIN_FAILED", "10.0.0.1", "2026-09-02 10:00:00").await;
-        log_event(&state, "cible@example.com", "LOGIN", "203.0.113.7", "2026-09-03 11:00:00").await;
+        seen(&state, "cible@example.com", "LOGIN", "10.0.0.1").await;
+        seen(&state, "cible@example.com", "LOGIN", "10.0.0.1").await;
+        seen(&state, "cible@example.com", "VAULT_EXPORT", "10.0.0.1").await;
+        seen(&state, "cible@example.com", "LOGIN", "203.0.113.7").await;
 
         let history = ip_history_of(&state, true, "cible@example.com").await;
         let rows = history.as_array().unwrap();
-        assert_eq!(rows.len(), 2, "deux IP distinctes attendues, pas une ligne par événement");
+        assert_eq!(rows.len(), 2, "deux adresses distinctes, pas une ligne par événement");
 
-        // Tri par dernière activité décroissante : l'IP vue le 03 passe devant.
-        assert_eq!(rows[0]["ip_address"], "203.0.113.7");
-        assert_eq!(rows[1]["ip_address"], "10.0.0.1");
-
-        assert_eq!(rows[1]["event_count"], 3, "les 3 événements de 10.0.0.1 doivent être comptés ensemble");
-        assert_eq!(rows[1]["first_seen"], "2026-09-01 08:00:00");
-        assert_eq!(rows[1]["last_seen"], "2026-09-02 10:00:00");
-        assert_eq!(rows[1]["last_action"], "LOGIN_FAILED", "l'action affichée doit être la plus RÉCENTE de cette IP");
+        let row = rows.iter().find(|r| r["ip_address"] == "10.0.0.1").unwrap();
+        assert_eq!(row["event_count"], 3, "les 3 événements de 10.0.0.1 comptent ensemble");
+        assert_eq!(row["success_count"], 2, "seules les connexions réussies comptent comme succès");
+        assert_eq!(row["failure_count"], 0);
     }
 
-    /// Une vue "par compte" qui laisserait fuiter les IP d'un autre compte serait pire qu'inutile.
+    /// LE cas visé : une adresse qui accumule des échecs PUIS finit par réussir. C'est la signature
+    /// d'une intrusion par tâtonnement, et c'est ce que les deux compteurs rendent lisible.
+    #[tokio::test]
+    async fn test_ip_history_exposes_failures_then_success() {
+        let state = build_test_state().await;
+        register_test_user(&state, "victime@example.com", false).await;
+        for _ in 0..7 {
+            seen(&state, "victime@example.com", "LOGIN_FAILED", "198.51.100.66").await;
+        }
+        seen(&state, "victime@example.com", "LOGIN_BLOCKED_TOO_MANY_ATTEMPTS", "198.51.100.66").await;
+        seen(&state, "victime@example.com", "LOGIN_SUCCESS", "198.51.100.66").await;
+
+        let history = ip_history_of(&state, true, "victime@example.com").await;
+        let row = &history.as_array().unwrap()[0];
+        assert_eq!(row["failure_count"], 8, "les échecs ET les blocages comptent comme échecs");
+        assert_eq!(row["success_count"], 1, "la réussite finale doit ressortir séparément");
+        assert_eq!(row["event_count"], 9);
+    }
+
+    /// `other_accounts` répond à "quelqu'un s'est-il connecté au compte d'un autre" : la même
+    /// adresse vue sur plusieurs comptes doit être signalée comme telle.
+    #[tokio::test]
+    async fn test_ip_history_counts_other_accounts_sharing_the_ip() {
+        let state = build_test_state().await;
+        register_test_user(&state, "papa@example.com", false).await;
+        register_test_user(&state, "ado@example.com", false).await;
+        register_test_user(&state, "solo@example.com", false).await;
+
+        seen(&state, "papa@example.com", "LOGIN", "203.0.113.5").await;
+        seen(&state, "ado@example.com", "LOGIN", "203.0.113.5").await;
+        seen(&state, "solo@example.com", "LOGIN", "192.0.2.99").await;
+
+        let papa = ip_history_of(&state, true, "papa@example.com").await;
+        assert_eq!(papa.as_array().unwrap()[0]["other_accounts"], 1, "l'adresse partagée doit signaler l'autre compte");
+
+        let solo = ip_history_of(&state, true, "solo@example.com").await;
+        assert_eq!(solo.as_array().unwrap()[0]["other_accounts"], 0, "une adresse utilisée par un seul compte n'est partagée avec personne");
+    }
+
+    /// Une vue "par compte" qui laisserait fuiter les adresses d'un autre compte serait pire
+    /// qu'inutile.
     #[tokio::test]
     async fn test_ip_history_does_not_leak_other_accounts() {
         let state = build_test_state().await;
         register_test_user(&state, "cible@example.com", false).await;
         register_test_user(&state, "voisin@example.com", false).await;
-        log_event(&state, "cible@example.com", "LOGIN", "10.0.0.1", "2026-09-01 08:00:00").await;
-        log_event(&state, "voisin@example.com", "LOGIN", "198.51.100.9", "2026-09-01 08:30:00").await;
+        seen(&state, "cible@example.com", "LOGIN", "10.0.0.1").await;
+        seen(&state, "voisin@example.com", "LOGIN", "198.51.100.9").await;
 
         let history = ip_history_of(&state, true, "cible@example.com").await;
         let rows = history.as_array().unwrap();
-        assert_eq!(rows.len(), 1, "seules les IP du compte demandé doivent apparaître");
+        assert_eq!(rows.len(), 1, "seules les adresses du compte demandé doivent apparaître");
         assert_eq!(rows[0]["ip_address"], "10.0.0.1");
-        assert_eq!(rows[0]["event_count"], 1, "le sous-select last_action ne doit pas compter d'autres comptes");
+    }
+
+    /// La raison d'être de la table séparée : elle doit SURVIVRE à la purge du journal d'audit,
+    /// sinon une adresse revenant après quelques semaines paraîtrait neuve à chaque fois.
+    #[tokio::test]
+    async fn test_ip_history_survives_audit_log_purge() {
+        let state = build_test_state().await;
+        register_test_user(&state, "cible@example.com", false).await;
+        seen(&state, "cible@example.com", "LOGIN", "203.0.113.7").await;
+
+        // Vieillit l'événement au-delà de la fenêtre, puis applique la VRAIE purge.
+        sqlx::query("UPDATE audit_logs SET created_at = DATETIME('now', '-60 days')")
+            .execute(&state.db).await.unwrap();
+        crate::maintenance::purge_old_audit_logs(&state.db).await;
+
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs")
+            .fetch_one(&state.db).await.unwrap();
+        assert_eq!(remaining, 0, "le journal doit bien avoir été purgé (sinon le test ne prouve rien)");
+
+        let history = ip_history_of(&state, true, "cible@example.com").await;
+        assert_eq!(history.as_array().unwrap().len(), 1, "l'historique IP doit survivre à la purge du journal");
+    }
+
+    /// Suppression d'un compte : son historique IP part avec lui (ON DELETE CASCADE), contrairement
+    /// au journal d'audit volontairement conservé. Le garder serait de la rétention sans usage.
+    #[tokio::test]
+    async fn test_ip_history_is_removed_with_the_account() {
+        let state = build_test_state().await;
+        register_test_user(&state, "partant@example.com", false).await;
+        seen(&state, "partant@example.com", "LOGIN", "10.0.0.42").await;
+
+        sqlx::query("DELETE FROM users WHERE email = ?")
+            .bind("partant@example.com")
+            .execute(&state.db).await.unwrap();
+
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_ip_history WHERE user_email = ?")
+            .bind("partant@example.com")
+            .fetch_one(&state.db).await.unwrap();
+        assert_eq!(left, 0, "l'historique IP doit disparaître avec le compte");
     }
 
 }

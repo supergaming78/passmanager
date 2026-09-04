@@ -110,6 +110,52 @@ pub async fn purge_old_audit_logs(db: &sqlx::SqlitePool) {
     }
 }
 
+/// Nombre maximal d'adresses distinctes conservées PAR COMPTE dans `account_ip_history`.
+///
+/// Contrairement au journal d'audit, cette table n'a volontairement PAS de limite de temps : c'est
+/// tout son intérêt (savoir qu'une adresse était déjà connue il y a six mois). La borne est donc en
+/// nombre, pas en durée — elle n'existe que pour empêcher une croissance sans fin si un attaquant
+/// fait tourner ses adresses. 500 dépasse de très loin l'usage réel : même une connexion mobile
+/// qui change d'adresse à chaque session met des années à l'atteindre.
+const MAX_IPS_PER_ACCOUNT: i64 = 500;
+
+/// Élague `account_ip_history` en gardant les `MAX_IPS_PER_ACCOUNT` adresses les plus récemment
+/// vues de chaque compte.
+///
+/// Élaguer ici plutôt qu'à chaque écriture est délibéré : `record_ip_seen()` est appelée sur le
+/// chemin critique de CHAQUE connexion, et y ajouter un DELETE avec sous-requête coûterait à
+/// chaque fois pour un cas qui ne se produit presque jamais.
+///
+/// `last_seen DESC, rowid DESC` : `last_seen` n'a qu'une précision à la seconde en SQLite, donc
+/// deux adresses vues dans la même seconde seraient départagées arbitrairement sans second
+/// critère — même motif que la fenêtre glissante de `trusted_device_ips`.
+pub async fn prune_account_ip_history(db: &sqlx::SqlitePool) {
+    let result = sqlx::query(
+        "DELETE FROM account_ip_history WHERE rowid NOT IN (
+             SELECT rowid FROM account_ip_history AS keep
+              WHERE keep.user_email = account_ip_history.user_email
+              ORDER BY keep.last_seen DESC, keep.rowid DESC
+              LIMIT ?
+         )",
+    )
+    .bind(MAX_IPS_PER_ACCOUNT)
+    .execute(db)
+    .await;
+
+    match result {
+        Ok(res) => {
+            let count = res.rows_affected();
+            if count > 0 {
+                info!(
+                    "Historique IP : {} adresse(s) élaguée(s) au-delà des {} plus récentes par compte.",
+                    count, MAX_IPS_PER_ACCOUNT
+                );
+            }
+        }
+        Err(e) => error!("Échec de l'élagage de l'historique IP : {:?}", e),
+    }
+}
+
 /// Supprime les comptes jamais vérifiés (voir handlers/auth/register.rs) trop anciens : sans ça,
 /// quelqu'un pourrait s'inscrire avec l'email de quelqu'un d'autre et squatter indéfiniment cette
 /// adresse (le vrai propriétaire se heurterait à un conflit d'inscription pour toujours). 24h

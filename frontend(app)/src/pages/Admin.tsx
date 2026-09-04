@@ -3,7 +3,7 @@ import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
 import { getEffectiveListLayout } from "../lib/listLayout";
-import { auditActionLabel } from "../lib/auditLogLabels";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { UserIpHistoryEntry, AdminUserView, AuditLog, BugReportView, FeatureSuggestionView } from "../api/types";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -395,27 +395,36 @@ function UsersSection() {
     );
   }
 
-  /** Panneau des IP d'un compte.
+  /** Panneau des adresses IP d'un compte.
    *
-   * Ne montre QUE la fenêtre du journal d'audit (purgé à 10 jours) : c'est dit explicitement, pour
-   * qu'une liste courte ne soit pas lue comme "ce compte ne s'est connecté que de là".
+   * Lit account_ip_history, qui survit à la purge du journal : l'historique est COMPLET, pas
+   * limité aux 10 derniers jours comme la première version de cet écran.
    *
-   * Prévient aussi du piège du reverse proxy. Si le backend tourne derrière Caddy/nginx sans
-   * TRUST_PROXY_HEADERS=true, il enregistre l'IP du PROXY, identique pour tout le monde — la page
-   * afficherait alors une IP privée unique et parfaitement inutile, sans rien signaler. On détecte
-   * ce cas côté client (une seule IP, et elle est privée) plutôt que de laisser interpréter de
-   * travers. */
+   * L'ordre des colonnes suit ce qu'on cherche réellement. Une adresse nue ne dit rien ; ce qui
+   * parle, c'est le couple échecs/réussites. Beaucoup d'échecs PUIS une réussite depuis la même
+   * adresse est la signature d'une intrusion aboutie par tâtonnement — mis en évidence en rouge,
+   * parce que c'est exactement le cas qu'on ne veut pas rater dans un tableau.
+   *
+   * "Autres comptes" est volontairement neutre et non alarmant : sur un serveur familial, tout le
+   * monde partage l'IP publique de la maison, donc une adresse commune y est la NORME. Ce qui
+   * compte est le croisement avec les échecs, pas le partage seul.
+   *
+   * Prévient enfin du piège du reverse proxy : sans TRUST_PROXY_HEADERS=true, le serveur
+   * enregistre l'IP du proxy, identique pour tous, et la page afficherait une adresse privée
+   * unique parfaitement inutile sans rien signaler. */
   function renderIpHistoryPanel() {
-    // Doit rester aligné sur AUDIT_LOG_RETENTION_DAYS (backend/src/maintenance.rs). Codé en dur
-    // parce que le serveur ne l'expose pas : mieux vaut un chiffre juste et à corriger à la main
-    // qu'une route de plus pour une constante qui ne bouge jamais.
-    const AUDIT_RETENTION_DAYS = 10;
-    // "YYYY-MM-DD HH:MM:SS" en UTC côté SQLite : on le rend explicitement ISO+Z plutôt que de
-    // compter sur la tolérance du moteur JS pour l'espace, qui n'est pas garantie par la spec.
+    // "YYYY-MM-DD HH:MM:SS" en UTC côté SQLite : rendu explicitement ISO+Z plutôt que de compter
+    // sur la tolérance du moteur JS pour l'espace, qui n'est pas garantie par la spec.
     const parseUtc = (ts: string) => new Date(`${ts.replace(" ", "T")}Z`);
     const isPrivate = (ip: string) =>
       /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|fc|fd)/i.test(ip);
     const looksLikeProxy = ipHistory !== null && ipHistory.length === 1 && isPrivate(ipHistory[0].ip_address);
+
+    // Une adresse qui a échoué PUIS réussi. C'est le seul motif qu'on met en rouge : tout
+    // signaler reviendrait à ne rien signaler.
+    const isSuspicious = (row: UserIpHistoryEntry) => row.failure_count > 0 && row.success_count > 0;
+    const suspiciousCount = ipHistory?.filter(isSuspicious).length ?? 0;
+
     return (
       <div className="mb-3 rounded-xl border border-neutral-200 bg-white p-3 text-xs dark:border-neutral-800 dark:bg-neutral-900">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -432,7 +441,7 @@ function UsersSection() {
         {ipHistory === null ? (
           <p className="text-neutral-500">Chargement…</p>
         ) : ipHistory.length === 0 ? (
-          <p className="text-neutral-500">Aucune activité enregistrée pour ce compte sur la période conservée.</p>
+          <p className="text-neutral-500">Aucune activité enregistrée pour ce compte.</p>
         ) : (
           <>
             {looksLikeProxy && (
@@ -442,34 +451,78 @@ function UsersSection() {
                 {" "}dans la configuration du backend pour voir les vraies adresses.
               </p>
             )}
+
+            {suspiciousCount > 0 && (
+              <p className="mb-2 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 font-medium text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+                {suspiciousCount === 1 ? "Une adresse a" : `${suspiciousCount} adresses ont`} échoué
+                puis réussi à se connecter à ce compte. C'est le motif d'une intrusion aboutie par
+                tâtonnement. Si tu ne reconnais pas {suspiciousCount === 1 ? "cette adresse" : "ces adresses"},
+                fais changer le mot de passe maître et révoque les sessions du compte.
+              </p>
+            )}
+
             <div className="overflow-x-auto">
               <table className="w-full text-left">
                 <thead className="text-neutral-500">
                   <tr>
                     <th className="py-1 pr-3 font-medium">Adresse</th>
-                    <th className="py-1 pr-3 font-medium">Vue pour la première fois</th>
-                    <th className="py-1 pr-3 font-medium">Dernière activité</th>
-                    <th className="py-1 pr-3 font-medium">Événements</th>
-                    <th className="py-1 pr-3 font-medium">Dernière action</th>
+                    <th className="py-1 pr-3 font-medium">Connexions</th>
+                    <th className="py-1 pr-3 font-medium">Échecs</th>
+                    <th className="py-1 pr-3 font-medium">Première fois</th>
+                    <th className="py-1 pr-3 font-medium">Dernière fois</th>
+                    <th className="py-1 pr-3 font-medium">Autres comptes</th>
+                    <th className="py-1 pr-3 font-medium">Origine</th>
                   </tr>
                 </thead>
                 <tbody>
                   {ipHistory.map((row) => (
-                    <tr key={row.ip_address} className="border-t border-neutral-100 dark:border-neutral-800">
-                      <td className="py-1 pr-3 font-mono text-neutral-700 dark:text-neutral-200">{row.ip_address}</td>
-                      <td className="py-1 pr-3 text-neutral-600 dark:text-neutral-400">{parseUtc(row.first_seen).toLocaleString()}</td>
-                      <td className="py-1 pr-3 text-neutral-600 dark:text-neutral-400">{parseUtc(row.last_seen).toLocaleString()}</td>
-                      <td className="py-1 pr-3 text-neutral-600 dark:text-neutral-400">{row.event_count}</td>
-                      <td className="py-1 pr-3 text-neutral-600 dark:text-neutral-400">{auditActionLabel(row.last_action)}</td>
+                    <tr
+                      key={row.ip_address}
+                      className={`border-t border-neutral-100 dark:border-neutral-800 ${isSuspicious(row) ? "bg-red-50 dark:bg-red-950/40" : ""}`}
+                    >
+                      <td className="py-1 pr-3 font-mono text-neutral-700 dark:text-neutral-200">
+                        {row.ip_address}
+                        {isSuspicious(row) && (
+                          <span className="ml-1 rounded bg-red-100 px-1 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-900 dark:text-red-300">
+                            échecs puis réussite
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-1 pr-3 text-neutral-600 dark:text-neutral-400">{row.success_count}</td>
+                      <td className={`py-1 pr-3 ${row.failure_count > 0 ? "font-medium text-amber-700 dark:text-amber-400" : "text-neutral-600 dark:text-neutral-400"}`}>
+                        {row.failure_count}
+                      </td>
+                      <td className="whitespace-nowrap py-1 pr-3 text-neutral-600 dark:text-neutral-400">{parseUtc(row.first_seen).toLocaleString()}</td>
+                      <td className="whitespace-nowrap py-1 pr-3 text-neutral-600 dark:text-neutral-400">{parseUtc(row.last_seen).toLocaleString()}</td>
+                      <td className="py-1 pr-3 text-neutral-600 dark:text-neutral-400">
+                        {row.other_accounts === 0 ? "—" : row.other_accounts}
+                      </td>
+                      <td className="py-1 pr-3">
+                        {isPrivate(row.ip_address) ? (
+                          <span className="text-neutral-400">réseau local</span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void openUrl(`https://ipinfo.io/${encodeURIComponent(row.ip_address)}`)}
+                            className="text-neutral-600 underline hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-200"
+                          >
+                            Localiser
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+
             <p className="mt-2 text-neutral-400">
-              Seuls les {AUDIT_RETENTION_DAYS} derniers jours sont conservés : une adresse plus
-              ancienne a été purgée, elle n'a pas disparu de l'usage. Une connexion mobile change
-              d'adresse souvent — plusieurs IP n'ont rien d'anormal en soi.
+              « Localiser » ouvre un service tiers dans ton navigateur et lui transmet donc
+              l'adresse consultée : c'est pour cela que rien n'est localisé automatiquement — ton
+              serveur n'envoie jamais les adresses de tes utilisateurs à qui que ce soit. La
+              localisation d'une IP reste approximative (un VPN ou une connexion mobile la place
+              souvent dans une autre ville), et une connexion mobile change d'adresse souvent :
+              plusieurs adresses n'ont rien d'anormal en soi.
             </p>
           </>
         )}

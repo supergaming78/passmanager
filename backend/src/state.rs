@@ -38,6 +38,9 @@ impl AppState {
         // Log d'information ciblé
         info!(target: "audit", user = %email, action = %action, ip = %ip, agent = ?user_agent);
 
+        // Copie prise AVANT que `ip` ne soit consommé par le bind de l'insertion ci-dessous.
+        let ip_for_history = ip.clone();
+
         // Insertion en BDD de l'historique d'action (contient l'appareil / l'User-Agent de l'appelant)
         // CORRECTIF : un échec ici (BDD verrouillée/disque plein/etc.) était auparavant totalement
         // silencieux — GET /audit afficherait alors un historique incomplet sans que rien, nulle
@@ -53,6 +56,47 @@ impl AppState {
             .await
         {
             error!(target: "audit", user = %email, action = %action, error = %e, "échec de l'insertion en base de l'entrée d'audit (le log structuré ci-dessus reste, lui, disponible)");
+        }
+
+        self.record_ip_seen(email, action, &ip_for_history).await;
+    }
+
+    /// Mémorise qu'une adresse a été vue pour un compte — table `account_ip_history`, qui SURVIT à
+    /// la purge du journal d'audit (voir la migration 20260904120000_account_ip_history.sql).
+    ///
+    /// Séparé de l'insertion ci-dessus parce que les deux répondent à des questions différentes :
+    /// `audit_logs` garde des ÉVÉNEMENTS récents en détail, celle-ci garde une MÉMOIRE longue et
+    /// compacte des adresses. Sans elle, une adresse revenant tous les quinze jours paraîtrait
+    /// neuve à chaque fois — précisément le cas qu'on cherche à repérer.
+    ///
+    /// Le décompte succès/échec est le vrai signal : beaucoup d'échecs PUIS une réussite depuis la
+    /// même adresse est la signature d'une intrusion réussie par tâtonnement, qu'une IP nue ne
+    /// permet pas de distinguer d'un usage normal.
+    ///
+    /// Best-effort, comme l'insertion d'audit : une écriture qui échoue ne doit jamais faire
+    /// échouer l'action de l'utilisateur (une connexion, typiquement). La clé étrangère vers
+    /// `users` fait aussi qu'un événement concernant un compte inexistant est simplement ignoré.
+    async fn record_ip_seen(&self, email: &str, action: &str, ip: &str) {
+        let is_success = matches!(action, "LOGIN" | "LOGIN_SUCCESS" | "LOGIN_SUCCESS_REMEMBER" | "LOGIN_SUCCESS_SESSION");
+        let is_failure = matches!(
+            action,
+            "LOGIN_FAILED" | "LOGIN_BLOCKED_TOO_MANY_ATTEMPTS" | "LOGIN_BLOCKED_UNVERIFIED" | "LOGIN_BLOCKED_SUSPENDED"
+        );
+
+        // `first_seen` n'est PAS touché par le UPDATE : c'est toute sa valeur — savoir depuis quand
+        // cette adresse existe pour ce compte. `last_seen` et les compteurs, eux, avancent.
+        let result = sqlx::query(
+            "INSERT INTO account_ip_history                  (user_email, ip_address, first_seen, last_seen, event_count, success_count, failure_count)              VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, ?, ?)              ON CONFLICT(user_email, ip_address) DO UPDATE SET                  last_seen = CURRENT_TIMESTAMP,                  event_count = event_count + 1,                  success_count = success_count + excluded.success_count,                  failure_count = failure_count + excluded.failure_count",
+        )
+        .bind(email)
+        .bind(ip)
+        .bind(i64::from(is_success))
+        .bind(i64::from(is_failure))
+        .execute(&self.db)
+        .await;
+
+        if let Err(e) = result {
+            error!(target: "audit", user = %email, error = %e, "échec de la mise à jour de l'historique IP du compte");
         }
     }
 }

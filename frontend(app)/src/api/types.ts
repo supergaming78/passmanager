@@ -686,5 +686,11 @@ export interface UserIpHistoryEntry {
   first_seen: string;
   last_seen: string;
   event_count: number;
-  last_action: string;
+  /** Connexions réussies depuis cette adresse. */
+  success_count: number;
+  /** Échecs et blocages. Beaucoup d'échecs PUIS une réussite = intrusion aboutie par tâtonnement. */
+  failure_count: number;
+  /** Nombre d'AUTRES comptes ayant utilisé la même adresse. Sur un serveur familial, tout le monde
+   * partage l'IP de la maison : c'est le croisement avec les échecs qui parle, pas le partage. */
+  other_accounts: number;
 }
