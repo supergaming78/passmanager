@@ -100,11 +100,19 @@ services:
       - |
         set -e
         cible=/data/dbip-country.mmdb
+        echo "=== geoip-init ==="
+        echo "Cible : $$cible"
+        echo "Contenu actuel du volume /data :"
+        ls -la /data || echo "  (le volume /data n'est pas monte !)"
         if [ -f "$$cible" ] && [ -n "$$(find "$$cible" -mtime -60 2>/dev/null)" ]; then
-          echo "Base de geolocalisation deja presente et recente, rien a faire."
+          echo "RESULTAT : base deja presente et recente ($$(wc -c < "$$cible") octets), rien a faire."
+          echo "Si la geolocalisation ne marche pas, le probleme n'est PAS ici :"
+          echo "  verifie GEOIP_DATABASE_PATH=/app/data/dbip-country.mmdb sur le service api,"
+          echo "  puis lis les logs de api (il affiche un diagnostic detaille)."
           exit 0
         fi
-        apk add --no-cache curl >/dev/null
+        # Sortie d'apk NON masquee : une erreur reseau ici doit etre visible dans les logs.
+        apk add --no-cache curl
         # Mois precedent calcule en arithmetique shell, PAS avec `date -d '1 month ago'` : la
         # syntaxe relative est une extension GNU, absente du BusyBox d'Alpine (elle echouerait
         # silencieusement et la reserve ne servirait a rien).
@@ -117,12 +125,23 @@ services:
           echo "Tentative : $$url"
           if curl -fsSL -o /tmp/geo.gz "$$url"; then
             gunzip -c /tmp/geo.gz > "$$cible"
-            echo "Base installee dans $$cible ($$(wc -c < "$$cible") octets)."
-            echo "Pense a definir GEOIP_DATABASE_PATH=/app/data/dbip-country.mmdb"
+            taille=$$(wc -c < "$$cible")
+            # Une base MMDB valide se termine par le marqueur de metadonnees de MaxMind. Sans cette
+            # verification, un telechargement tronque produirait un fichier que api refuserait de
+            # lire, sans qu'on sache lequel des deux est en cause.
+            if ! grep -q "MaxMind.com" "$$cible"; then
+              echo "ECHEC : le fichier telecharge ne ressemble pas a une base MMDB. Supprime."
+              rm -f "$$cible"
+              exit 1
+            fi
+            echo "RESULTAT : base installee dans $$cible ($$taille octets, marqueur MMDB present)."
+            echo "ETAPE SUIVANTE, sans laquelle rien ne s'affichera :"
+            echo "  ajoute GEOIP_DATABASE_PATH=/app/data/dbip-country.mmdb aux variables du stack,"
+            echo "  puis redeploie. Le service api confirmera par 'Geolocalisation hors ligne active'."
             exit 0
           fi
         done
-        echo "Aucune base n'a pu etre telechargee. Le backend demarrera SANS geolocalisation."
+        echo "ECHEC : aucune base n'a pu etre telechargee (reseau ? DNS ?). api demarrera SANS geolocalisation."
         exit 1
     restart: "no"
 

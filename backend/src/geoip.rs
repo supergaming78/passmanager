@@ -84,6 +84,15 @@ impl GeoIpResolver {
     /// ouverture de fichier ni allocation par consultation.
     pub fn load(path: Option<&str>) -> Self {
         let path = path.map(str::to_string);
+        // Tracé même quand rien n'est configuré : sans cette ligne, "pas de variable" et "variable
+        // non transmise au conteneur" produisent le MÊME journal (silence total), alors que les
+        // corrections diffèrent — régler la variable, ou remettre à jour le fichier compose qui la
+        // transmet. Les quatre états deviennent ainsi distinguables d'un coup d'œil.
+        if path.is_none() {
+            info!(
+                "Géolocalisation désactivée : GEOIP_DATABASE_PATH n'est pas défini (ou est vide). Si tu l'as pourtant renseigné, c'est que la variable n'atteint pas le conteneur — le fichier docker-compose.yml déployé est probablement antérieur à ce réglage."
+            );
+        }
         let reader = path.as_deref().and_then(open_database);
         Self {
             state: RwLock::new(ResolverState {
@@ -196,8 +205,76 @@ fn open_database(path: &str) -> Option<maxminddb::Reader<Vec<u8>>> {
                 e,
                 RETRY_AFTER.as_secs()
             );
+            warn!("{}", diagnose_missing_database(path));
             None
         }
+    }
+}
+
+/// Explique POURQUOI le fichier n'a pas pu être lu, en listant ce qui se trouve réellement dans le
+/// dossier visé.
+///
+/// Existe parce que le message d'erreur seul ("No such file or directory") ne distingue pas les
+/// trois causes réelles, qui appellent des corrections opposées : le dossier n'est pas monté, le
+/// fichier est ailleurs (deux conteneurs qui ne voient pas le même chemin), ou le nom diffère.
+/// Sur un déploiement en conteneurs, retrouver ça à la main demande d'entrer dans le conteneur —
+/// une étape que peu de gens font, et qui n'est pas nécessaire : le serveur peut le dire seul.
+fn diagnose_missing_database(path: &str) -> String {
+    let chemin = Path::new(path);
+
+    if chemin.exists() {
+        return format!(
+            "Diagnostic : « {path} » EXISTE mais n'est pas lisible comme base MMDB. Vérifie qu'il \
+             s'agit bien d'un fichier .mmdb décompressé (un .gz ou un fichier tronqué donnerait \
+             cette erreur) et que le processus a le droit de le lire."
+        );
+    }
+
+    let Some(dossier) = chemin.parent() else {
+        return format!("Diagnostic : « {path} » n'a pas de dossier parent exploitable.");
+    };
+
+    if !dossier.exists() {
+        return format!(
+            "Diagnostic : le dossier « {} » n'existe même pas. En conteneur, c'est le signe que le \
+             volume n'est pas monté à cet endroit — vérifie que le chemin est bien celui VU DEPUIS \
+             LE CONTENEUR (ex. /app/data/...), et non un chemin de la machine hôte.",
+            dossier.display()
+        );
+    }
+
+    match std::fs::read_dir(dossier) {
+        Ok(entrees) => {
+            let mut noms: Vec<String> = entrees
+                .filter_map(Result::ok)
+                .map(|e| {
+                    let taille = e.metadata().map(|m| m.len()).unwrap_or(0);
+                    format!("{} ({} o)", e.file_name().to_string_lossy(), taille)
+                })
+                .collect();
+            noms.sort();
+            if noms.is_empty() {
+                format!(
+                    "Diagnostic : le dossier « {} » existe mais est VIDE. Le fichier n'a pas été \
+                     écrit là — si tu utilises le service geoip-init, vérifie que les deux \
+                     conteneurs montent bien le même dossier hôte.",
+ dossier.display()
+ )
+ } else {
+ format!(
+ "Diagnostic : le dossier « {} » contient : {}. Le fichier attendu n'y est pas \
+                     sous ce nom — compare avec le nom écrit par geoip-init \
+                     (dbip-country.mmdb).",
+                    dossier.display(),
+                    noms.join(", ")
+                )
+            }
+        }
+        Err(e) => format!(
+            "Diagnostic : impossible de lister « {} » : {e}. C'est probablement un problème de \
+             droits sur le volume monté.",
+            dossier.display()
+        ),
     }
 }
 
@@ -236,7 +313,7 @@ mod tests {
     fn test_invalid_database_path_degrades_instead_of_failing() {
         let resolver = GeoIpResolver::load(Some("/chemin/qui/n/existe/pas.mmdb"));
         assert!(!resolver.is_enabled(), "une base illisible doit laisser le résolveur inerte");
-        assert_eq!(resolver.lookup("8.8.8.8"), None);
+ assert_eq!(resolver.lookup("8.8.8.8"), None);
     }
 
     /// Les adresses sans lieu doivent être écartées AVANT la base : les interroger ne produirait
@@ -298,7 +375,7 @@ mod tests {
         // Une base chargée ne doit PAS se mettre à géolocaliser des adresses privées : c'est
         // exactement ce qu'on voit partout derrière un reverse proxy mal configuré.
         assert_eq!(resolver.lookup("192.168.1.1"), None, "une adresse privée n'a pas de lieu, même avec une base chargée");
-        assert_eq!(resolver.lookup("127.0.0.1"), None);
+ assert_eq!(resolver.lookup("127.0.0.1"), None);
     }
 
     /// Une entrée mal formée ne doit jamais faire paniquer : cette chaîne vient de la base de
@@ -334,7 +411,7 @@ mod deferred_load_tests {
 
         let resolver = GeoIpResolver::load(Some(cible.to_str().unwrap()));
         assert!(!resolver.is_enabled(), "au démarrage, sans fichier, le résolveur est inerte");
-        assert_eq!(resolver.lookup("8.8.8.8"), None, "rien à résoudre tant que le fichier est absent");
+ assert_eq!(resolver.lookup("8.8.8.8"), None, "rien à résoudre tant que le fichier est absent");
 
         // Le conteneur de téléchargement termine son travail APRÈS.
         std::fs::copy(&source, &cible).unwrap();
@@ -360,11 +437,49 @@ mod deferred_load_tests {
         let echeance = resolver.state.read().unwrap().next_retry;
         assert!(echeance.is_some(), "un chemin configuré mais absent doit programmer une reprise");
 
-        resolver.lookup("8.8.8.8");
+ resolver.lookup("8.8.8.8");
         assert_eq!(
             resolver.state.read().unwrap().next_retry,
             echeance,
             "une consultation avant l'échéance ne doit pas reprogrammer ni retenter"
         );
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    /// Chacune des trois causes réelles doit produire un message DIFFÉRENT : c'est tout l'intérêt.
+    /// Un diagnostic qui dirait la même chose dans les trois cas ne vaudrait pas mieux que
+    /// "No such file or directory".
+    #[test]
+    fn test_each_cause_gets_its_own_message() {
+        // 1. Le dossier n'existe pas -> volume non monté / mauvais chemin.
+        let msg = diagnose_missing_database("/dossier/absent/base.mmdb");
+        assert!(msg.contains("n'existe même pas"), "cas dossier absent : {msg}");
+        assert!(msg.contains("VU DEPUIS"), "doit orienter vers le chemin conteneur : {msg}");
+
+        let base = std::env::temp_dir().join(format!("geoip-diag-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+
+        // 2. Le dossier existe mais est vide -> le fichier n'a pas été écrit là.
+        let msg = diagnose_missing_database(base.join("base.mmdb").to_str().unwrap());
+        assert!(msg.contains("VIDE"), "cas dossier vide : {msg}");
+
+        // 3. Le dossier contient autre chose -> nom différent, le plus dur à voir sans liste.
+        std::fs::write(base.join("vault.db"), b"x").unwrap();
+        std::fs::write(base.join("dbip-country.mmdb.gz"), b"yy").unwrap();
+        let msg = diagnose_missing_database(base.join("base.mmdb").to_str().unwrap());
+        assert!(msg.contains("vault.db"), "le contenu réel doit être listé : {msg}");
+        assert!(msg.contains("dbip-country.mmdb.gz"), "y compris le .gz non décompressé : {msg}");
+
+        // 4. Le fichier existe mais n'est pas une base valide -> autre correction encore.
+        let faux = base.join("faux.mmdb");
+        std::fs::write(&faux, b"pas une base").unwrap();
+        let msg = diagnose_missing_database(faux.to_str().unwrap());
+        assert!(msg.contains("EXISTE"), "cas fichier illisible : {msg}");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
