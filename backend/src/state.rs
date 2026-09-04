@@ -42,6 +42,17 @@ impl AppState {
         // Log d'information ciblé
         info!(target: "audit", user = %email, action = %action, ip = %ip, agent = ?user_agent);
 
+        // CORRECTIF : les appelants passent `addr.to_string()` sur un SocketAddr, qui inclut le
+        // PORT SOURCE ("127.0.0.1:53144"). Ce port est éphémère — différent à chaque connexion —
+        // et il était stocké tel quel depuis toujours. Conséquences : le journal affichait des
+        // adresses bruitées, l'historique par compte voyait une adresse NEUVE à chaque connexion
+        // (donc aucun regroupement possible), et la géolocalisation échouait systématiquement
+        // puisque "127.0.0.1:53144" n'est pas une adresse IP analysable.
+        //
+        // Normalisé ici, au point de passage commun des 57 sites d'appel, plutôt qu'à chacun
+        // d'eux. Idempotent : une adresse déjà nue traverse sans changement.
+        let ip = normalize_ip(&ip);
+
         // Copie prise AVANT que `ip` ne soit consommé par le bind de l'insertion ci-dessous.
         let ip_for_history = ip.clone();
 
@@ -103,6 +114,28 @@ impl AppState {
             error!(target: "audit", user = %email, error = %e, "échec de la mise à jour de l'historique IP du compte");
         }
     }
+}
+
+/// Retire le port d'une adresse quand il y en a un, sinon renvoie l'entrée telle quelle.
+///
+/// Les appelants d'audit passent un `SocketAddr` formaté, qui porte le port source ; on ne veut
+/// garder que l'adresse. Trois formes possibles en entrée :
+/// - `"127.0.0.1:53144"` / `"[::1]:53144"` — un SocketAddr, dont on extrait l'IP ;
+/// - `"127.0.0.1"` / `"::1"` — déjà une IP nue, rendue inchangée (idempotence) ;
+/// - autre chose — rendue inchangée plutôt que perdue : une entrée d'audit avec une valeur
+///   inattendue vaut mieux qu'une entrée d'audit vide.
+///
+/// Le découpage passe par les analyseurs de `std` et non par une recherche de `:` : une adresse
+/// IPv6 nue en contient plusieurs, et la couper au premier la détruirait.
+fn normalize_ip(raw: &str) -> String {
+    use std::net::{IpAddr, SocketAddr};
+    if let Ok(socket) = raw.parse::<SocketAddr>() {
+        return socket.ip().to_string();
+    }
+    if raw.parse::<IpAddr>().is_ok() {
+        return raw.to_string();
+    }
+    raw.to_string()
 }
 
 // =========================================================================
@@ -177,5 +210,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1, "log_audit doit insérer exactement une ligne en BDD");
+    }
+}
+
+#[cfg(test)]
+mod normalize_ip_tests {
+    use super::normalize_ip;
+
+    /// Le cas qui a motivé le correctif : un SocketAddr formaté, port éphémère compris.
+    #[test]
+    fn test_strips_the_source_port() {
+        assert_eq!(normalize_ip("127.0.0.1:53144"), "127.0.0.1");
+        assert_eq!(normalize_ip("203.0.113.7:65535"), "203.0.113.7");
+    }
+
+    /// IPv6 : le port se retire par l'analyseur, JAMAIS en coupant au premier `:` — une adresse
+    /// IPv6 en contient plusieurs et serait détruite.
+    #[test]
+    fn test_handles_ipv6_without_destroying_it() {
+        assert_eq!(normalize_ip("[::1]:53144"), "::1");
+        assert_eq!(normalize_ip("[2001:db8::1]:443"), "2001:db8::1");
+        assert_eq!(normalize_ip("2001:db8::1"), "2001:db8::1", "une IPv6 nue doit traverser intacte");
+    }
+
+    /// Idempotence : une adresse déjà propre ne doit pas être retouchée, sinon repasser la
+    /// fonction sur des données déjà normalisées les abîmerait.
+    #[test]
+    fn test_is_idempotent_on_bare_addresses() {
+        for ip in ["127.0.0.1", "10.0.0.5", "::1"] {
+            assert_eq!(normalize_ip(ip), ip);
+            assert_eq!(normalize_ip(&normalize_ip(ip)), ip);
+        }
+    }
+
+    /// Une valeur inattendue est conservée plutôt que perdue : une entrée d'audit bizarre reste
+    /// plus utile qu'une entrée d'audit vide.
+    #[test]
+    fn test_keeps_unparsable_values_rather_than_dropping_them() {
+        assert_eq!(normalize_ip("inconnue"), "inconnue");
+        assert_eq!(normalize_ip(""), "");
     }
 }
