@@ -1437,3 +1437,16 @@ pub struct UserIpHistoryEntry {
     #[sqlx(skip)]
     pub location: Option<crate::geoip::IpLocation>,
 }
+
+/// Réponse de `GET /admin/users/{email}/ip-history`.
+///
+/// Enveloppe la liste plutôt que de la renvoyer nue, pour porter `geoip_enabled`. Sans ce drapeau,
+/// le client ne peut pas distinguer « aucune base installée » de « une base est installée, mais
+/// toutes ces adresses sont privées donc sans lieu » — les deux donnent une liste sans origine.
+/// Il affichait donc « aucune base installée » à un administrateur qui venait d'en installer une,
+/// ce qui est exactement le genre de message qui fait refaire une manipulation déjà faite.
+#[derive(serde::Serialize)]
+pub struct UserIpHistoryResponse {
+    pub geoip_enabled: bool,
+    pub entries: Vec<UserIpHistoryEntry>,
+}

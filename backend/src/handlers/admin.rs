@@ -638,7 +638,7 @@ pub async fn get_user_ip_history(
     // Résolution de l'origine APRÈS la requête, en mémoire : la base MMDB est déjà chargée (voir
     // geoip.rs), donc chaque adresse coûte une lecture d'arbre, sans I/O ni réseau. Inerte tant
     // qu'aucune base n'est configurée.
-    let history: Vec<_> = history
+    let entries: Vec<_> = history
         .into_iter()
         .map(|mut row| {
             row.location = state.geoip.lookup(&row.ip_address);
@@ -655,7 +655,12 @@ pub async fn get_user_ip_history(
         .log_audit(&user.email, &format!("IP_HISTORY_VIEWED:{target_email}"), addr.to_string(), agent)
         .await;
 
-    Ok(Json(history))
+    Ok(Json(crate::models::UserIpHistoryResponse {
+        // Lu APRÈS les résolutions ci-dessus : le résolveur peut charger sa base à ce moment-là
+        // (reprise différée, voir geoip.rs), et annoncer `false` juste avant serait faux.
+        geoip_enabled: state.geoip.is_enabled(),
+        entries,
+    }))
 }
 
 /// Suspend ou réactive un compte — marche intermédiaire entre "ne rien faire" et la suppression
@@ -1554,7 +1559,8 @@ mod tests {
             Path(target.to_string()),
         ).await.expect("la consultation doit réussir");
         let bytes = axum::body::to_bytes(result.into_response().into_body(), usize::MAX).await.unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+        let corps: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        corps["entries"].clone()
     }
 
     /// Même porte que le journal d'audit : un simple utilisateur ne voit pas les IP.

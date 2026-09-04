@@ -4,7 +4,7 @@ import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
 import { getEffectiveListLayout } from "../lib/listLayout";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { UserIpHistoryEntry, AdminUserView, AuditLog, BugReportView, FeatureSuggestionView } from "../api/types";
+import type { UserIpHistoryEntry, UserIpHistoryResponse, AdminUserView, AuditLog, BugReportView, FeatureSuggestionView } from "../api/types";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -30,7 +30,7 @@ function UsersSection() {
   // Historique IP du compte actuellement dépiauté (null = panneau fermé). Chargé à la demande :
   // c'est une donnée sensible, inutile de la tirer pour tous les comptes à chaque ouverture.
   const [ipHistoryFor, setIpHistoryFor] = useState<string | null>(null);
-  const [ipHistory, setIpHistory] = useState<UserIpHistoryEntry[] | null>(null);
+  const [ipHistory, setIpHistory] = useState<UserIpHistoryResponse | null>(null);
   // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
   const [listLayout] = useState(() => getEffectiveListLayout());
 
@@ -433,12 +433,36 @@ function UsersSection() {
       if (city && country) return `${city}, ${country}`;
       return city ?? country ?? null;
     };
-    const looksLikeProxy = ipHistory !== null && ipHistory.length === 1 && isPrivate(ipHistory[0].ip_address);
+    const rows = ipHistory?.entries ?? [];
+    const looksLikeProxy = ipHistory !== null && rows.length === 1 && isPrivate(rows[0].ip_address);
 
-    // Une adresse qui a échoué PUIS réussi. C'est le seul motif qu'on met en rouge : tout
-    // signaler reviendrait à ne rien signaler.
-    const isSuspicious = (row: UserIpHistoryEntry) => row.failure_count > 0 && row.success_count > 0;
-    const suspiciousCount = ipHistory?.filter(isSuspicious).length ?? 0;
+    // CRITÈRE D'ALERTE — trois conditions, et il a fallu les trois.
+    //
+    // La première version signalait toute adresse ayant au moins un échec ET une réussite. Sur un
+    // vrai compte, c'est le cas NORMAL : tout le monde se trompe de mot de passe de temps en
+    // temps. Le premier écran réel affichait 93 réussites, 18 échecs... et une bannière rouge
+    // d'intrusion. Une alerte qui se déclenche sur le cas courant, on apprend à l'ignorer — elle
+    // est alors pire que pas d'alerte du tout, puisqu'elle masquerait la vraie.
+    //
+    // 1. Une adresse privée est écartée d'office : personne ne s'introduit depuis ton propre
+    //    réseau local, et derrière un reverse proxy mal réglé TOUT le trafic y ressemble.
+    // 2. Un plancher de 5 échecs : deux ou trois erreurs de frappe ne sont pas une attaque.
+    // 3. Plus d'échecs que de réussites : c'est ce qui sépare un intrus qui tâtonne (beaucoup
+    //    d'échecs, une réussite) du propriétaire du compte (beaucoup de réussites, quelques
+    //    fautes de frappe). Un ratio, pas un compte absolu — sinon un compte utilisé depuis des
+    //    années finirait fatalement par franchir n'importe quel seuil fixe.
+    const MIN_ECHECS_SUSPECTS = 5;
+    const isSuspicious = (row: UserIpHistoryEntry) =>
+      !isPrivate(row.ip_address) &&
+      row.failure_count >= MIN_ECHECS_SUSPECTS &&
+      row.failure_count > row.success_count;
+    // Deux situations très différentes derrière le même critère, à ne surtout pas confondre dans
+    // le message : une adresse qui a fini par ENTRER (le compte est compromis, il faut agir tout
+    // de suite), et une qui s'acharne SANS jamais réussir (le blocage fait son travail, c'est une
+    // information, pas une urgence). Annoncer une intrusion qui n'a pas eu lieu serait une fausse
+    // frayeur, et l'inverse une négligence.
+    const intrusions = rows.filter((r) => isSuspicious(r) && r.success_count > 0);
+    const tentatives = rows.filter((r) => isSuspicious(r) && r.success_count === 0);
 
     return (
       <div className="mb-3 rounded-xl border border-neutral-200 bg-white p-3 text-xs dark:border-neutral-800 dark:bg-neutral-900">
@@ -455,24 +479,34 @@ function UsersSection() {
 
         {ipHistory === null ? (
           <p className="text-neutral-500">Chargement…</p>
-        ) : ipHistory.length === 0 ? (
+        ) : rows.length === 0 ? (
           <p className="text-neutral-500">Aucune activité enregistrée pour ce compte.</p>
         ) : (
           <>
             {looksLikeProxy && (
               <p className="mb-2 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
                 Une seule adresse, et elle est privée : ton serveur enregistre probablement l'IP de
-                son reverse proxy, pas celle des utilisateurs. Mets <code>TRUST_PROXY_HEADERS=true</code>
+                son reverse proxy, pas celle des utilisateurs. Mets <code className="whitespace-nowrap">TRUST_PROXY_HEADERS=true</code>
                 {" "}dans la configuration du backend pour voir les vraies adresses.
               </p>
             )}
 
-            {suspiciousCount > 0 && (
+            {intrusions.length > 0 && (
               <p className="mb-2 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 font-medium text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-                {suspiciousCount === 1 ? "Une adresse a" : `${suspiciousCount} adresses ont`} échoué
-                puis réussi à se connecter à ce compte. C'est le motif d'une intrusion aboutie par
-                tâtonnement. Si tu ne reconnais pas {suspiciousCount === 1 ? "cette adresse" : "ces adresses"},
+                {intrusions.length === 1 ? "Une adresse a" : `${intrusions.length} adresses ont`} accumulé
+                les échecs puis RÉUSSI à se connecter à ce compte. C'est le motif d'une intrusion
+                aboutie par tâtonnement. Si tu ne {intrusions.length === 1 ? "reconnais pas cette adresse" : "reconnais pas ces adresses"},
                 fais changer le mot de passe maître et révoque les sessions du compte.
+              </p>
+            )}
+
+            {tentatives.length > 0 && (
+              <p className="mb-2 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                {tentatives.length === 1 ? "Une adresse a" : `${tentatives.length} adresses ont`} multiplié
+                les échecs de connexion sans jamais y parvenir. Le compte n'a pas été compromis par
+                {tentatives.length === 1 ? " cette adresse" : " ces adresses"} et le blocage a fait
+                son travail — rien d'urgent, mais si cela se répète, un mot de passe maître plus
+                long met le compte hors de portée.
               </p>
             )}
 
@@ -490,16 +524,30 @@ function UsersSection() {
                   </tr>
                 </thead>
                 <tbody>
-                  {ipHistory.map((row) => (
+                  {rows.map((row) => (
                     <tr
                       key={row.ip_address}
-                      className={`border-t border-neutral-100 dark:border-neutral-800 ${isSuspicious(row) ? "bg-red-50 dark:bg-red-950/40" : ""}`}
+                      className={`border-t border-neutral-100 dark:border-neutral-800 ${
+                        !isSuspicious(row)
+                          ? ""
+                          : row.success_count > 0
+                            ? "bg-red-50 dark:bg-red-950/40"
+                            : "bg-amber-50 dark:bg-amber-950/40"
+                      }`}
                     >
                       <td className="py-1 pr-3 font-mono text-neutral-700 dark:text-neutral-200">
                         {row.ip_address}
                         {isSuspicious(row) && (
-                          <span className="ml-1 rounded bg-red-100 px-1 py-0.5 text-[10px] font-medium text-red-700 dark:bg-red-900 dark:text-red-300">
-                            échecs puis réussite
+                          <span
+                            className={`ml-1 rounded px-1 py-0.5 text-[10px] font-medium ${
+                              row.success_count > 0
+                                ? "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300"
+                                : "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+                            }`}
+                          >
+                            {row.success_count > 0
+                              ? `${row.failure_count} échecs, puis entrée`
+                              : `${row.failure_count} échecs, jamais entré`}
                           </span>
                         )}
                       </td>
@@ -537,8 +585,8 @@ function UsersSection() {
             </div>
 
             <p className="mt-2 text-neutral-400">
-              {ipHistory.some((row) => row.location)
-                ? "Les origines sont résolues par ton serveur contre une base locale : aucune adresse n'est envoyée à un service tiers."
+              {ipHistory.geoip_enabled
+                ? "Les origines sont résolues par ton serveur contre une base locale : aucune adresse n'est envoyée à un service tiers. Une adresse privée n'a pas de lieu, c'est normal qu'elle reste sans origine."
                 : "Aucune base de géolocalisation n'est installée sur ton serveur — voir GEOIP_DATABASE_PATH dans le README. En attendant, « Localiser » ouvre un service tiers dans ton navigateur et lui transmet l'adresse : ton serveur, lui, n'envoie jamais rien."}
               {" "}La localisation d'une IP reste une estimation : un VPN affiche le pays de son
               serveur, et une connexion mobile est souvent rattachée à une autre ville — elle

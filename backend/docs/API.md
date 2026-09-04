@@ -1734,9 +1734,13 @@ cycle de maintenance et non à l'écriture, qui est sur le chemin critique de ch
 `ON DELETE CASCADE` : l'historique disparaît avec le compte, contrairement à `audit_logs`
 volontairement conservé — le garder serait de la rétention de données personnelles sans usage.
 
-**Réponse** : `200 OK`, trié par dernière activité décroissante, 500 lignes au maximum :
+**Réponse** : `200 OK`. La liste est enveloppée pour porter `geoip_enabled` : sans ce drapeau, le
+client ne peut pas distinguer « aucune base installée » de « base installée, mais toutes ces
+adresses sont privées donc sans lieu » — les deux donnent une liste sans origine, et il affichait
+donc « aucune base installée » à un administrateur qui venait d'en installer une. Entrées triées
+par dernière activité décroissante, 500 au maximum :
 ```json
-[{
+{ "geoip_enabled": true, "entries": [{
   "ip_address": "203.0.113.7",
   "first_seen": "2026-09-01 08:00:00",
   "last_seen": "2026-09-03 11:00:00",
@@ -1745,8 +1749,19 @@ volontairement conservé — le garder serait de la rétention de données perso
   "failure_count": 8,
   "other_accounts": 1,
   "location": { "country_code": "FR", "country_name": "France", "city": null }
-}]
+}] }
 ```
+
+**Interpréter `success_count` / `failure_count`.** Le client ne signale une adresse que si les
+trois conditions sont réunies : elle n'est pas privée, elle compte au moins 5 échecs, et elle a
+plus d'échecs que de réussites. La première version signalait toute adresse ayant au moins un échec
+ET une réussite — sur un vrai compte c'est le cas NORMAL (tout le monde se trompe de mot de passe),
+et le premier écran réel a affiché une alerte d'intrusion sur 93 réussites / 18 échecs. Une alerte
+qui se déclenche sur le cas courant finit ignorée, donc masque la vraie.
+
+Deux niveaux distincts, à ne pas confondre : une adresse qui a fini par ENTRER (compte compromis,
+agir tout de suite) et une qui s'acharne SANS jamais réussir (le blocage fait son travail, c'est
+une information).
 
 `location` vaut `null` si aucune base de géolocalisation n'est configurée, si l'adresse est privée,
 ou si la base ne la connaît pas. `city` est `null` avec une base « Country », qui n'en contient pas.

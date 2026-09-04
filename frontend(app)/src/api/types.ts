@@ -699,6 +699,14 @@ export interface UserIpHistoryEntry {
   location: IpLocation | null;
 }
 
+/** Réponse de GET /admin/users/{email}/ip-history. `geoip_enabled` dit si le SERVEUR a une base
+ * chargée — sans lui, impossible de distinguer « aucune base installée » de « base installée,
+ * mais toutes ces adresses sont privées donc sans lieu ». */
+export interface UserIpHistoryResponse {
+  geoip_enabled: boolean;
+  entries: UserIpHistoryEntry[];
+}
+
 /** Origine estimée d'une adresse. Volontairement pauvre : ni coordonnées, ni fuseau — une
  * géolocalisation d'IP est une estimation, pas une position. */
 export interface IpLocation {
