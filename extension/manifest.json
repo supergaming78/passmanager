@@ -3,6 +3,12 @@
   "name": "PassManager",
   "version": "0.2.6",
   "description": "Gestionnaire de mots de passe Zero-Knowledge — coffre auto-hébergé.",
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Ctrl+Shift+L", "mac": "Command+Shift+L" },
+      "description": "Ouvrir PassManager pour la page courante"
+    }
+  },
   "action": {
     "default_popup": "popup/dist/index.html",
     "default_icon": {

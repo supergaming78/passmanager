@@ -51,6 +51,21 @@ type Screen =
 const TYPE_ORDER: EntryType[] = ["login", "card", "identity", "note"];
 const TYPE_SECTION_LABELS: Record<EntryType, string> = { login: "Mots de passe", card: "Cartes bancaires", identity: "Identités", note: "Notes sécurisées" };
 
+/** Vrai si cette entrée concerne la page actuellement ouverte dans l'onglet actif.
+ *
+ * Réutilise domainsLikelyMatch() (voir lib/autofill.ts) plutôt qu'une comparaison maison, pour que
+ * "cette entrée remonte en tête" et "cette entrée ne déclenche pas d'avertissement au remplissage"
+ * reposent sur EXACTEMENT la même règle — deux réponses différentes à la même question seraient
+ * incompréhensibles pour l'utilisateur.
+ *
+ * Une entrée sans URL ne correspond jamais : domainsLikelyMatch() est volontairement permissif
+ * (il renvoie `true` quand il n'a rien à comparer, pour ne pas avertir à tort), ce qui conviendrait
+ * mal ici — toutes les entrées sans URL remonteraient alors en tête, à tort. */
+function matchesActiveTab(entry: PlainVaultEntry, activeTabUrl: string | null): boolean {
+  if (!entry.url || !activeTabUrl) return false;
+  return domainsLikelyMatch(entry.url, activeTabUrl);
+}
+
 /** Regroupe une liste d'entrées par dossier — mêmes principe et logique que
  * pages/Vault.tsx::groupEntriesByFolder côté app desktop, factorisé pour être appelé soit une fois
  * sur tout le coffre (pas de séparation par type), soit une fois par section de type. */
@@ -482,6 +497,29 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
   const [filledId, setFilledId] = useState<string | null>(null);
   const [view, setView] = useState<VaultView>({ kind: "list" });
 
+  // URL de l'onglet actif, lue UNE fois à l'ouverture de la popup : sert à faire remonter en tête
+  // de liste les entrées qui concernent la page où se trouve l'utilisateur (voir le tri plus bas).
+  //
+  // C'est le pendant du raccourci clavier Ctrl+Shift+L (voir manifest.json::commands) : celui-ci
+  // se contente d'OUVRIR la popup, et c'est ce classement qui rend le geste utile — la bonne
+  // entrée est déjà en haut, il ne reste qu'à cliquer "Remplir".
+  //
+  // CHOIX DE CONCEPTION : un vrai remplissage en une seule touche aurait exigé un service worker
+  // d'arrière-plan à l'écoute du raccourci — donc un contexte permanent ayant accès à
+  // chrome.storage.session, c'est-à-dire À LA CLÉ DU COFFRE. Élargir cette surface pour économiser
+  // un clic serait un mauvais échange dans un gestionnaire de mots de passe : l'extension continue
+  // de n'avoir AUCUN script d'arrière-plan (voir manifest.json).
+  const [activeTabUrl, setActiveTabUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void getActiveTabUrl().then((url) => {
+      if (!cancelled) setActiveTabUrl(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   async function reload() {
     try {
       // getFullVault() (PAS getVault() seul) : le serveur plafonne toujours une page à 100
@@ -670,6 +708,12 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
           return e.folder === folderFilter;
         })
         .sort((a, b) => {
+          // Les entrées concernant la PAGE COURANTE passent avant tout le reste, favoris compris :
+          // quand la popup s'ouvre (a fortiori via Ctrl+Shift+L), l'intention est presque toujours
+          // "remplir CE site", pas "parcourir mon coffre". Voir activeTabUrl plus haut.
+          const aMatches = matchesActiveTab(a, activeTabUrl);
+          const bMatches = matchesActiveTab(b, activeTabUrl);
+          if (aMatches !== bMatches) return aMatches ? -1 : 1;
           if (a.isFavorite !== b.isFavorite) return Number(b.isFavorite) - Number(a.isFavorite);
           switch (sortBy) {
             case "updated":
@@ -681,7 +725,10 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
               return a.siteName.localeCompare(b.siteName);
           }
         }),
-    [entries, query, folderFilter, sortBy],
+    // `activeTabUrl` EST une dépendance : il arrive de façon asynchrone (voir son useEffect), donc
+    // après le premier rendu. L'omettre laisserait la liste triée comme si aucun onglet ne
+    // correspondait — le classement "cette page" ne serait jamais appliqué.
+    [entries, query, folderFilter, sortBy, activeTabUrl],
   );
 
   // Dossiers distincts déjà utilisés dans le coffre — même principe que
@@ -1024,6 +1071,11 @@ function VaultScreen({ email, vaultKey, onLoggedOut }: { email: string; vaultKey
             <p className="flex items-center gap-1.5 truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
               <span className="truncate">{entry.siteName}</span>
               <StrengthDot entry={entry} />
+              {matchesActiveTab(entry, activeTabUrl) && (
+                <span className="shrink-0 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">
+                  cette page
+                </span>
+              )}
             </p>
             <p className="truncate text-xs text-neutral-500">
               {getPreferredIdentifier(entry)}
