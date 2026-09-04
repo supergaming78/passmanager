@@ -32,6 +32,10 @@ pub struct AppState {
     // (voir geoip.rs). Inerte tant que GEOIP_DATABASE_PATH n'est pas configuré. Aucune requête
     // réseau n'est émise, ni au chargement ni à la consultation.
     pub geoip: Arc<crate::geoip::GeoIpResolver>,
+    // Instant de démarrage du processus, pour l'uptime affiché dans l'écran d'état (health.rs).
+    // Un `Instant` et non une date : il est monotone, donc immunisé contre un changement d'heure
+    // système, qui donnerait sinon une durée négative ou aberrante.
+    pub started_at: std::time::Instant,
 }
 
 impl AppState {
@@ -199,6 +203,7 @@ mod tests {
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
             geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
+            started_at: std::time::Instant::now(),
         };
 
         state.log_audit("audituser@example.com", "TEST_ACTION", "127.0.0.1".to_string(), Some("test-agent".to_string())).await;

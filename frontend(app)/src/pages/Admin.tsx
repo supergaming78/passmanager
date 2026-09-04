@@ -4,7 +4,7 @@ import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
 import { getEffectiveListLayout } from "../lib/listLayout";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { UserIpHistoryEntry, UserIpHistoryResponse, AdminUserView, AuditLog, BugReportView, FeatureSuggestionView } from "../api/types";
+import type { UserIpHistoryEntry, UserIpHistoryResponse, ServerHealth, AdminUserView, AuditLog, BugReportView, FeatureSuggestionView } from "../api/types";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -29,6 +29,10 @@ function UsersSection() {
   const [busyEmail, setBusyEmail] = useState<string | null>(null);
   // Historique IP du compte actuellement dépiauté (null = panneau fermé). Chargé à la demande :
   // c'est une donnée sensible, inutile de la tirer pour tous les comptes à chaque ouverture.
+  // État du serveur, chargé à la demande : ces mesures parcourent des dossiers et interrogent la
+  // base, inutile de les calculer pour quelqu'un qui vient juste gérer un compte.
+  const [health, setHealth] = useState<ServerHealth | null>(null);
+  const [healthOpen, setHealthOpen] = useState(false);
   const [ipHistoryFor, setIpHistoryFor] = useState<string | null>(null);
   const [ipHistory, setIpHistory] = useState<UserIpHistoryResponse | null>(null);
   // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
@@ -176,6 +180,22 @@ function UsersSection() {
   /** Suspend ou réactive un compte. Marche intermédiaire entre "ne rien faire" et la suppression
    * définitive, qui cascade sur tout le coffre et ne se rattrape pas — ici les données sont
    * conservées, et la suspension coupe immédiatement les sessions en cours (voir le backend). */
+  async function handleToggleHealth() {
+    if (healthOpen) {
+      setHealthOpen(false);
+      return;
+    }
+    setHealthOpen(true);
+    setHealth(null);
+    setError(null);
+    try {
+      setHealth(await authorizedRequest((token) => api.getServerHealth(token)));
+    } catch (err) {
+      setError(getErrorMessage(err));
+      setHealthOpen(false);
+    }
+  }
+
   /** Ouvre (ou referme) l'historique IP d'un compte. Chargé à la demande, jamais en masse. */
   async function handleShowIpHistory(user: AdminUserView) {
     if (ipHistoryFor === user.email) {
@@ -391,6 +411,149 @@ function UsersSection() {
         <button type="button" disabled={allOff || total === 0} onClick={() => apply(false)} className={btn}>
           Désactiver pour tous
         </button>
+      </div>
+    );
+  }
+
+  /** Tailles en octets, rendues lisibles. Les paliers vont jusqu'au Go : sur un petit serveur, une
+   * base qui passe de 400 Mo à 2 Go est exactement ce qu'on veut voir venir. */
+  function formatBytes(n: number | null) {
+    if (n === null) return "indisponible";
+    if (n < 1024) return `${n} o`;
+    const unites = ["Ko", "Mo", "Go", "To"];
+    let valeur = n / 1024;
+    let i = 0;
+    while (valeur >= 1024 && i < unites.length - 1) {
+      valeur /= 1024;
+      i += 1;
+    }
+    return `${valeur.toFixed(valeur < 10 ? 1 : 0)} ${unites[i]}`;
+  }
+
+  function formatUptime(secondes: number) {
+    const j = Math.floor(secondes / 86400);
+    const h = Math.floor((secondes % 86400) / 3600);
+    const m = Math.floor((secondes % 3600) / 60);
+    if (j > 0) return `${j} j ${h} h`;
+    if (h > 0) return `${h} h ${m} min`;
+    return `${m} min`;
+  }
+
+  /** Panneau d'état du serveur.
+   *
+   * Construit autour du disque, parce que sur un serveur auto-hébergé c'est la panne la plus
+   * probable : SQLite se comporte mal quand il ne peut plus écrire. Le reste répond à des
+   * questions qu'on ne pourrait pas poser sans se connecter en SSH.
+   *
+   * Deux alertes seulement, sur les deux situations qui se dégradent en silence — le disque presque
+   * plein, et la sauvegarde qui a cessé sans rien dire. Le reste est présenté sans couleur : un
+   * écran où tout clignote n'apprend plus rien à personne. */
+  function renderHealthPanel() {
+    if (health === null) {
+      return (
+        <div className="mb-3 rounded-xl border border-neutral-200 bg-white p-3 text-xs text-neutral-500 dark:border-neutral-800 dark:bg-neutral-900">
+          Chargement de l'état du serveur…
+        </div>
+      );
+    }
+
+    const { disk, database, activity, backup } = health;
+    const utilise = disk.free_bytes !== null && disk.total_bytes !== null ? disk.total_bytes - disk.free_bytes : null;
+    const pourcentUtilise = utilise !== null && disk.total_bytes ? Math.round((utilise / disk.total_bytes) * 100) : null;
+    const disqueTendu = pourcentUtilise !== null && pourcentUtilise >= 85;
+    // Le service de sauvegarde tourne toutes les 24 h : au-delà de 48 h, il a manqué un cycle.
+    const sauvegardeMuette = backup.newest_age_hours === null || backup.newest_age_hours > 48;
+
+    const ligne = (label: string, valeur: string) => (
+      <div className="flex items-baseline justify-between gap-3 border-t border-neutral-100 py-1 dark:border-neutral-800">
+        <span className="text-neutral-500">{label}</span>
+        <span className="font-medium text-neutral-800 dark:text-neutral-200">{valeur}</span>
+      </div>
+    );
+
+    return (
+      <div className="mb-3 rounded-xl border border-neutral-200 bg-white p-3 text-xs dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <span className="font-medium text-neutral-700 dark:text-neutral-200">
+            État du serveur · en marche depuis {formatUptime(health.uptime_seconds)} · mode {health.app_env}
+          </span>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void handleToggleHealth()}
+              className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              Actualiser
+            </button>
+            <button
+              type="button"
+              onClick={() => { setHealthOpen(false); setHealth(null); }}
+              className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              Fermer
+            </button>
+          </div>
+        </div>
+
+        {disqueTendu && (
+          <p className="mb-2 rounded-lg border border-red-300 bg-red-50 px-2 py-1.5 font-medium text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+            Le disque est occupé à {pourcentUtilise} %. En dessous de quelques centaines de Mo libres,
+            la base refuse d'écrire et le coffre devient inaccessible en écriture. Purge d'anciennes
+            sauvegardes, ou agrandis le volume.
+          </p>
+        )}
+
+        {sauvegardeMuette && (
+          <p className="mb-2 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 font-medium text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+            {backup.newest_age_hours === null
+              ? "Aucune sauvegarde trouvée. Vérifie que le conteneur « backup » tourne — une base perdue sans sauvegarde ne se récupère pas."
+              : `La dernière sauvegarde date de ${backup.newest_age_hours} h, alors qu'il s'en fait normalement une toutes les 24 h. Le service s'est peut-être arrêté sans prévenir.`}
+          </p>
+        )}
+
+        <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
+          <div>
+            <p className="mb-1 font-medium text-neutral-600 dark:text-neutral-300">Disque</p>
+            {pourcentUtilise !== null && (
+              <>
+                <div className="mb-1 h-1.5 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+                  <div
+                    className={`h-full rounded-full ${disqueTendu ? "bg-red-500" : "bg-emerald-500"}`}
+                    style={{ width: `${Math.min(pourcentUtilise, 100)}%` }}
+                  />
+                </div>
+                {ligne("Libre", `${formatBytes(disk.free_bytes)} sur ${formatBytes(disk.total_bytes)}`)}
+              </>
+            )}
+            {ligne("Base de données", formatBytes(disk.database_bytes))}
+            {ligne("Journal d'écriture (WAL)", formatBytes(disk.wal_bytes))}
+            {ligne("Pièces jointes", formatBytes(disk.attachments_bytes))}
+            {ligne("Sauvegardes", `${formatBytes(disk.backups_bytes)} · ${backup.count} fichier${backup.count > 1 ? "s" : ""}`)}
+            {ligne("Journaux", formatBytes(disk.logs_bytes))}
+            {ligne("Mémoire du processus", formatBytes(health.memory_bytes))}
+          </div>
+
+          <div>
+            <p className="mb-1 font-medium text-neutral-600 dark:text-neutral-300">Contenu et activité</p>
+            {ligne("Comptes", String(database.users))}
+            {ligne("Entrées de coffre", String(database.vault_entries))}
+            {ligne("Dans la corbeille", String(database.deleted_entries))}
+            {ligne("Entrées du journal", String(database.audit_logs))}
+            {ligne("Adresses mémorisées", String(database.ip_history_rows))}
+            {ligne("Sessions actives", String(activity.active_sessions))}
+            {ligne("Appareils connectés en direct", String(activity.websocket_connections))}
+            {ligne("Échecs de connexion (24 h)", String(activity.failed_logins_24h))}
+            {ligne("Requêtes freinées (24 h)", String(activity.rate_limited_24h))}
+          </div>
+        </div>
+
+        {database.reclaimable_bytes > 5 * 1024 * 1024 && (
+          <p className="mt-2 text-neutral-400">
+            {formatBytes(database.reclaimable_bytes)} sont alloués mais inutilisés dans la base : de
+            la place libérée par des suppressions, que SQLite garde pour ses prochaines écritures.
+            Un VACUUM la rendrait au disque — inutile tant qu'il reste de la place.
+          </p>
+        )}
       </div>
     );
   }
@@ -622,6 +785,18 @@ function UsersSection() {
   return (
     <div>
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {isAdmin && !healthOpen && (
+        <button
+          type="button"
+          onClick={() => void handleToggleHealth()}
+          className="mb-3 rounded-lg border border-neutral-300 px-2 py-1 text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+        >
+          État du serveur
+        </button>
+      )}
+
+      {isAdmin && healthOpen && renderHealthPanel()}
 
       {ipHistoryFor && renderIpHistoryPanel()}
 

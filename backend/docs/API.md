@@ -1695,6 +1695,57 @@ joignable.
 
 **Réponse** : `200 OK { "status": "ok" }`, ou `503 Service Unavailable { "status": "db_unreachable" }`.
 
+### `GET /admin/server-health`
+
+*Authentification requise, réservé à l'Admin (`ADMIN_EMAIL`) — PAS un simple modérateur.* Ces
+mesures portent sur la **machine**, pas sur les comptes : un modérateur gère des personnes, alors
+que l'espace disque et l'empreinte mémoire relèvent de qui exploite le serveur.
+
+Construit autour du disque. Sur un serveur auto-hébergé, la panne la plus probable n'est ni une
+attaque ni un bug : c'est le disque plein, où SQLite refuse d'écrire et ne peut plus replier son
+WAL. Le reste répond à des questions qu'on ne pourrait pas poser sans se connecter en SSH — la
+dernière sauvegarde date de quand, la base contient-elle de l'espace mort, combien de requêtes ont
+été freinées ces 24 h.
+
+Tout est calculé **à la demande**, à l'ouverture de l'écran : aucun échantillonnage continu, aucune
+série temporelle stockée. Il serait absurde d'écrire en permanence sur le disque pour surveiller la
+place disque.
+
+**Réponse** : `200 OK` :
+```json
+{
+  "uptime_seconds": 86400,
+  "app_env": "production",
+  "memory_bytes": 47185920,
+  "disk": {
+    "database_bytes": 372736, "wal_bytes": 498552, "attachments_bytes": 1048576,
+    "backups_bytes": 12345678, "logs_bytes": 234567,
+    "free_bytes": 5000000000, "total_bytes": 20000000000
+  },
+  "database": {
+    "users": 4, "vault_entries": 420, "deleted_entries": 12,
+    "audit_logs": 153, "ip_history_rows": 8, "reclaimable_bytes": 20480
+  },
+  "activity": {
+    "websocket_connections": 2, "failed_logins_24h": 3,
+    "rate_limited_24h": 0, "active_sessions": 6
+  },
+  "backup": { "count": 7, "newest_age_hours": 3, "newest_bytes": 1765432 }
+}
+```
+
+`memory_bytes` est lu dans `/proc/self/status` (Linux) et `free_bytes`/`total_bytes` via `statvfs`
+(Unix) : ailleurs ils valent `null`. **`null` signifie « non mesurable ici », jamais « zéro »** — un
+client qui les confondrait afficherait un disque plein sur une machine de développement.
+`newest_age_hours` vaut `null` quand aucune sauvegarde n'existe, ce qui est l'information la plus
+importante que cette route puisse donner.
+
+`reclaimable_bytes` = `freelist_count × page_size` : de la place libérée par des suppressions que
+SQLite conserve pour ses prochaines écritures. Un `VACUUM` la rendrait au disque, mais c'est inutile
+tant qu'il reste de la place.
+
+**Erreurs** : `403` si l'appelant n'est pas l'Admin.
+
 ### `GET /admin/users/{email}/ip-history`
 
 *Authentification requise, modérateur.* Toutes les adresses IP vues pour UN compte, avec ce

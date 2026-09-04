@@ -45,6 +45,7 @@ mod repository;
 mod state;
 mod maintenance;
 mod geoip;
+mod health;
 pub use state::AppState;
 
 // =========================================================================
@@ -263,6 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_tx: shutdown_tx.clone(),
         ws_connections: Arc::new(Mutex::new(HashMap::new())),
         geoip: Arc::new(geoip::GeoIpResolver::load(config.geoip_database_path.as_deref())),
+        started_at: std::time::Instant::now(),
     });
 
     let app = build_router(state);
@@ -731,6 +733,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/audit", get(handlers::get_audit_logs)) // Admin/modérateur : historique de TOUS les comptes
         // Même information que /audit (une IP par événement), mais regroupée par compte et par IP.
         // Lecture seule et bornée par la purge du journal — pas de nouvelle rétention.
+        .route("/admin/server-health", get(handlers::get_server_health)) // Admin : disque, base, sauvegardes, activité
         .route("/admin/users/{email}/ip-history", get(handlers::get_user_ip_history)) // Modérateur : IP vues pour UN compte
         .route("/audit/me", get(handlers::get_my_audit_logs)) // Self-service : historique du compte connecté seulement
         // Gestion admin/modérateur des comptes (voir handlers/admin.rs pour le détail exact des
@@ -1097,6 +1100,7 @@ mod tests {
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
             geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
+            started_at: std::time::Instant::now(),
         })
     }
 
@@ -1143,6 +1147,7 @@ mod tests {
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
             geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
+            started_at: std::time::Instant::now(),
         })
     }
 

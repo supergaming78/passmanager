@@ -702,6 +702,43 @@ export interface UserIpHistoryEntry {
 /** Réponse de GET /admin/users/{email}/ip-history. `geoip_enabled` dit si le SERVEUR a une base
  * chargée — sans lui, impossible de distinguer « aucune base installée » de « base installée,
  * mais toutes ces adresses sont privées donc sans lieu ». */
+/** État de santé du serveur (GET /admin/server-health, réservé à l'Admin). Les champs pouvant
+ * valoir `null` ne sont pas mesurables partout : la mémoire vient de /proc (Linux), l'espace disque
+ * de statvfs (Unix). `null` veut dire « indisponible », jamais « zéro ». */
+export interface ServerHealth {
+  uptime_seconds: number;
+  app_env: string;
+  memory_bytes: number | null;
+  disk: {
+    database_bytes: number;
+    wal_bytes: number;
+    attachments_bytes: number;
+    backups_bytes: number;
+    logs_bytes: number;
+    free_bytes: number | null;
+    total_bytes: number | null;
+  };
+  database: {
+    users: number;
+    vault_entries: number;
+    deleted_entries: number;
+    audit_logs: number;
+    ip_history_rows: number;
+    reclaimable_bytes: number;
+  };
+  activity: {
+    websocket_connections: number;
+    failed_logins_24h: number;
+    rate_limited_24h: number;
+    active_sessions: number;
+  };
+  backup: {
+    count: number;
+    newest_age_hours: number | null;
+    newest_bytes: number | null;
+  };
+}
+
 export interface UserIpHistoryResponse {
   geoip_enabled: boolean;
   entries: UserIpHistoryEntry[];

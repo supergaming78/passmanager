@@ -169,3 +169,4 @@ regex = "1.13.1"
 # tout dans l'image finale.
 lettre = { version = "0.11.22", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls", "rustls-tls", "webpki-roots", "hostname", "builder"] }
 maxminddb = "0.30.3"
+libc = "0.2.189"

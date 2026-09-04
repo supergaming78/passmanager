@@ -663,6 +663,24 @@ pub async fn get_user_ip_history(
     }))
 }
 
+/// État de santé du serveur : disque, base, sauvegardes, activité (voir health.rs).
+///
+/// Réservé à l'Admin, et non aux modérateurs comme le reste de cet écran : ces mesures portent sur
+/// la MACHINE, pas sur les comptes. Un modérateur gère des personnes ; connaître l'espace disque
+/// restant et l'empreinte mémoire du processus relève de celui qui exploite le serveur.
+pub async fn get_server_health(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_admin(&state) {
+        warn!("Tentative de consultation de l'état du serveur par {} (pas l'Admin)", user.email);
+        return Err(AppError::Forbidden);
+    }
+
+    let started_at = state.started_at;
+    Ok(Json(crate::health::collect(&state, started_at).await))
+}
+
 /// Suspend ou réactive un compte — marche intermédiaire entre "ne rien faire" et la suppression
 /// définitive, qui cascade sur tout le coffre et ne se rattrape pas.
 ///
@@ -759,6 +777,7 @@ mod tests {
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
             geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
+            started_at: std::time::Instant::now(),
         })
     }
 
@@ -836,6 +855,7 @@ mod tests {
             shutdown_tx: state.shutdown_tx.clone(),
             ws_connections: state.ws_connections.clone(),
             geoip: state.geoip.clone(),
+            started_at: state.started_at,
         })
     }
 
@@ -1672,6 +1692,53 @@ mod tests {
 
         let history = ip_history_of(&state, true, "cible@example.com").await;
         assert_eq!(history.as_array().unwrap().len(), 1, "l'historique IP doit survivre à la purge du journal");
+    }
+
+    /// L'état du serveur est réservé à l'Admin, PAS aux modérateurs : ces mesures portent sur la
+    /// machine, pas sur les comptes.
+    #[tokio::test]
+    async fn test_server_health_is_admin_only() {
+        let state = build_test_state().await;
+        let refus = get_server_health(
+            State(state.clone()),
+            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+        )
+        .await;
+        assert!(matches!(refus, Err(AppError::Forbidden)), "un modérateur ne doit pas voir l'état du serveur");
+    }
+
+    /// Les mesures doivent refléter la BASE, pas des zéros : un écran d'état qui affiche tout à
+    /// zéro passerait pour un serveur au repos alors qu'il serait simplement cassé.
+    #[tokio::test]
+    async fn test_server_health_reports_real_counts() {
+        let admin_email = "patron@example.com";
+        let state = build_test_state().await;
+        let state = Arc::new(AppState {
+            config: Config { admin_email: Some(admin_email.to_string()), ..state.config.clone() },
+            ..Arc::try_unwrap(state).ok().expect("état de test non partagé")
+        });
+        register_test_user(&state, admin_email, true).await;
+        register_test_user(&state, "autre@example.com", false).await;
+        state.log_audit("autre@example.com", "LOGIN_FAILED", "203.0.113.9".to_string(), None).await;
+
+        let reponse = get_server_health(
+            State(state.clone()),
+            AuthUser { email: admin_email.to_string(), is_moderator: true },
+        )
+        .await
+        .expect("l'Admin doit pouvoir consulter l'état");
+
+        let bytes = axum::body::to_bytes(reponse.into_response().into_body(), usize::MAX).await.unwrap();
+        let corps: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(corps["database"]["users"], 2, "les deux comptes créés doivent être comptés");
+        assert_eq!(corps["activity"]["failed_logins_24h"], 1, "l'échec de connexion récent doit remonter");
+        assert_eq!(corps["database"]["ip_history_rows"], 1, "l'historique IP alimenté par l'audit doit remonter");
+        assert!(corps["app_env"].is_string(), "l'environnement doit être renvoyé");
+        // Aucune sauvegarde dans un environnement de test : l'absence doit être dite par `null`,
+        // pas par un 0 qui se lirait comme « sauvegarde de 0 octet, à l'instant ».
+        assert!(corps["backup"]["newest_age_hours"].is_null(), "sans sauvegarde, l'âge doit être null");
+        assert_eq!(corps["backup"]["count"], 0);
     }
 
     /// Surveiller les surveillants : consulter les adresses de quelqu'un est un acte privilégié et

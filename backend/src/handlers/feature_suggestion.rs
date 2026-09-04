@@ -122,6 +122,7 @@ mod tests {
             shutdown_tx: tokio::sync::broadcast::channel(1).0,
             ws_connections: Default::default(),
             geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
+            started_at: std::time::Instant::now(),
         })
     }
 
@@ -144,6 +145,7 @@ mod tests {
             shutdown_tx: state.shutdown_tx.clone(),
             ws_connections: state.ws_connections.clone(),
             geoip: state.geoip.clone(),
+            started_at: state.started_at,
         })
     }
 

@@ -9,6 +9,7 @@ import {
   type AdminUpdateEmailPayload,
   type AdminUserView,
   type UserIpHistoryResponse,
+  type ServerHealth,
   type ApiErrorBody,
   type AuditLog,
   type CompleteRecoveryPayload,
@@ -784,6 +785,11 @@ export function updateServerChoiceAtLogin(accessToken: string, payload: UpdateSe
 /** SANS authentification (voir Login.tsx) — lit le réglage global ci-dessus AVANT toute connexion. */
 export function getPublicConfig(): Promise<PublicConfig> {
   return request<PublicConfig>("/public-config");
+}
+
+/** État de santé du serveur — disque, base, sauvegardes, activité. Réservé à l'Admin. */
+export function getServerHealth(accessToken: string): Promise<ServerHealth> {
+  return request<ServerHealth>("/admin/server-health", { headers: authHeaders(accessToken) });
 }
 
 /** Les IP vues pour un compte, regroupées côté serveur. Bornée par la purge du journal d'audit —
