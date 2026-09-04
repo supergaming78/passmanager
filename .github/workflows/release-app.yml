@@ -148,13 +148,44 @@ jobs:
       # Solution retenue : le MESSAGE du tag annoté lui-même (`git tag -a app-vX.Y.Z -F fichier`,
       # jamais commité au dépôt — pure métadonnée Git, lue ici via `git for-each-ref`) porte le
       # changelog complet, écrit à la main à chaque nouvelle version au moment de taguer.
+      # Le tag est récupéré EXPLICITEMENT avant lecture : `actions/checkout` cible le commit, et
+      # selon sa configuration l'OBJET du tag annoté (qui porte le message) peut ne pas suivre.
+      # Sans lui, `%(contents)` retomberait silencieusement sur le message du COMMIT — un
+      # changelog remplacé par « chore(app): bump version X.Y.Z », sans la moindre erreur.
+      - name: Récupérer l'objet du tag annoté
+        shell: bash
+        run: git fetch --force origin "refs/tags/${{ github.ref_name }}:refs/tags/${{ github.ref_name }}"
+
       - name: Lire le changelog (message du tag annoté, pour le corps de la release)
         id: guide
+        shell: bash
         run: |
+          # Écrit dans un FICHIER, pas seulement dans une sortie d'étape. Une sortie multi-ligne
+          # traverse plusieurs couches (GITHUB_OUTPUT, expression YAML, action tierce) dont chacune
+          # peut la tronquer sans rien signaler — c'est précisément ce qui est arrivé en 1.2.0, où
+          # la release n'a reçu que la première ligne. Le fichier, lui, est relu tel quel plus bas
+          # par `gh release edit`, qui pose le corps de façon déterministe.
+          git for-each-ref "refs/tags/${{ github.ref_name }}" --format='%(contents)' > RELEASE_NOTES.md
+
+          # Diagnostic dans le journal du run : sans lui, une troncature reste invisible jusqu'à ce
+          # que quelqu'un ouvre la release et s'en aperçoive.
+          echo "Changelog lu : $(wc -l < RELEASE_NOTES.md) ligne(s), $(wc -c < RELEASE_NOTES.md) octet(s)"
+          echo "--- premières lignes ---"
+          head -3 RELEASE_NOTES.md
+          echo "--- dernières lignes ---"
+          tail -3 RELEASE_NOTES.md
+
+          # Un changelog réduit à une ligne (ou vide) signale que la lecture a échoué : mieux vaut
+          # arrêter le run que publier une release à la description muette.
+          if [ "$(wc -l < RELEASE_NOTES.md)" -lt 2 ]; then
+            echo "::error::Le message du tag ${{ github.ref_name }} semble vide ou réduit à une ligne. Le tag est-il bien ANNOTÉ (git tag -a ... -F fichier) ?"
+            exit 1
+          fi
+
           {
-            echo "content<<__EOF__"
-            git for-each-ref "refs/tags/${{ github.ref_name }}" --format='%(contents)'
-            echo "__EOF__"
+            echo "content<<__PASSMANAGER_EOF__"
+            cat RELEASE_NOTES.md
+            echo "__PASSMANAGER_EOF__"
           } >> "$GITHUB_OUTPUT"
 
       - uses: tauri-apps/tauri-action@v0
@@ -184,6 +215,24 @@ jobs:
           # immédiatement malgré `releaseDraft: true` juste en dessous, constaté sur un run réel).
           releaseDraft: true
           prerelease: false
+
+      # FILET DE SÉCURITÉ, et non redondance : `releaseBody` ci-dessus n'a transmis que la PREMIÈRE
+      # LIGNE du changelog en 1.2.0, alors que le tag distant en portait 93 (vérifié sur le dépôt).
+      # La cause exacte est en amont quelque part entre la sortie d'étape, l'expression YAML et
+      # l'action tierce — plutôt que de continuer à chercher, on repose le corps ici depuis le
+      # fichier, ce qui ne traverse aucune de ces couches.
+      #
+      # Sur `ubuntu-latest` seulement : ce job est une matrice de trois plateformes, et trois
+      # écritures concurrentes sur la même release se marcheraient dessus pour un résultat
+      # identique.
+      - name: Poser le changelog complet sur la release
+        if: matrix.platform == 'ubuntu-latest'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" --notes-file RELEASE_NOTES.md
+          echo "Corps de la release posé depuis RELEASE_NOTES.md ($(wc -l < RELEASE_NOTES.md) lignes)."
 
   android:
     needs: desktop
