@@ -24,7 +24,13 @@ export default function Register() {
     void api
       .getPublicConfig()
       .then((config) => {
-        if (!cancelled) setRegistrationOpen(config.registration_open);
+        // Un backend antérieur à ce réglage ne renvoie PAS le champ : il faut alors rester sur
+        // null (interrupteur masqué) et surtout pas retomber sur `undefined`, qui est faux et
+        // afficherait "fermées" sur un serveur ouvert. L'app pouvant viser plusieurs serveurs,
+        // le cas ne se limite pas à la fenêtre de déploiement.
+        if (!cancelled && typeof config.registration_open === "boolean") {
+          setRegistrationOpen(config.registration_open);
+        }
       })
       .catch(() => {});
     return () => {
