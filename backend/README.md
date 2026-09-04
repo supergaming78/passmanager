@@ -145,6 +145,8 @@ reste fonctionne à l'identique.
 
 DB-IP publie une base pays libre, sans compte à créer (~8 Mo) :
 
+**En local, ou avec un `docker compose` que tu lances toi-même :**
+
 ```bash
 cd backend/data
 curl -L -o dbip-country.mmdb.gz \
@@ -152,15 +154,26 @@ curl -L -o dbip-country.mmdb.gz \
 gunzip dbip-country.mmdb.gz
 ```
 
-Puis dans ton `.env` :
+**En Stack Portainer**, cette commande n'est pas praticable : `./data` vit dans le clone géré par
+Portainer, dont le chemin sur l'hôte n'est pas évident à retrouver. Utilise le service
+`geoip-init` prévu pour ça — il écrit au bon endroit sans avoir à le chercher :
 
-```
-GEOIP_DATABASE_PATH=/app/data/dbip-country.mmdb
-```
+1. Dans les variables d'environnement du Stack, ajoute `COMPOSE_PROFILES=geoip`.
+2. Redéploie le Stack. Le conteneur `geoip-init` télécharge la base, la pose dans `./data`, puis
+   s'arrête (il ne redémarre pas ; c'est normal qu'il apparaisse comme « exited »).
+3. Ajoute `GEOIP_DATABASE_PATH=/app/data/dbip-country.mmdb`, puis redéploie une dernière fois.
 
-`./data` est déjà monté sur `/app/data` dans `docker-compose.yml` : il n'y a pas de volume à
-ajouter. Redémarre le backend — au démarrage, il journalise le type de base chargée et sa date de
-construction.
+Tu peux ensuite retirer `COMPOSE_PROFILES` : le fichier reste. S'il est toujours là et date de
+moins de 60 jours, `geoip-init` ne le retélécharge pas.
+
+Ce service est **inerte par défaut** — sans `COMPOSE_PROFILES=geoip`, il ne démarre jamais. Rien
+n'est téléchargé à ton insu, même une base publique. Et ce téléchargement ne dit rien de tes
+utilisateurs : il récupère une base complète, identique pour tout le monde. C'est l'inverse exact
+d'une API de géolocalisation, à qui il faudrait envoyer les adresses à résoudre.
+
+Dans les deux cas, `./data` est déjà monté sur `/app/data` : il n'y a aucun volume à ajouter. Au
+démarrage, le backend journalise le type de base chargée et sa date de construction — c'est ainsi
+que tu vérifies qu'elle est bien prise en compte.
 
 MaxMind GeoLite2 fonctionne aussi (format identique) mais demande la création d'un compte. La
 variante « City » ajoute les villes, au prix d'un fichier bien plus gros ; la base pays suffit
@@ -248,6 +261,28 @@ du Stack, bouton "Pull and redeploy" dans Portainer) ne reconstruisent que ce qu
 **Mettre à jour** une fois du nouveau code poussé sur `main` : dans Portainer, ouvrir le Stack puis
 **Pull and redeploy** — récupère le dernier commit du dépôt et reconstruit l'image, sans perdre les
 volumes (`./data`/`./backups`, donc rien du coffre ni des sauvegardes).
+
+#### Une mise à jour qui contient des migrations
+
+Les migrations de base de données s'appliquent **automatiquement au démarrage** : il n'y a aucune
+commande à lancer. Mais elles modifient la base, donc l'ordre compte.
+
+1. **Vérifie que tu as une sauvegarde récente.** Le service `backup` en produit une toutes les 24 h
+   dans `./backups` (voir la section Sauvegarde) — regarde la date du fichier le plus récent avant
+   de continuer. Une migration ne se rejoue pas à l'envers.
+2. **Pull and redeploy** dans Portainer. L'image est reconstruite depuis le dernier commit.
+3. **Lis les logs du conteneur `api`** juste après. Les migrations appliquées y apparaissent, et un
+   échec y serait visible immédiatement — un serveur qui démarre n'est pas la preuve qu'elles sont
+   passées, c'est le journal qui l'est.
+4. **Vérifie que le service répond** : `GET /health` doit renvoyer `200`, et le conteneur doit
+   passer en `healthy` dans Portainer (le healthcheck met jusqu'à 30 s).
+
+Si une migration échoue, le backend refuse de démarrer plutôt que de tourner sur un schéma
+incohérent. Restaure alors la dernière sauvegarde et signale le problème — ne force pas.
+
+**Attention à l'ordre avec l'app.** Une version de l'app plus récente que le backend appelle des
+routes qui n'existent pas encore. Déploie toujours le backend **avant** (ou en même temps que) la
+mise à jour de l'app.
 
 ## Sauvegarde de la base de données
 

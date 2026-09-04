@@ -67,6 +67,65 @@ services:
       retries: 3
       start_period: 5s
 
+  # ---------------------------------------------------------------------------
+  # Téléchargement de la base de géolocalisation (OPTIONNEL, ne tourne jamais tout seul)
+  # ---------------------------------------------------------------------------
+  # Existe parce que la marche à suivre manuelle du README (`cd backend/data`) n'est pas
+  # praticable en Stack Portainer "Repository" : le dossier vit dans le clone géré par Portainer,
+  # dont le chemin sur l'hôte n'est pas évident à retrouver. Ce conteneur écrit au bon endroit
+  # sans avoir à le chercher.
+  #
+  # `profiles` le laisse INERTE par défaut : il ne démarre que si COMPOSE_PROFILES=geoip est
+  # défini. C'est délibéré — rien ne doit être téléchargé à l'insu du propriétaire du serveur,
+  # même une base de données publique.
+  #
+  # Ce téléchargement ne dit rien de tes utilisateurs : il récupère une base COMPLÈTE, publique et
+  # identique pour tout le monde. C'est exactement l'inverse d'une API de géolocalisation, à qui
+  # il faudrait envoyer les adresses à résoudre. Une fois le fichier posé, plus aucun accès
+  # réseau : les résolutions se font hors ligne (voir src/geoip.rs).
+  geoip-init:
+    image: alpine:3.21
+    profiles: ["geoip"]
+    volumes:
+      - ./data:/data
+    # Ne retélécharge pas si le fichier est déjà là et date de moins de 60 jours : une base
+    # vieillit lentement (les attributions d'adresses changent peu), et un redéploiement ne doit
+    # pas refaire 8 Mo pour rien.
+    #
+    # Le fichier du mois courant n'existe pas toujours les premiers jours du mois : on retombe
+    # alors sur celui du mois précédent, qui fait parfaitement l'affaire.
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        cible=/data/dbip-country.mmdb
+        if [ -f "$$cible" ] && [ -n "$$(find "$$cible" -mtime -60 2>/dev/null)" ]; then
+          echo "Base de geolocalisation deja presente et recente, rien a faire."
+          exit 0
+        fi
+        apk add --no-cache curl >/dev/null
+        # Mois precedent calcule en arithmetique shell, PAS avec `date -d '1 month ago'` : la
+        # syntaxe relative est une extension GNU, absente du BusyBox d'Alpine (elle echouerait
+        # silencieusement et la reserve ne servirait a rien).
+        a=$$(date +%Y); m=$$(date +%m)
+        pm=$$((10#$$m - 1)); pa=$$a
+        if [ "$$pm" -eq 0 ]; then pm=12; pa=$$((a - 1)); fi
+        precedent=$$(printf '%04d-%02d' "$$pa" "$$pm")
+        for mois in $$(date +%Y-%m) "$$precedent"; do
+          url="https://download.db-ip.com/free/dbip-country-lite-$$mois.mmdb.gz"
+          echo "Tentative : $$url"
+          if curl -fsSL -o /tmp/geo.gz "$$url"; then
+            gunzip -c /tmp/geo.gz > "$$cible"
+            echo "Base installee dans $$cible ($$(wc -c < "$$cible") octets)."
+            echo "Pense a definir GEOIP_DATABASE_PATH=/app/data/dbip-country.mmdb"
+            exit 0
+          fi
+        done
+        echo "Aucune base n'a pu etre telechargee. Le backend demarrera SANS geolocalisation."
+        exit 1
+    restart: "no"
+
   # Sauvegarde périodique de la base SQLite (voir scripts/backup.sh pour le détail) — conteneur
   # SÉPARÉ de "api" plutôt qu'un cron dans la même image : l'image applicative reste minimale
   # (pas de binaire `sqlite3` CLI, voir Dockerfile), et un souci sur la sauvegarde (ex: disque
