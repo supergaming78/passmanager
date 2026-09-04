@@ -298,6 +298,16 @@ mise à jour de l'app.
 
 ## Sauvegarde de la base de données
 
+> **Une sauvegarde par intervalle, pas une par redémarrage.** Le service sauvegarde au démarrage
+> puis dort `BACKUP_INTERVAL_SECONDS`. Sans garde-fou, chaque redéploiement du stack produisait une
+> sauvegarde de plus qui purgeait la plus ancienne : constaté sur un serveur réel, trois
+> redéploiements dans la journée et les trois sauvegardes conservées dataient toutes de la même
+> après-midi. C'est précisément le moment où l'historique compte — on redéploie parce qu'on change
+> quelque chose, et si ce changement abîme les données, les seules sauvegardes restantes lui sont
+> postérieures. Le service saute désormais son tour si une sauvegarde plus récente que l'intervalle
+> existe déjà.
+
+
 `docker-compose.yml` inclut un service `backup` (voir `scripts/backup.sh`) qui tourne en continu
 à côté de `api` : toutes les 24h par défaut, il prend un instantané cohérent de la base SQLite
 vivante (`sqlite3 <db> ".backup ..."` — sûr même en mode WAL, contrairement à un simple `cp`) et

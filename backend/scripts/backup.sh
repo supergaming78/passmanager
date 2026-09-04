@@ -26,6 +26,29 @@ echo "backup: demarrage (intervalle=${INTERVAL}s, retention=${KEEP_COUNT} sauveg
 
 while true; do
   if [ -f "$DB_PATH" ]; then
+    # NE PAS RESAUVEGARDER si une sauvegarde plus recente que l'intervalle existe deja.
+    #
+    # Ce script sauvegarde au demarrage puis dort INTERVAL. Chaque redemarrage du conteneur —
+    # donc chaque redeploiement du stack — produisait donc une sauvegarde de plus, qui purgeait
+    # la plus ancienne. Constate sur un vrai serveur : trois redeploiements dans la journee, et
+    # les trois sauvegardes conservees dataient toutes de la meme apres-midi.
+    #
+    # C'est exactement le moment ou l'historique compte le plus : on redeploie parce qu'on change
+    # quelque chose, et si ce changement abime les donnees, les seules sauvegardes restantes sont
+    # POSTERIEURES au probleme. La retention affichait "3 sauvegardes" en promettant trois jours,
+    # et n'en couvrait plus qu'une heure.
+    #
+    # -mmin prend des MINUTES : l'intervalle est converti, avec un plancher a 1 pour qu'un
+    # intervalle tres court reste testable.
+    interval_min=$((INTERVAL / 60))
+    [ "$interval_min" -lt 1 ] && interval_min=1
+    recente="$(find "$BACKUP_DIR" -maxdepth 1 -name 'vault-*.db' -type f -mmin "-${interval_min}" 2>/dev/null | head -n 1)"
+    if [ -n "$recente" ]; then
+      echo "backup: une sauvegarde de moins de ${interval_min} min existe deja (${recente}) - passe ce tour"
+      sleep "$INTERVAL"
+      continue
+    fi
+
     timestamp="$(date -u +%Y%m%d-%H%M%S)"
     dest="${BACKUP_DIR}/vault-${timestamp}.db"
     tmp="${dest}.tmp"
