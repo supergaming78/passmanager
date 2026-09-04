@@ -31,6 +31,8 @@
 
 use std::net::IpAddr;
 use std::path::Path;
+use std::sync::RwLock;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 /// Ce qu'on sait d'une adresse, une fois résolue.
@@ -50,9 +52,25 @@ pub struct IpLocation {
 }
 
 /// Base MMDB chargée en mémoire, ou rien si aucune n'est configurée.
+///
+/// Le chemin est conservé même quand le chargement échoue, pour permettre une nouvelle tentative
+/// plus tard — voir `lookup()`.
 pub struct GeoIpResolver {
-    reader: Option<maxminddb::Reader<Vec<u8>>>,
+    path: Option<String>,
+    state: RwLock<ResolverState>,
 }
+
+struct ResolverState {
+    reader: Option<maxminddb::Reader<Vec<u8>>>,
+    /// Instant avant lequel on ne retente pas d'ouvrir le fichier. Évite de marteler le disque à
+    /// chaque consultation quand la base est absente pour de bon.
+    next_retry: Option<Instant>,
+}
+
+/// Délai entre deux tentatives d'ouverture quand la base est configurée mais introuvable.
+/// Assez court pour qu'un fichier posé pendant que le serveur tourne soit pris en compte
+/// rapidement, assez long pour ne rien marteler.
+const RETRY_AFTER: Duration = Duration::from_secs(60);
 
 impl GeoIpResolver {
     /// Charge la base depuis le chemin donné, ou renvoie un résolveur inerte si `path` est `None`.
@@ -62,35 +80,24 @@ impl GeoIpResolver {
     /// injoignable est un problème bien plus grave qu'une colonne manquante dans un écran
     /// d'administration. L'échec est journalisé bruyamment pour ne pas passer inaperçu.
     ///
-    /// La base est lue **une fois** au démarrage et gardée en mémoire (quelques Mo pour une base
-    /// pays) : aucune ouverture de fichier ni allocation par consultation.
+    /// La base est lue **une fois** et gardée en mémoire (quelques Mo pour une base pays) : aucune
+    /// ouverture de fichier ni allocation par consultation.
     pub fn load(path: Option<&str>) -> Self {
-        let Some(path) = path else {
-            return Self { reader: None };
-        };
-
-        match maxminddb::Reader::open_readfile(Path::new(path)) {
-            Ok(reader) => {
-                info!(
-                    "Géolocalisation hors ligne active : base « {} » chargée ({} entrées, build {}). Aucune requête réseau ne sera émise.",
-                    reader.metadata().database_type, reader.metadata().node_count, reader.metadata().build_epoch
-                );
-                Self { reader: Some(reader) }
-            }
-            Err(e) => {
-                warn!(
-                    "GEOIP_DATABASE_PATH est défini (« {} ») mais la base n'a pas pu être lue : {}. Le serveur démarre SANS géolocalisation.",
-                    path, e
-                );
-                Self { reader: None }
-            }
+        let path = path.map(str::to_string);
+        let reader = path.as_deref().and_then(open_database);
+        Self {
+            state: RwLock::new(ResolverState {
+                next_retry: reader.is_none().then(|| Instant::now() + RETRY_AFTER),
+                reader,
+            }),
+            path,
         }
     }
 
     /// Vrai si une base est réellement chargée — permet à l'interface de distinguer « pas de base
     /// configurée » de « base configurée, mais cette adresse est introuvable ».
     pub fn is_enabled(&self) -> bool {
-        self.reader.is_some()
+        self.state.read().is_ok_and(|s| s.reader.is_some())
     }
 
     /// Résout une adresse. `None` si aucune base, si l'adresse est mal formée, si elle est privée,
@@ -98,17 +105,22 @@ impl GeoIpResolver {
     ///
     /// Les adresses privées sont écartées avant toute lecture : aucune base ne les référence (elles
     /// désignent un réseau local, pas un lieu), et les interroger ne ferait que produire du bruit.
+    ///
+    /// Réessaie d'ouvrir le fichier s'il était absent au démarrage. C'est le cas courant d'un
+    /// déploiement en conteneurs : le service qui télécharge la base et celui qui la lit démarrent
+    /// en parallèle, et le second gagne souvent la course. Sans cette reprise, il faudrait
+    /// redémarrer le serveur à la main — une étape invisible, qu'on ne devine qu'après coup.
     pub fn lookup(&self, ip: &str) -> Option<IpLocation> {
-        let reader = self.reader.as_ref()?;
+        // L'analyse d'abord : inutile de prendre un verrou pour une adresse privée ou mal formée.
         let parsed: IpAddr = ip.parse().ok()?;
         if is_private(&parsed) {
             return None;
         }
 
-        // `lookup` ne renvoie pas directement l'enregistrement : il rend un LookupResult, qui
-        // porte le nœud trouvé et qu'il faut décoder. Deux niveaux d'échec possibles, tous deux
-        // ramenés à None — une base illisible ou une adresse absente ne doivent jamais faire
-        // échouer la consultation de l'écran.
+        self.retry_load_if_needed();
+
+        let state = self.state.read().ok()?;
+        let reader = state.reader.as_ref()?;
         let record: maxminddb::geoip2::City = reader.lookup(parsed).ok()?.decode().ok()??;
 
         // `Names` est une struct à champs typés, pas une table de langues : on prend le français
@@ -131,6 +143,61 @@ impl GeoIpResolver {
             return None;
         }
         Some(location)
+    }
+
+    /// Retente l'ouverture si une base est configurée, pas encore chargée, et que le délai est
+    /// écoulé. Sort immédiatement dans le cas courant (base chargée, ou aucune configurée) en ne
+    /// prenant qu'un verrou de LECTURE : le verrou d'écriture n'est demandé que pour la tentative
+    /// elle-même, qui est rare.
+    fn retry_load_if_needed(&self) {
+        let Some(path) = self.path.as_deref() else { return };
+
+        {
+            let Ok(state) = self.state.read() else { return };
+            if state.reader.is_some() {
+                return;
+            }
+            match state.next_retry {
+                Some(at) if Instant::now() < at => return,
+                _ => {}
+            }
+        }
+
+        let Ok(mut state) = self.state.write() else { return };
+        // Re-vérification sous le verrou d'écriture : une autre requête a pu charger la base
+        // entre-temps, et il serait absurde de relire 8 Mo pour rien.
+        if state.reader.is_some() {
+            return;
+        }
+        state.next_retry = Some(Instant::now() + RETRY_AFTER);
+        if let Some(reader) = open_database(path) {
+            state.reader = Some(reader);
+        }
+    }
+}
+
+/// Ouvre le fichier et journalise le résultat. Séparé de `load()` pour être réutilisable par la
+/// reprise différée sans dupliquer les messages.
+fn open_database(path: &str) -> Option<maxminddb::Reader<Vec<u8>>> {
+    match maxminddb::Reader::open_readfile(Path::new(path)) {
+        Ok(reader) => {
+            info!(
+                "Géolocalisation hors ligne active : base « {} » chargée ({} entrées, build {}). Aucune requête réseau ne sera émise.",
+                reader.metadata().database_type,
+                reader.metadata().node_count,
+                reader.metadata().build_epoch
+            );
+            Some(reader)
+        }
+        Err(e) => {
+            warn!(
+                "GEOIP_DATABASE_PATH est défini (« {} ») mais la base n'a pas pu être lue : {}. Le serveur fonctionne SANS géolocalisation ; si le fichier arrive plus tard, il sera pris en compte automatiquement (nouvelle tentative au plus toutes les {} s).",
+                path,
+                e,
+                RETRY_AFTER.as_secs()
+            );
+            None
+        }
     }
 }
 
@@ -241,5 +308,63 @@ mod tests {
         let resolver = GeoIpResolver::load(None);
         assert_eq!(resolver.lookup("pas-une-ip"), None);
         assert_eq!(resolver.lookup(""), None);
+    }
+}
+
+#[cfg(test)]
+mod deferred_load_tests {
+    use super::*;
+
+    /// LE scénario d'un déploiement en conteneurs : le service qui télécharge la base et celui qui
+    /// la lit démarrent en parallèle, et le second gagne souvent la course. Sans reprise différée,
+    /// il faudrait redémarrer le serveur à la main — une étape invisible, qu'on ne devine qu'après
+    /// coup, et qui a réellement fait croire la fonctionnalité cassée.
+    #[test]
+    fn test_database_appearing_after_startup_is_picked_up() {
+        let Some(source) = std::env::var("GEOIP_TEST_DATABASE").ok().filter(|p| Path::new(p).exists()) else {
+            eprintln!("GEOIP_TEST_DATABASE non défini : test de reprise différée ignoré.");
+            return;
+        };
+
+        // Un chemin qui n'existe PAS encore, comme au démarrage du conteneur.
+        let dir = std::env::temp_dir().join(format!("geoip-differe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cible = dir.join("base.mmdb");
+        let _ = std::fs::remove_file(&cible);
+
+        let resolver = GeoIpResolver::load(Some(cible.to_str().unwrap()));
+        assert!(!resolver.is_enabled(), "au démarrage, sans fichier, le résolveur est inerte");
+        assert_eq!(resolver.lookup("8.8.8.8"), None, "rien à résoudre tant que le fichier est absent");
+
+        // Le conteneur de téléchargement termine son travail APRÈS.
+        std::fs::copy(&source, &cible).unwrap();
+
+        // Sans intervention, la reprise attendrait RETRY_AFTER. On rembobine l'échéance pour ne pas
+        // faire durer le test une minute — c'est le comportement de reprise qu'on teste, pas
+        // l'horloge.
+        resolver.state.write().unwrap().next_retry = None;
+
+        let trouve = resolver.lookup("8.8.8.8");
+        assert!(trouve.is_some(), "le fichier arrivé après coup doit être pris en compte sans redémarrage");
+        assert_eq!(trouve.unwrap().country_code.as_deref(), Some("US"));
+        assert!(resolver.is_enabled(), "la base doit désormais être signalée comme active");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// La reprise ne doit pas marteler le disque : tant que le délai n'est pas écoulé, aucune
+    /// nouvelle tentative n'a lieu.
+    #[test]
+    fn test_retry_is_rate_limited() {
+        let resolver = GeoIpResolver::load(Some("/base/absente.mmdb"));
+        let echeance = resolver.state.read().unwrap().next_retry;
+        assert!(echeance.is_some(), "un chemin configuré mais absent doit programmer une reprise");
+
+        resolver.lookup("8.8.8.8");
+        assert_eq!(
+            resolver.state.read().unwrap().next_retry,
+            echeance,
+            "une consultation avant l'échéance ne doit pas reprogrammer ni retenter"
+        );
     }
 }

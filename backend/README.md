@@ -166,6 +166,18 @@ Portainer, dont le chemin sur l'hôte n'est pas évident à retrouver. Utilise l
 Tu peux ensuite retirer `COMPOSE_PROFILES` : le fichier reste. S'il est toujours là et date de
 moins de 60 jours, `geoip-init` ne le retélécharge pas.
 
+`geoip-init` apparaît en **« exited (0) »** une fois son travail fini : c'est le résultat NORMAL.
+C'est un conteneur à usage unique, pas un service — un code 0 signifie qu'il a réussi. Ses logs
+disent laquelle des deux situations s'applique (« Base installee dans... » ou « deja presente »).
+Un vrai échec sortirait avec le code 1.
+
+**Les deux services démarrent en parallèle**, et `api` gagne souvent la course : au moment où il
+démarre, la base n'est pas encore téléchargée. Ce n'est pas un problème — il retente d'ouvrir le
+fichier au fil des consultations (au plus une fois par minute) et le prend en compte dès qu'il
+apparaît, sans redémarrage. Le message d'avertissement au démarrage est donc attendu la première
+fois ; c'est la ligne « Géolocalisation hors ligne active » qui fait foi, et elle peut arriver
+plus tard.
+
 Ce service est **inerte par défaut** — sans `COMPOSE_PROFILES=geoip`, il ne démarre jamais. Rien
 n'est téléchargé à ton insu, même une base publique. Et ce téléchargement ne dit rien de tes
 utilisateurs : il récupère une base complète, identique pour tout le monde. C'est l'inverse exact
