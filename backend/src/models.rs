@@ -1408,3 +1408,20 @@ mod tests {
         assert!(within_limit.validate().is_ok(), "encrypted_extra_fields à la limite haute (8192) doit être accepté");
     }
 }
+/// Une adresse IP vue pour un compte, avec sa fenêtre d'utilisation — agrégée à la volée depuis
+/// `audit_logs`, jamais stockée telle quelle (voir `handlers::get_user_ip_history`).
+///
+/// Rien n'est conservé plus longtemps qu'avant : cette vue est bornée par la purge du journal
+/// d'audit (`AUDIT_LOG_RETENTION_DAYS`), donc elle ne montre que les derniers jours. C'est
+/// délibéré — un historique d'IP sans fin serait une archive de surveillance et un passif en cas
+/// de fuite de la base, pour une valeur de sécurité qui, elle, se joue sur les jours récents.
+#[derive(serde::Serialize, sqlx::FromRow)]
+pub struct UserIpHistoryEntry {
+    pub ip_address: String,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub event_count: i64,
+    /// Ce que le compte a fait le plus souvent depuis cette IP — donne le contexte qui manque à
+    /// une IP nue ("connexion" n'a pas le même poids qu'"échec de connexion").
+    pub last_action: String,
+}

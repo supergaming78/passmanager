@@ -8,6 +8,7 @@ import {
   type AddEmergencyContactPayload,
   type AdminUpdateEmailPayload,
   type AdminUserView,
+  type UserIpHistoryEntry,
   type ApiErrorBody,
   type AuditLog,
   type CompleteRecoveryPayload,
@@ -783,6 +784,14 @@ export function updateServerChoiceAtLogin(accessToken: string, payload: UpdateSe
 /** SANS authentification (voir Login.tsx) — lit le réglage global ci-dessus AVANT toute connexion. */
 export function getPublicConfig(): Promise<PublicConfig> {
   return request<PublicConfig>("/public-config");
+}
+
+/** Les IP vues pour un compte, regroupées côté serveur. Bornée par la purge du journal d'audit —
+ * ce n'est pas un historique perpétuel (voir handlers/admin.rs::get_user_ip_history). */
+export function getUserIpHistory(accessToken: string, targetEmail: string): Promise<UserIpHistoryEntry[]> {
+  return request<UserIpHistoryEntry[]>(`/admin/users/${encodeURIComponent(targetEmail)}/ip-history`, {
+    headers: authHeaders(accessToken),
+  });
 }
 
 export function revokeUserSessions(accessToken: string, targetEmail: string): Promise<void> {

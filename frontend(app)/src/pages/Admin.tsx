@@ -3,7 +3,8 @@ import { useAuth } from "../state/AuthContext";
 import * as api from "../api/client";
 import { getErrorMessage } from "../lib/errors";
 import { getEffectiveListLayout } from "../lib/listLayout";
-import type { AdminUserView, AuditLog, BugReportView, FeatureSuggestionView } from "../api/types";
+import { auditActionLabel } from "../lib/auditLogLabels";
+import type { UserIpHistoryEntry, AdminUserView, AuditLog, BugReportView, FeatureSuggestionView } from "../api/types";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -26,6 +27,10 @@ function UsersSection() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyEmail, setBusyEmail] = useState<string | null>(null);
+  // Historique IP du compte actuellement dépiauté (null = panneau fermé). Chargé à la demande :
+  // c'est une donnée sensible, inutile de la tirer pour tous les comptes à chaque ouverture.
+  const [ipHistoryFor, setIpHistoryFor] = useState<string | null>(null);
+  const [ipHistory, setIpHistory] = useState<UserIpHistoryEntry[] | null>(null);
   // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
   const [listLayout] = useState(() => getEffectiveListLayout());
 
@@ -171,6 +176,24 @@ function UsersSection() {
   /** Suspend ou réactive un compte. Marche intermédiaire entre "ne rien faire" et la suppression
    * définitive, qui cascade sur tout le coffre et ne se rattrape pas — ici les données sont
    * conservées, et la suspension coupe immédiatement les sessions en cours (voir le backend). */
+  /** Ouvre (ou referme) l'historique IP d'un compte. Chargé à la demande, jamais en masse. */
+  async function handleShowIpHistory(user: AdminUserView) {
+    if (ipHistoryFor === user.email) {
+      setIpHistoryFor(null);
+      setIpHistory(null);
+      return;
+    }
+    setIpHistoryFor(user.email);
+    setIpHistory(null);
+    setError(null);
+    try {
+      setIpHistory(await authorizedRequest((token) => api.getUserIpHistory(token, user.email)));
+    } catch (err) {
+      setError(getErrorMessage(err));
+      setIpHistoryFor(null);
+    }
+  }
+
   async function handleToggleSuspended(user: AdminUserView) {
     const suspending = !user.is_suspended;
     if (suspending && !confirm(`Suspendre ${user.email} ? Ses sessions seront coupées immédiatement et il ne pourra plus se connecter. Ses données sont conservées.`)) {
@@ -249,6 +272,18 @@ function UsersSection() {
             {user.is_moderator ? "Retirer modérateur" : "Promouvoir modérateur"}
           </button>
         )}
+        <button
+          type="button"
+          onClick={() => void handleShowIpHistory(user)}
+          title="Adresses IP vues pour ce compte sur les derniers jours"
+          className={`rounded-lg border px-2 py-1 text-xs font-medium ${
+            ipHistoryFor === user.email
+              ? "border-neutral-400 bg-neutral-100 text-neutral-700 dark:border-neutral-600 dark:bg-neutral-800 dark:text-neutral-200"
+              : "border-neutral-300 text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          }`}
+        >
+          {ipHistoryFor === user.email ? "Masquer les IP" : "Voir les IP"}
+        </button>
         {canActOnTarget && (
           <button
             type="button"
@@ -320,6 +355,128 @@ function UsersSection() {
     return `${user.entry_count} entrée${user.entry_count > 1 ? "s" : ""} · ${size}`;
   }
 
+  /** Ligne d'un réglage appliqué EN MASSE.
+   *
+   * Ces réglages sont stockés PAR COMPTE ; ces boutons ne font que les écrire sur tout le monde
+   * d'un coup. Il n'existe donc aucun "état global" à lire côté serveur — c'est pourquoi rien
+   * n'était affiché. Mais la vraie question ("est-ce actif en ce moment ?") se répond depuis la
+   * liste déjà chargée : on la résume ici, sans appel réseau ni nouveau champ.
+   *
+   * Le résumé distingue les trois cas réels — activé partout, désactivé partout, et l'état MIXTE
+   * qu'un simple interrupteur ne saurait pas représenter (il naît dès qu'un compte est réglé
+   * individuellement). Le bouton qui ne changerait rien est désactivé, pour que l'état en cours
+   * se lise aussi dans ce qui est cliquable. */
+  function renderBulkFlagRow(label: string, flag: (u: AdminUserView) => boolean, apply: (enabled: boolean) => void) {
+    const total = users.length;
+    const on = users.filter(flag).length;
+    const allOn = total > 0 && on === total;
+    const allOff = total > 0 && on === 0;
+    const summary = total === 0
+      ? "aucun compte"
+      : allOn
+        ? `activé pour les ${total} comptes`
+        : allOff
+          ? "désactivé pour tous"
+          : `mixte — activé pour ${on} compte${on > 1 ? "s" : ""} sur ${total}`;
+    const btn = "rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800";
+    return (
+      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-neutral-500">
+        <span>{label}</span>
+        <span className={allOn ? "font-medium text-emerald-600 dark:text-emerald-400" : allOff ? "font-medium text-neutral-500 dark:text-neutral-400" : "font-medium text-amber-600 dark:text-amber-400"}>
+          {summary}
+        </span>
+        <button type="button" disabled={allOn || total === 0} onClick={() => apply(true)} className={btn}>
+          Activer pour tous
+        </button>
+        <button type="button" disabled={allOff || total === 0} onClick={() => apply(false)} className={btn}>
+          Désactiver pour tous
+        </button>
+      </div>
+    );
+  }
+
+  /** Panneau des IP d'un compte.
+   *
+   * Ne montre QUE la fenêtre du journal d'audit (purgé à 10 jours) : c'est dit explicitement, pour
+   * qu'une liste courte ne soit pas lue comme "ce compte ne s'est connecté que de là".
+   *
+   * Prévient aussi du piège du reverse proxy. Si le backend tourne derrière Caddy/nginx sans
+   * TRUST_PROXY_HEADERS=true, il enregistre l'IP du PROXY, identique pour tout le monde — la page
+   * afficherait alors une IP privée unique et parfaitement inutile, sans rien signaler. On détecte
+   * ce cas côté client (une seule IP, et elle est privée) plutôt que de laisser interpréter de
+   * travers. */
+  function renderIpHistoryPanel() {
+    // Doit rester aligné sur AUDIT_LOG_RETENTION_DAYS (backend/src/maintenance.rs). Codé en dur
+    // parce que le serveur ne l'expose pas : mieux vaut un chiffre juste et à corriger à la main
+    // qu'une route de plus pour une constante qui ne bouge jamais.
+    const AUDIT_RETENTION_DAYS = 10;
+    // "YYYY-MM-DD HH:MM:SS" en UTC côté SQLite : on le rend explicitement ISO+Z plutôt que de
+    // compter sur la tolérance du moteur JS pour l'espace, qui n'est pas garantie par la spec.
+    const parseUtc = (ts: string) => new Date(`${ts.replace(" ", "T")}Z`);
+    const isPrivate = (ip: string) =>
+      /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|fc|fd)/i.test(ip);
+    const looksLikeProxy = ipHistory !== null && ipHistory.length === 1 && isPrivate(ipHistory[0].ip_address);
+    return (
+      <div className="mb-3 rounded-xl border border-neutral-200 bg-white p-3 text-xs dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <span className="font-medium text-neutral-700 dark:text-neutral-200">Adresses IP de {ipHistoryFor}</span>
+          <button
+            type="button"
+            onClick={() => { setIpHistoryFor(null); setIpHistory(null); }}
+            className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            Fermer
+          </button>
+        </div>
+
+        {ipHistory === null ? (
+          <p className="text-neutral-500">Chargement…</p>
+        ) : ipHistory.length === 0 ? (
+          <p className="text-neutral-500">Aucune activité enregistrée pour ce compte sur la période conservée.</p>
+        ) : (
+          <>
+            {looksLikeProxy && (
+              <p className="mb-2 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                Une seule adresse, et elle est privée : ton serveur enregistre probablement l'IP de
+                son reverse proxy, pas celle des utilisateurs. Mets <code>TRUST_PROXY_HEADERS=true</code>
+                {" "}dans la configuration du backend pour voir les vraies adresses.
+              </p>
+            )}
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="text-neutral-500">
+                  <tr>
+                    <th className="py-1 pr-3 font-medium">Adresse</th>
+                    <th className="py-1 pr-3 font-medium">Vue pour la première fois</th>
+                    <th className="py-1 pr-3 font-medium">Dernière activité</th>
+                    <th className="py-1 pr-3 font-medium">Événements</th>
+                    <th className="py-1 pr-3 font-medium">Dernière action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ipHistory.map((row) => (
+                    <tr key={row.ip_address} className="border-t border-neutral-100 dark:border-neutral-800">
+                      <td className="py-1 pr-3 font-mono text-neutral-700 dark:text-neutral-200">{row.ip_address}</td>
+                      <td className="py-1 pr-3 text-neutral-600 dark:text-neutral-400">{parseUtc(row.first_seen).toLocaleString()}</td>
+                      <td className="py-1 pr-3 text-neutral-600 dark:text-neutral-400">{parseUtc(row.last_seen).toLocaleString()}</td>
+                      <td className="py-1 pr-3 text-neutral-600 dark:text-neutral-400">{row.event_count}</td>
+                      <td className="py-1 pr-3 text-neutral-600 dark:text-neutral-400">{auditActionLabel(row.last_action)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-2 text-neutral-400">
+              Seuls les {AUDIT_RETENTION_DAYS} derniers jours sont conservés : une adresse plus
+              ancienne a été purgée, elle n'a pas disparu de l'usage. Une connexion mobile change
+              d'adresse souvent — plusieurs IP n'ont rien d'anormal en soi.
+            </p>
+          </>
+        )}
+      </div>
+    );
+  }
+
   /** Badges "Admin"/"Modérateur"/"(toi)" — communs aux deux dispositions, même raisonnement que
    * renderUserActions ci-dessus. */
   function renderUserBadges(user: AdminUserView, isSelf: boolean) {
@@ -345,6 +502,8 @@ function UsersSection() {
     <div>
       {error && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
 
+      {ipHistoryFor && renderIpHistoryPanel()}
+
       {isAdmin && registrationOpen !== null && (
         <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-xs dark:border-neutral-800 dark:bg-neutral-900">
           <span className="text-neutral-600 dark:text-neutral-400">Inscriptions sur ce serveur :</span>
@@ -366,44 +525,16 @@ function UsersSection() {
         </div>
       )}
 
-      {isAdmin && (
-        <div className="mb-3 flex items-center gap-2 text-xs text-neutral-500">
-          <span>Changement d'email via l'extension, pour tout le monde :</span>
-          <button
-            type="button"
-            onClick={() => void handleSetExtensionEmailChangeForAll(true)}
-            className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-          >
-            Activer pour tous
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleSetExtensionEmailChangeForAll(false)}
-            className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-          >
-            Désactiver pour tous
-          </button>
-        </div>
+      {isAdmin && renderBulkFlagRow(
+        "Changement d'email via l'extension, pour tout le monde :",
+        (u) => u.can_change_email_via_extension,
+        (enabled) => void handleSetExtensionEmailChangeForAll(enabled),
       )}
 
-      {isAdmin && (
-        <div className="mb-3 flex items-center gap-2 text-xs text-neutral-500">
-          <span>Choix du serveur dans les Réglages, pour tout le monde :</span>
-          <button
-            type="button"
-            onClick={() => void handleSetServerChoiceInSettingsForAll(true)}
-            className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-          >
-            Activer pour tous
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleSetServerChoiceInSettingsForAll(false)}
-            className="rounded-lg border border-neutral-300 px-2 py-1 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
-          >
-            Désactiver pour tous
-          </button>
-        </div>
+      {isAdmin && renderBulkFlagRow(
+        "Choix du serveur dans les Réglages, pour tout le monde :",
+        (u) => u.can_choose_server_in_settings,
+        (enabled) => void handleSetServerChoiceInSettingsForAll(enabled),
       )}
 
       <p className="mb-3 text-xs text-neutral-500">

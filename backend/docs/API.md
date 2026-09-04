@@ -1695,6 +1695,41 @@ joignable.
 
 **Réponse** : `200 OK { "status": "ok" }`, ou `503 Service Unavailable { "status": "db_unreachable" }`.
 
+### `GET /admin/users/{email}/ip-history`
+
+*Authentification requise, modérateur.* Les adresses IP vues pour UN compte, regroupées.
+
+**N'ajoute aucune donnée personnelle et aucune rétention.** `audit_logs` enregistre déjà une IP par
+événement, et `GET /audit` les expose déjà aux modérateurs — en vrac, tous comptes mêlés, limité
+aux 100 derniers événements. Cette route ne fait que regrouper l'existant par compte et par IP, ce
+qui répond à la question utile (« cette activité vient-elle d'un endroit inhabituel ? ») là où une
+liste brute ne répond à rien. Même porte que `GET /audit` : la réserver à l'Admin donnerait
+l'illusion d'une protection alors que la même information reste lisible juste à côté.
+
+Conséquence directe : la vue est **bornée par la purge du journal** (`AUDIT_LOG_RETENTION_DAYS`,
+10 jours). Un historique perpétuel demanderait une nouvelle table, donc une nouvelle rétention de
+données personnelles et un passif en cas de fuite de la base — pour une valeur de sécurité qui se
+joue sur les jours récents. Ne pas le faire est un choix délibéré.
+
+**Réponse** : `200 OK`, trié par dernière activité décroissante, 200 lignes au maximum :
+```json
+[{
+  "ip_address": "203.0.113.7",
+  "first_seen": "2026-09-01 08:00:00",
+  "last_seen": "2026-09-03 11:00:00",
+  "event_count": 12,
+  "last_action": "LOGIN"
+}]
+```
+Horodatages en UTC au format SQLite (`YYYY-MM-DD HH:MM:SS`), pas ISO 8601.
+
+**Erreurs** : `403` si l'appelant n'est pas modérateur. Un compte inconnu ou sans activité renvoie
+une liste vide, pas `404` — l'absence d'activité n'est pas une erreur.
+
+**Piège de déploiement** : derrière un reverse proxy sans `TRUST_PROXY_HEADERS=true`, le serveur
+enregistre l'IP du **proxy**, identique pour tous les comptes. La route ne peut pas le détecter ;
+le client prévient quand il ne voit qu'une seule adresse et qu'elle est privée.
+
 ### `PUT /admin/registration-open`
 
 *Authentification requise, réservé à l'Admin (`ADMIN_EMAIL`) — PAS un simple modérateur.* Ouvre ou

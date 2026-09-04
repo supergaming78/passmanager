@@ -677,3 +677,14 @@ export interface UpdateRegistrationOpenPayload {
 export interface UpdateSuspendedPayload {
   is_suspended: boolean;
 }
+
+/// Une IP vue pour un compte, agrégée depuis le journal d'audit côté serveur (voir
+/// handlers/admin.rs::get_user_ip_history). Bornée par la purge du journal : ce n'est PAS un
+/// historique perpétuel, seulement les derniers jours.
+export interface UserIpHistoryEntry {
+  ip_address: string;
+  first_seen: string;
+  last_seen: string;
+  event_count: number;
+  last_action: string;
+}

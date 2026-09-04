@@ -715,6 +715,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/ws", get(handlers::ws_handler)) // Synchronisation temps réel entre appareils (authentifiée par ticket, pas par l'access token)
         .route("/me", get(handlers::get_me)) // Récupérer le profil de l'utilisateur connecté
         .route("/audit", get(handlers::get_audit_logs)) // Admin/modérateur : historique de TOUS les comptes
+        // Même information que /audit (une IP par événement), mais regroupée par compte et par IP.
+        // Lecture seule et bornée par la purge du journal — pas de nouvelle rétention.
+        .route("/admin/users/{email}/ip-history", get(handlers::get_user_ip_history)) // Modérateur : IP vues pour UN compte
         .route("/audit/me", get(handlers::get_my_audit_logs)) // Self-service : historique du compte connecté seulement
         // Gestion admin/modérateur des comptes (voir handlers/admin.rs pour le détail exact des
         // droits — is_moderator au minimum, certaines réservées à AuthUser::is_admin()).

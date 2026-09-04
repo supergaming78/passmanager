@@ -592,6 +592,48 @@ pub async fn update_registration_open(
     Ok(StatusCode::OK)
 }
 
+/// Les adresses IP vues pour UN compte, sur la fenêtre du journal d'audit.
+///
+/// N'ajoute AUCUNE donnée personnelle : `audit_logs` enregistre déjà une IP par événement, et
+/// `GET /audit` les expose déjà aux modérateurs — en vrac, tous comptes mêlés, limité aux 100
+/// derniers événements. Cette route ne fait que regrouper ce qui existe par compte et par IP, ce
+/// qui répond à la question réellement utile ("cette connexion vient-elle d'un endroit
+/// inhabituel ?") là où une liste brute ne répond à rien.
+///
+/// Conséquence directe : la vue est bornée par `AUDIT_LOG_RETENTION_DAYS` (purge à 10 jours). Un
+/// historique perpétuel demanderait une nouvelle table, donc une nouvelle rétention de données
+/// personnelles et un passif en cas de fuite de la base — pour une valeur de sécurité qui se joue
+/// sur les jours récents. Le choix de ne PAS le faire est délibéré.
+///
+/// Même porte que `GET /audit` (modérateur) : réserver celle-ci à l'Admin donnerait l'illusion
+/// d'une protection alors que la même information reste lisible en vrac juste à côté.
+///
+/// ATTENTION à l'interprétation : derrière un reverse proxy sans `TRUST_PROXY_HEADERS=true`, TOUS
+/// les comptes apparaissent avec l'IP du proxy. La route ne peut pas le deviner ; le client
+/// prévient (voir Admin.tsx).
+pub async fn get_user_ip_history(
+    State(state): State<Arc<AppState>>,
+    user: AuthUser,
+    Path(target_email): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    if !user.is_moderator {
+        warn!("Tentative de consultation d'historique IP par {} (pas modérateur)", user.email);
+        return Err(AppError::Forbidden);
+    }
+    let target_email = target_email.to_lowercase();
+
+    // Plafond dur : un compte très actif pourrait sinon renvoyer autant de lignes que d'IP vues.
+    // 200 IP distinctes sur 10 jours dépasse déjà de loin tout usage familial.
+    let history = sqlx::query_as::<_, crate::models::UserIpHistoryEntry>(
+        "SELECT ip_address,                 MIN(created_at) AS first_seen,                 MAX(created_at) AS last_seen,                 COUNT(*) AS event_count,                 (SELECT action FROM audit_logs AS inner_log                   WHERE inner_log.user_email = audit_logs.user_email                     AND inner_log.ip_address = audit_logs.ip_address                   ORDER BY inner_log.created_at DESC LIMIT 1) AS last_action            FROM audit_logs           WHERE user_email = ?           GROUP BY ip_address           ORDER BY last_seen DESC           LIMIT 200",
+    )
+    .bind(&target_email)
+    .fetch_all(&state.db)
+    .await?;
+
+    Ok(Json(history))
+}
+
 /// Suspend ou réactive un compte — marche intermédiaire entre "ne rien faire" et la suppression
 /// définitive, qui cascade sur tout le coffre et ne se rattrape pas.
 ///
@@ -1466,5 +1508,77 @@ mod tests {
 
     }
 
+
+
+    // ---- Historique des IP par compte -------------------------------------------------
+
+    async fn log_event(state: &Arc<AppState>, email: &str, action: &str, ip: &str, at: &str) {
+        sqlx::query("INSERT INTO audit_logs (user_email, action, ip_address, user_agent, created_at) VALUES (?, ?, ?, NULL, ?)")
+            .bind(email).bind(action).bind(ip).bind(at)
+            .execute(&state.db).await.unwrap();
+    }
+
+    async fn ip_history_of(state: &Arc<AppState>, caller_is_moderator: bool, target: &str) -> serde_json::Value {
+        let result = get_user_ip_history(
+            State(state.clone()),
+            AuthUser { email: "boss@example.com".to_string(), is_moderator: caller_is_moderator },
+            Path(target.to_string()),
+        ).await.expect("la consultation doit réussir");
+        let bytes = axum::body::to_bytes(result.into_response().into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// Même porte que le journal d'audit : un simple utilisateur ne voit pas les IP.
+    #[tokio::test]
+    async fn test_ip_history_requires_moderator() {
+        let state = build_test_state().await;
+        let result = get_user_ip_history(
+            State(state.clone()),
+            AuthUser { email: "curieux@example.com".to_string(), is_moderator: false },
+            Path("cible@example.com".to_string()),
+        ).await;
+        assert!(matches!(result, Err(AppError::Forbidden)), "un non-modérateur ne doit pas voir les IP");
+    }
+
+    /// Le regroupement est ce qui fait toute la valeur de la route : plusieurs événements depuis la
+    /// MÊME IP doivent donner UNE ligne comptée, pas plusieurs lignes identiques.
+    #[tokio::test]
+    async fn test_ip_history_groups_by_ip_and_counts() {
+        let state = build_test_state().await;
+        register_test_user(&state, "cible@example.com", false).await;
+        log_event(&state, "cible@example.com", "LOGIN", "10.0.0.1", "2026-09-01 08:00:00").await;
+        log_event(&state, "cible@example.com", "LOGIN", "10.0.0.1", "2026-09-01 09:00:00").await;
+        log_event(&state, "cible@example.com", "LOGIN_FAILED", "10.0.0.1", "2026-09-02 10:00:00").await;
+        log_event(&state, "cible@example.com", "LOGIN", "203.0.113.7", "2026-09-03 11:00:00").await;
+
+        let history = ip_history_of(&state, true, "cible@example.com").await;
+        let rows = history.as_array().unwrap();
+        assert_eq!(rows.len(), 2, "deux IP distinctes attendues, pas une ligne par événement");
+
+        // Tri par dernière activité décroissante : l'IP vue le 03 passe devant.
+        assert_eq!(rows[0]["ip_address"], "203.0.113.7");
+        assert_eq!(rows[1]["ip_address"], "10.0.0.1");
+
+        assert_eq!(rows[1]["event_count"], 3, "les 3 événements de 10.0.0.1 doivent être comptés ensemble");
+        assert_eq!(rows[1]["first_seen"], "2026-09-01 08:00:00");
+        assert_eq!(rows[1]["last_seen"], "2026-09-02 10:00:00");
+        assert_eq!(rows[1]["last_action"], "LOGIN_FAILED", "l'action affichée doit être la plus RÉCENTE de cette IP");
+    }
+
+    /// Une vue "par compte" qui laisserait fuiter les IP d'un autre compte serait pire qu'inutile.
+    #[tokio::test]
+    async fn test_ip_history_does_not_leak_other_accounts() {
+        let state = build_test_state().await;
+        register_test_user(&state, "cible@example.com", false).await;
+        register_test_user(&state, "voisin@example.com", false).await;
+        log_event(&state, "cible@example.com", "LOGIN", "10.0.0.1", "2026-09-01 08:00:00").await;
+        log_event(&state, "voisin@example.com", "LOGIN", "198.51.100.9", "2026-09-01 08:30:00").await;
+
+        let history = ip_history_of(&state, true, "cible@example.com").await;
+        let rows = history.as_array().unwrap();
+        assert_eq!(rows.len(), 1, "seules les IP du compte demandé doivent apparaître");
+        assert_eq!(rows[0]["ip_address"], "10.0.0.1");
+        assert_eq!(rows[0]["event_count"], 1, "le sous-select last_action ne doit pas compter d'autres comptes");
+    }
 
 }
