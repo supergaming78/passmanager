@@ -796,6 +796,7 @@ mod tests {
             ws_connections: Default::default(),
             geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
             started_at: std::time::Instant::now(),
+            vacuum_in_progress: Default::default(),
         })
     }
 
@@ -1632,6 +1633,7 @@ mod tests {
             ws_connections: base_state.ws_connections.clone(),
             geoip: base_state.geoip.clone(),
             started_at: base_state.started_at,
+            vacuum_in_progress: base_state.vacuum_in_progress.clone(),
         });
 
         sqlx::query("INSERT INTO users (email, password_hash, is_moderator) VALUES (?, ?, ?)")

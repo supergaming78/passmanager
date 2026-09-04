@@ -1448,11 +1448,46 @@ pub struct UserIpHistoryEntry {
     pub location: Option<crate::geoip::IpLocation>,
 }
 
-/// Corps de `PUT /admin/users/{email}/quotas`. `None` remet le compte sur le plafond global.
+/// Corps de `PUT /admin/users/{email}/quotas`.
+///
+/// Trois états par champ, et il faut les trois : ABSENT (ne touche pas à ce quota), `null`
+/// (remet le compte sur le plafond global), ou un nombre (plafond propre au compte).
+///
+/// `Option<Option<i64>>` sert exactement à cela : sans le niveau supplémentaire, un champ absent
+/// serait indistinguable d'un `null` explicite, et un client envoyant un seul des deux quotas
+/// effacerait l'autre sans l'avoir demandé.
 #[derive(serde::Deserialize)]
 pub struct UpdateQuotasPayload {
-    pub max_vault_entries: Option<i64>,
-    pub max_attachments: Option<i64>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub max_vault_entries: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub max_attachments: Option<Option<i64>>,
+}
+
+/// Désérialise un champ PRÉSENT en `Some(...)`, y compris quand sa valeur est `null` (qui donne
+/// `Some(None)`). Un champ absent conserve le `Default`, soit `None`.
+fn double_option<'de, D>(deserializer: D) -> Result<Option<Option<i64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
+}
+
+impl UpdateQuotasPayload {
+    pub fn entries_present(&self) -> bool {
+        self.max_vault_entries.is_some()
+    }
+    pub fn attachments_present(&self) -> bool {
+        self.max_attachments.is_some()
+    }
+    /// La valeur à écrire quand le champ est présent ; `None` quand il est absent, auquel cas le
+    /// SQL ne l'utilise pas (voir le CASE dans `update_quotas`).
+    pub fn entries_value(&self) -> Option<i64> {
+        self.max_vault_entries.flatten()
+    }
+    pub fn attachments_value(&self) -> Option<i64> {
+        self.max_attachments.flatten()
+    }
 }
 
 /// Réponse de `POST /admin/vacuum` — l'intérêt d'un VACUUM se juge à ce qu'il a rendu.

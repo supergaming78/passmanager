@@ -124,6 +124,7 @@ mod tests {
             ws_connections: Default::default(),
             geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
             started_at: std::time::Instant::now(),
+            vacuum_in_progress: Default::default(),
         })
     }
 
@@ -148,6 +149,7 @@ mod tests {
             ws_connections: state.ws_connections.clone(),
             geoip: state.geoip.clone(),
             started_at: state.started_at,
+            vacuum_in_progress: state.vacuum_in_progress.clone(),
         })
     }
 

@@ -36,6 +36,15 @@ pub struct AppState {
     // Un `Instant` et non une date : il est monotone, donc immunisé contre un changement d'heure
     // système, qui donnerait sinon une durée négative ou aberrante.
     pub started_at: std::time::Instant,
+    // Vrai pendant un VACUUM. Le délai global de 30 s (voir main.rs) renvoie un 408 au client bien
+    // avant qu'un gros compactage ne se termine, alors que SQLite, lui, POURSUIT l'opération —
+    // l'utilisateur croit à un échec et relance, déclenchant un second VACUUM par-dessus le
+    // premier. Ce drapeau refuse le second au lieu de l'empiler.
+    //
+    // En mémoire et non en base : il doit refléter ce que fait CE processus maintenant, et être
+    // remis à zéro par un redémarrage — un verrou persistant survivrait à un plantage en plein
+    // compactage et interdirait définitivement l'opération.
+    pub vacuum_in_progress: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -204,6 +213,7 @@ mod tests {
             ws_connections: Default::default(),
             geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
             started_at: std::time::Instant::now(),
+            vacuum_in_progress: Default::default(),
         };
 
         state.log_audit("audituser@example.com", "TEST_ACTION", "127.0.0.1".to_string(), Some("test-agent".to_string())).await;

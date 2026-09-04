@@ -717,8 +717,12 @@ function UsersSection() {
     // "YYYY-MM-DD HH:MM:SS" en UTC côté SQLite : rendu explicitement ISO+Z plutôt que de compter
     // sur la tolérance du moteur JS pour l'espace, qui n'est pas garantie par la spec.
     const parseUtc = (ts: string) => new Date(`${ts.replace(" ", "T")}Z`);
+    // Doit rester aligné sur geoip.rs::is_private côté serveur : sinon une adresse que le serveur
+    // considère sans lieu (donc jamais géolocalisée) se verrait proposer un bouton « Localiser »
+    // ici, et pourrait déclencher l'alerte d'intrusion dont les adresses privées sont exclues.
+    // 169.254.x (lien-local, attribué quand le DHCP échoue) manquait à cette liste.
     const isPrivate = (ip: string) =>
-      /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|::1$|fc|fd)/i.test(ip);
+      /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|0\.0\.0\.0$|::1$|fc|fd|fe80:)/i.test(ip);
 
     // Le drapeau se dérive du code pays : chaque lettre A-Z correspond à un « indicateur régional »
     // Unicode, et deux d'entre eux accolés forment le drapeau. Aucune image à embarquer.

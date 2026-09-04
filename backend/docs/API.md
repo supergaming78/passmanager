@@ -1732,7 +1732,13 @@ Deux conséquences à connaître avant de l'appeler :
 (réorganisation des pages). Renvoyer un négatif est honnête ; le forcer à `0` masquerait le fait
 qu'il n'y avait rien à gagner.
 
-**Erreurs** : `403` si l'appelant n'est pas l'Admin.
+**Un seul compactage à la fois.** Le délai global de 30 s renvoie un `408` bien avant qu'un gros
+VACUUM ne se termine, alors que SQLite POURSUIT l'opération : l'utilisateur croit à un échec et
+relance, empilant un second compactage sur le premier. Un drapeau en mémoire refuse le second. En
+mémoire et non en base, délibérément — un verrou persistant survivrait à un plantage en plein
+compactage et interdirait définitivement l'opération.
+
+**Erreurs** : `400` si un compactage est déjà en cours. `403` si l'appelant n'est pas l'Admin.
 **Audit** : `DATABASE_VACUUMED`.
 
 ### `POST /admin/test-email`
@@ -1766,12 +1772,17 @@ surcharge des constantes globales de `handlers/vault.rs` (5000 entrées, 50 piè
 
 | Champ | Type | Obligatoire |
 |---|---|---|
-| `max_vault_entries` | integer ou null | oui |
-| `max_attachments` | integer ou null | oui |
+| `max_vault_entries` | integer, null, ou absent | non |
+| `max_attachments` | integer, null, ou absent | non |
 
-`null` remet le compte sur le plafond global ; `0` interdit réellement tout nouvel ajout. Les deux
-sont légitimes et **distincts** : le premier dit « comme tout le monde », le second gèle un compte
-sans le suspendre.
+**Trois états par champ**, et il faut les trois : un champ **absent** ne touche pas à ce quota, un
+`null` explicite remet le compte sur le plafond global, un nombre fixe un plafond propre. `0`
+interdit réellement tout nouvel ajout — légitime et distinct de `null` : le premier gèle un compte
+sans le suspendre, le second dit « comme tout le monde ».
+
+La distinction absent/`null` n'est pas cosmétique : en serde, un champ `Option` absent vaut `None`
+exactement comme un `null`. Sans elle, un client réglant un seul des deux quotas effacerait l'autre
+sans l'avoir demandé, et rien ne le lui dirait.
 
 Les quotas ne s'appliquent qu'aux **ajouts**. Abaisser un quota sous ce qu'un compte possède déjà
 ne supprime rien : il conserve ses entrées et ne peut plus en créer. Supprimer les données de
@@ -1805,6 +1816,10 @@ Les champs sont échappés selon la RFC 4180. Ce n'est pas une précaution théo
 contient virgules et guillemets, et sans échappement une seule virgule décale toutes les colonnes
 de la ligne — un tableur ouvrirait le fichier **sans rien signaler**, donnant une analyse fausse
 plutôt qu'une erreur visible.
+
+Route plafonnée à **2 requêtes simultanées** (`ConcurrencyLimitLayer`), comme `/vault/export` : elle
+charge tout le journal en mémoire (les lignes, puis la chaîne CSV construite par-dessus), et deux
+exports concurrents d'un journal volumineux suffiraient à faire gonfler la mémoire du serveur.
 
 **Erreurs** : `403` si l'appelant n'est pas modérateur.
 **Audit** : `AUDIT_LOG_EXPORTED` — exporter le journal est lui-même journalisé.

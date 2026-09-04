@@ -770,17 +770,28 @@ pub async fn update_quotas(
         warn!("Tentative de modification de quotas par {} (pas l'Admin)", user.email);
         return Err(AppError::Forbidden);
     }
-    if payload.max_vault_entries.is_some_and(|v| v < 0) || payload.max_attachments.is_some_and(|v| v < 0) {
+    if payload.entries_value().is_some_and(|v| v < 0) || payload.attachments_value().is_some_and(|v| v < 0) {
         return Err(AppError::ValidationError("Un quota ne peut pas être négatif.".to_string()));
     }
     let target_email = target_email.to_lowercase();
 
-    let res = sqlx::query("UPDATE users SET max_vault_entries = ?, max_attachments = ? WHERE email = ?")
-        .bind(payload.max_vault_entries)
-        .bind(payload.max_attachments)
-        .bind(&target_email)
-        .execute(&state.db)
-        .await?;
+    // Chaque champ n'est écrit que s'il était PRÉSENT dans la requête. Sans ces conditions, un
+    // client envoyant `{"max_vault_entries": 5}` verrait l'autre quota remis à NULL sans l'avoir
+    // demandé : en serde, un champ Option absent vaut None, indistinguable d'un `null` explicite.
+    // Le CASE garde le SQL statique — pas de requête construite à la volée, le projet l'interdit.
+    let res = sqlx::query(
+        "UPDATE users SET \
+             max_vault_entries = CASE WHEN ? THEN ? ELSE max_vault_entries END, \
+             max_attachments   = CASE WHEN ? THEN ? ELSE max_attachments END \
+           WHERE email = ?",
+    )
+    .bind(payload.entries_present())
+    .bind(payload.entries_value())
+    .bind(payload.attachments_present())
+    .bind(payload.attachments_value())
+    .bind(&target_email)
+    .execute(&state.db)
+    .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
@@ -789,7 +800,7 @@ pub async fn update_quotas(
     state.log_audit(&user.email, "QUOTAS_UPDATED", addr.to_string(), agent).await;
     info!(
         "Quotas de {} réglés par {} (entrées={:?}, pièces jointes={:?})",
-        target_email, user.email, payload.max_vault_entries, payload.max_attachments
+        target_email, user.email, payload.entries_value(), payload.attachments_value()
     );
 
     Ok(StatusCode::OK)
@@ -820,10 +831,27 @@ pub async fn vacuum_database(
         return Err(AppError::Forbidden);
     }
 
+    // `swap` plutôt que `load` puis `store` : la vérification et la prise du drapeau sont une
+    // seule opération atomique, donc deux requêtes simultanées ne peuvent pas passer toutes les
+    // deux (ce qu'un test-puis-pose laisserait arriver).
+    use std::sync::atomic::Ordering;
+    if state.vacuum_in_progress.swap(true, Ordering::SeqCst) {
+        return Err(AppError::ValidationError(
+            "Un compactage est déjà en cours. Il continue même si la requête précédente a expiré : \
+             attends qu'il se termine avant d'en lancer un autre."
+                .to_string(),
+        ));
+    }
+
     let chemin = crate::health::database_path(&state.config.database_url);
     let before = crate::health::file_size(&chemin);
 
-    sqlx::query("VACUUM").execute(&state.db).await?;
+    let resultat = sqlx::query("VACUUM").execute(&state.db).await;
+
+    // Relâché dans TOUS les cas, y compris en échec : sans cela, un VACUUM raté condamnerait la
+    // fonctionnalité jusqu'au prochain redémarrage.
+    state.vacuum_in_progress.store(false, Ordering::SeqCst);
+    resultat?;
 
     let after = crate::health::file_size(&chemin);
     let agent = get_user_agent(&headers);
@@ -1013,6 +1041,7 @@ mod tests {
             ws_connections: Default::default(),
             geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
             started_at: std::time::Instant::now(),
+            vacuum_in_progress: Default::default(),
         })
     }
 
@@ -1091,6 +1120,7 @@ mod tests {
             ws_connections: state.ws_connections.clone(),
             geoip: state.geoip.clone(),
             started_at: state.started_at,
+            vacuum_in_progress: state.vacuum_in_progress.clone(),
         })
     }
 
@@ -1955,7 +1985,7 @@ mod tests {
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
             AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
             Path("cible@example.com".to_string()),
-            Json(UpdateQuotasPayload { max_vault_entries: Some(10), max_attachments: None }),
+            Json(UpdateQuotasPayload { max_vault_entries: Some(Some(10)), max_attachments: Some(None) }),
         ).await;
         assert!(matches!(refus, Err(AppError::Forbidden)), "un modérateur ne règle pas les quotas");
 
@@ -1963,7 +1993,7 @@ mod tests {
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
             admin_user("patron@example.com"),
             Path("cible@example.com".to_string()),
-            Json(UpdateQuotasPayload { max_vault_entries: Some(-1), max_attachments: None }),
+            Json(UpdateQuotasPayload { max_vault_entries: Some(Some(-1)), max_attachments: Some(None) }),
         ).await;
         assert!(matches!(negatif, Err(AppError::ValidationError(_))), "un quota négatif n'a pas de sens");
     }
@@ -1982,7 +2012,7 @@ mod tests {
                     State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
                     admin_user("patron@example.com"),
                     Path("cible@example.com".to_string()),
-                    Json(UpdateQuotasPayload { max_vault_entries: v, max_attachments: None }),
+                    Json(UpdateQuotasPayload { max_vault_entries: Some(v), max_attachments: Some(None) }),
                 ).await.expect("le réglage doit réussir");
                 sqlx::query_scalar::<_, Option<i64>>("SELECT max_vault_entries FROM users WHERE email = ?")
                     .bind("cible@example.com").fetch_one(&state.db).await.unwrap()
@@ -1993,7 +2023,65 @@ mod tests {
         assert_eq!(regler(None).await, None, "null doit effacer la surcharge, pas écrire 0");
     }
 
-    /// Un compte inexistant ne doit pas être silencieusement ignoré : sinon une faute de frappe
+/// Une requête ne mentionnant QU'UN des deux quotas ne doit pas effacer l'autre.
+    ///
+    /// C'est le piège de `Option` en serde : un champ absent y vaut `None`, exactement comme un
+    /// `null` explicite. Sans distinguer les deux, un client réglant un seul quota remettrait
+    /// l'autre au plafond global sans l'avoir demandé — et rien ne le lui dirait.
+    #[tokio::test]
+    async fn test_partial_payload_leaves_the_other_quota_untouched() {
+        let state = state_with_admin("patron@example.com").await;
+        register_test_user(&state, "cible@example.com", false).await;
+        sqlx::query("UPDATE users SET max_vault_entries = 42, max_attachments = 7 WHERE email = ?")
+            .bind("cible@example.com").execute(&state.db).await.unwrap();
+
+        // Charge utile mentionnant UNIQUEMENT les entrées, telle qu'elle arriverait en JSON.
+        let payload: UpdateQuotasPayload = serde_json::from_str(r#"{"max_vault_entries": 99}"#).unwrap();
+        update_quotas(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            admin_user("patron@example.com"), Path("cible@example.com".to_string()), Json(payload),
+        ).await.expect("le réglage partiel doit réussir");
+
+        let (entrees, pieces): (Option<i64>, Option<i64>) =
+            sqlx::query_as("SELECT max_vault_entries, max_attachments FROM users WHERE email = ?")
+                .bind("cible@example.com").fetch_one(&state.db).await.unwrap();
+        assert_eq!(entrees, Some(99), "le champ envoyé doit être écrit");
+        assert_eq!(pieces, Some(7), "le champ ABSENT doit rester intact, pas être remis à NULL");
+
+        // Un `null` EXPLICITE, lui, doit bien effacer — c'est la différence qu'on tient à garder.
+        let payload: UpdateQuotasPayload = serde_json::from_str(r#"{"max_attachments": null}"#).unwrap();
+        update_quotas(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            admin_user("patron@example.com"), Path("cible@example.com".to_string()), Json(payload),
+        ).await.expect("le réglage doit réussir");
+
+        let (entrees, pieces): (Option<i64>, Option<i64>) =
+            sqlx::query_as("SELECT max_vault_entries, max_attachments FROM users WHERE email = ?")
+                .bind("cible@example.com").fetch_one(&state.db).await.unwrap();
+        assert_eq!(entrees, Some(99), "l'autre champ reste intact");
+        assert_eq!(pieces, None, "un null explicite doit bien remettre sur le plafond global");
+    }
+
+    /// Deux compactages simultanés ne doivent pas s'empiler : le premier prend le drapeau, le
+    /// second est refusé. Sans cela, un 408 dû au délai de 30 s (alors que SQLite poursuit)
+    /// pousserait à relancer par-dessus l'opération en cours.
+    #[tokio::test]
+    async fn test_concurrent_vacuum_is_refused() {
+        let state = state_with_admin("patron@example.com").await;
+        // Simule un compactage déjà en cours.
+        state.vacuum_in_progress.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let refus = vacuum_database(
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
+            admin_user("patron@example.com"),
+        ).await;
+        assert!(matches!(refus, Err(AppError::ValidationError(_))), "un second compactage doit être refusé");
+
+        // Le drapeau ne doit PAS avoir été relâché par le refus : le vrai compactage tourne encore.
+        assert!(state.vacuum_in_progress.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+        /// Un compte inexistant ne doit pas être silencieusement ignoré : sinon une faute de frappe
     /// dans l'adresse donnerait l'impression d'avoir réglé un quota.
     #[tokio::test]
     async fn test_quota_on_unknown_account_is_not_found() {
@@ -2002,7 +2090,7 @@ mod tests {
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
             admin_user("patron@example.com"),
             Path("fantome@example.com".to_string()),
-            Json(UpdateQuotasPayload { max_vault_entries: Some(10), max_attachments: Some(2) }),
+            Json(UpdateQuotasPayload { max_vault_entries: Some(Some(10)), max_attachments: Some(Some(2)) }),
         ).await;
         assert!(matches!(r, Err(AppError::NotFound)));
     }

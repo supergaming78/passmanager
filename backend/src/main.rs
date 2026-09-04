@@ -265,6 +265,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ws_connections: Arc::new(Mutex::new(HashMap::new())),
         geoip: Arc::new(geoip::GeoIpResolver::load(config.geoip_database_path.as_deref())),
         started_at: std::time::Instant::now(),
+        vacuum_in_progress: Default::default(),
     });
 
     let app = build_router(state);
@@ -733,7 +734,12 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/audit", get(handlers::get_audit_logs)) // Admin/modérateur : historique de TOUS les comptes
         // Mêmes données que /audit, en CSV et sans la limite de 100 lignes : le journal étant purgé
         // à 10 jours, c'est le seul moyen d'en garder une trace au-delà.
-        .route("/audit/export.csv", get(handlers::export_audit_logs_csv)) // Modérateur : export du journal
+        // Charge TOUT le journal en mémoire (Vec de lignes + chaîne CSV construite par-dessus) :
+        // même classe de risque que /vault/export et /recovery/data, plafonnée pareil. Deux exports
+        // simultanés d'un journal volumineux suffiraient sinon à faire gonfler la mémoire.
+        .merge(Router::new()
+            .route("/audit/export.csv", get(handlers::export_audit_logs_csv)) // Modérateur : export du journal
+            .route_layer(ConcurrencyLimitLayer::new(HEAVY_BODY_MAX_CONCURRENCY)))
         // Même information que /audit (une IP par événement), mais regroupée par compte et par IP.
         // Lecture seule et bornée par la purge du journal — pas de nouvelle rétention.
         .route("/admin/server-health", get(handlers::get_server_health)) // Admin : disque, base, sauvegardes, activité
@@ -1110,6 +1116,7 @@ mod tests {
             ws_connections: Default::default(),
             geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
             started_at: std::time::Instant::now(),
+            vacuum_in_progress: Default::default(),
         })
     }
 
@@ -1157,6 +1164,7 @@ mod tests {
             ws_connections: Default::default(),
             geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
             started_at: std::time::Instant::now(),
+            vacuum_in_progress: Default::default(),
         })
     }
 
