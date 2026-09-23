@@ -725,7 +725,15 @@ fn build_router(state: Arc<AppState>) -> Router {
             .route("/vault/history/export", post(handlers::export_vault_history))
 
         // --- Routes générales de l'API ---
-        .route("/health", get(handlers::health_check)) // Healthcheck pour load balancer/orchestrateur (Docker, k8s...)
+        // /health N'EST PLUS enregistrée ici (voir plus bas, juste après global_governor) :
+        // CORRECTIF (repéré via les logs — un déploiement réel se faisait rate-limiter son PROPRE
+        // healthcheck) — un healthcheck Docker/k8s interroge cette route toutes les quelques
+        // secondes en continu, sans jamais s'arrêter ; la moindre limite de débit finit
+        // inévitablement par la rejeter tôt ou tard, et `retries: 3` (voir docker-compose.yml)
+        // suffit alors à faire déclarer le conteneur "unhealthy" — un redémarrage en boucle
+        // provoqué par la propre défense de l'app contre elle-même, pas par un vrai problème.
+        // `SELECT 1` + `{"status":"ok"}` (voir handlers/common.rs::health_check) ne révèle rien de
+        // sensible : aucun risque à la laisser hors de toute limite de débit.
         .route("/public-config", get(handlers::get_public_config)) // Réglages globaux lisibles SANS authentification (voir handlers/common.rs) — utilisé par l'écran de connexion
         // Échange l'access token (Bearer classique) contre un ticket WS à usage unique — voir
         // le commentaire en tête de handlers/sync.rs pour le pourquoi de cette indirection.
@@ -937,6 +945,12 @@ fn build_router(state: Arc<AppState>) -> Router {
         // Rate limiter global : couvre désormais TOUT le reste de l'API (voir global_governor
         // plus haut), là où il n'y avait auparavant aucune limite en dehors de /auth.
         .layer(GovernorLayer::new(global_governor))
+        // /health fusionnée APRÈS cette couche, donc jamais soumise au rate limiter (voir le
+        // commentaire à son ancien emplacement, dans le groupe des routes générales plus haut) —
+        // reste sous le timeout/log_requests/cors ci-dessous comme le reste de l'API, perd
+        // seulement la compression et les en-têtes de sécurité appliqués plus haut dans la pile
+        // (sans conséquence pour une réponse JSON de 20 octets sans contenu sensible).
+        .merge(Router::new().route("/health", get(handlers::health_check)))
         // Délai maximum de 30s par requête : sans ça, rien ne borne le temps d'une requête dont
         // l'envoi SMTP traînerait (register/login/forgot-password/verify appellent tous un envoi
         // d'email de façon SYNCHRONE avant de répondre) — une connexion SMTP qui ne répond plus
@@ -1360,15 +1374,17 @@ mod tests {
         let app = build_router(state);
 
         // global_governor : 200/s, burst 500 (voir build_router()) — un lot de 520 requêtes
-        // rapides sur une route SANS gouverneur dédié (/health, en dehors de /auth) doit épuiser
-        // le burst et déclencher au moins un 429 avant que le token bucket n'ait le temps de se
-        // recharger (toutes ces requêtes s'exécutent en mémoire via oneshot(), sans latence réseau
-        // réelle).
+        // rapides sur une route SANS gouverneur dédié (/public-config, en dehors de /auth) doit
+        // épuiser le burst et déclencher au moins un 429 avant que le token bucket n'ait le temps
+        // de se recharger (toutes ces requêtes s'exécutent en mémoire via oneshot(), sans latence
+        // réseau réelle). PAS /health : volontairement exemptée de toute limite de débit (voir son
+        // commentaire dans build_router()) — un healthcheck Docker/k8s ne doit jamais pouvoir se
+        // faire rejeter par la propre défense de l'app contre elle-même.
         let mut saw_429_with_cors_header = false;
         for _ in 0..520 {
             let mut request = Request::builder()
                 .method("GET")
-                .uri("/health")
+                .uri("/public-config")
                 .header("origin", "http://localhost:5173") // doit matcher allowed_origins du test
                 .body(Body::empty())
                 .unwrap();
@@ -1389,6 +1405,35 @@ mod tests {
             saw_429_with_cors_header,
             "le rate limiter global doit finir par rejeter en 429 avec ce volume de requêtes (sinon ce test ne prouve rien)"
         );
+    }
+
+    /// RÉGRESSION : /health ne doit JAMAIS être rate-limitée, quel que soit le volume de requêtes —
+    /// repéré en usage réel, un déploiement se faisait rejeter son PROPRE healthcheck Docker
+    /// (interrogé toutes les 30s en continu, voir docker-compose.yml) par global_governor, jusqu'à
+    /// ce que `retries: 3` déclare le conteneur "unhealthy" et provoque un redémarrage — une panne
+    /// entièrement auto-infligée par la défense de l'app contre elle-même. Même volume que le test
+    /// ci-dessus (520, largement au-delà du burst de 200/500) : AUCUNE de ces requêtes ne doit
+    /// jamais recevoir un 429.
+    #[tokio::test]
+    async fn test_health_endpoint_is_never_rate_limited() {
+        let state = build_test_state().await;
+        let app = build_router(state);
+
+        for _ in 0..520 {
+            let mut request = Request::builder()
+                .method("GET")
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap();
+            request.extensions_mut().insert(test_addr());
+
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_ne!(
+                response.status(),
+                StatusCode::TOO_MANY_REQUESTS,
+                "/health ne doit jamais être rejetée par le rate limiter, même sous forte charge"
+            );
+        }
     }
 
     /// Comportement par défaut (`trust_proxy_headers: false`) : un en-tête `X-Forwarded-For`
