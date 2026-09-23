@@ -63,6 +63,16 @@ services:
       # alerte sur la seule chose qu'on ne veut surtout pas croire à tort.
       - ./backups:/app/backups:ro
     restart: always
+    # CORRECTIF (arrêt propre) : sans ce réglage, Docker n'attend QUE 10s (valeur par défaut)
+    # entre le SIGTERM et le SIGKILL forcé — trop court face au délai maximum d'UNE requête côté
+    # serveur (30s, voir le `.timeout()` dans build_router()/main.rs : register/login/forgot-
+    # password envoient un email SMTP de façon SYNCHRONE avant de répondre, potentiellement lent).
+    # Une requête encore en cours au moment de l'arrêt se ferait donc tuer en plein milieu par
+    # Docker AVANT que le propre arrêt gracieux du serveur (with_graceful_shutdown, voir main.rs)
+    # n'ait fini de la laisser se terminer — exactement la panne "le serveur ne s'arrête pas
+    # proprement" signalée. 35s > 30s : marge de quelques secondes pour la fermeture des connexions
+    # WebSocket ouvertes (quasi instantanée, voir shutdown_tx) une fois ce pire cas écoulé.
+    stop_grace_period: 35s
     # Utilise le HEALTHCHECK défini dans le Dockerfile (appelle GET /health) pour que Docker
     # sache si le conteneur est réellement opérationnel, pas juste "démarré".
     healthcheck:

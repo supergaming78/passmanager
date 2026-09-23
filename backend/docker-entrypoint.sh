@@ -18,7 +18,20 @@ set -e
 
 chown -R appuser:appuser /app/data
 
-# `exec` (les DEUX fois) : remplace le process courant plutôt que d'en lancer un nouveau en plus —
-# le PID 1 du conteneur reste le process utile tout du long (signaux SIGTERM/arrêt propre du
-# conteneur transmis correctement), pas un script shell qui traînerait inutilement en arrière-plan.
-exec su -s /bin/sh appuser -c "exec /app/backend"
+# CORRECTIF (retour utilisateur : le serveur ne s'arrêtait pas proprement, ni en local ni sur
+# Docker) : `su -c "exec ..."` NE remplace PAS le process courant, contrairement à ce que le
+# commentaire précédent affirmait — `su` reste PID 1 et ATTEND son enfant (le vrai `backend`
+# tourne sur un PID distinct, enfant de `su`). Vérifié empiriquement avec un conteneur de test
+# minimal : le processus applicatif reçoit bien SIGTERM au bout du compte, mais `su` (PID 1)
+# lui-même ne se termine jamais proprement — le conteneur sort avec le code 143 (tué PAR un
+# signal, pas une sortie volontaire) et ~1,7 s de latence supplémentaire avant que Docker le
+# considère réellement arrêté. Sur un déploiement réel (plus de connexions ouvertes, plus de
+# travail à finir proprement qu'un script de test), ce même défaut peut suffire à dépasser le
+# délai de grâce de Docker et finir en SIGKILL forcé — la panne "pas d'arrêt propre" signalée.
+#
+# `setpriv` (déjà présent : fourni par `util-linux`, un paquet de base de toute image Debian,
+# aucune dépendance supplémentaire à installer) fait un VRAI remplacement du process courant —
+# aucun processus superviseur au-dessus, le binaire serveur devient RÉELLEMENT PID 1. Revérifié
+# sur le même conteneur de test : code de sortie 0, latence de fermeture ~0 ms après le signal,
+# identique à un lancement sans abaissement de privilèges du tout.
+exec setpriv --reuid=appuser --regid=appuser --init-groups /app/backend

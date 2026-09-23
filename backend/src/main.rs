@@ -298,6 +298,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
+    // CORRECTIF (retour utilisateur : impossible de savoir depuis les logs si l'arrêt s'était
+    // vraiment terminé proprement, ou avait été interrompu en cours de route par la fermeture du
+    // terminal/conteneur) : seul "Signal d'arrêt reçu..." (voir shutdown_signal()) apparaissait
+    // avant — un DÉBUT d'arrêt, jamais sa fin. `axum::serve(...).await` ne revient qu'une fois
+    // TOUTES les requêtes en cours et connexions WebSocket effectivement terminées (c'est tout
+    // l'intérêt de `with_graceful_shutdown`) : cette ligne ne s'exécute donc QUE si l'arrêt a
+    // réellement abouti, jamais sur un arrêt brutal (SIGKILL, qui ne laisse par nature aucune
+    // chance d'exécuter quoi que ce soit après coup).
+    info!("Arrêt propre terminé, toutes les connexions ont été fermées.");
+
     Ok(())
 }
 

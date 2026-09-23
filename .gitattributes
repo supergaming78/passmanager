@@ -8,3 +8,14 @@
 # voir backend/docker-entrypoint.sh et backend/scripts/backup.sh, les deux scripts concernés au
 # moment où ce fichier a été ajouté.
 *.sh text eol=lf
+
+# CORRECTIF (incident réel) : sqlx calcule l'empreinte de chaque migration sur les OCTETS BRUTS du
+# fichier .sql (SHA-384, voir sqlx-core::migrate::migration::checksum) — jamais reformatés,
+# jamais recalculés depuis un AST. Sans cette règle, `core.autocrlf` convertit silencieusement ces
+# fichiers en CRLF dans une copie de travail Windows locale, alors qu'un `git clone`/`git pull`
+# depuis un hôte Linux (Docker/Portainer) les garde en LF — deux checkouts du MÊME commit
+# produisent alors deux fichiers d'octets DIFFÉRENTS, donc deux empreintes différentes, et sqlx
+# refuse de démarrer (`VersionMismatch`) dès que l'empreinte enregistrée dans `_sqlx_migrations`
+# (calculée sur l'une des deux formes) ne correspond plus à celle recalculée sur l'autre. LF forcé
+# ici : la même empreinte, partout, indépendamment de qui committe et depuis quel OS.
+*.sql text eol=lf
