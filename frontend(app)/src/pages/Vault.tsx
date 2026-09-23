@@ -199,7 +199,20 @@ export default function Vault() {
   const [showMobileMenu, setShowMobileMenu] = useState(false);
   const importExportRef = useRef<ImportExportBarHandle>(null);
 
+  // CORRECTIF (retour utilisateur : un déplacement de plusieurs entrées vers un dossier n'en
+  // déplaçait parfois qu'une partie) : `subscribeToVaultSync` (AuthContext.tsx) ne distingue pas
+  // les événements causés par CET appareil de ceux d'un autre — chaque PUT /vault/{id} individuel
+  // (voir handlers/vault.rs::update_vault_entry) rediffuse un VAULT_UPDATE que ce même appareil se
+  // renvoie donc à lui-même. Une action groupée sur N entrées déclenche ainsi jusqu'à N appels
+  // getFullVault() SANS AUCUN ordre garanti de résolution : si un appel déclenché tôt (quand une
+  // seule entrée avait déjà bougé) résout APRÈS l'appel final explicite (voir `finally` des
+  // handlers groupés plus bas), son résultat pourtant périmé écrase l'état correct — l'utilisateur
+  // voit alors une partie de la sélection revenir dans l'ancien dossier. `loadSeqRef` ci-dessous
+  // rend `loadEntries` sûr par construction (une réponse qui n'est plus la plus récente demandée
+  // n'est jamais appliquée), quel que soit l'ordre réel de résolution réseau.
+  const loadSeqRef = useRef(0);
   const loadEntries = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setIsLoading(true);
     setError(null);
     try {
@@ -207,14 +220,16 @@ export default function Vault() {
       // entrées, un simple appel tronquerait silencieusement tout coffre plus grand.
       const encrypted = await authorizedRequest((token) => api.getFullVault(token));
       const decrypted = await decryptEntries(encrypted);
+      if (seq !== loadSeqRef.current) return; // une demande plus récente a déjà pris le dessus
       setEntries(decrypted);
       // Best-effort, jamais bloquant ni remonté à l'utilisateur — voir lib/autoBackup.ts (ne fait
       // rien tant que la sauvegarde automatique n'est pas explicitement activée dans Réglages).
       void maybeRunAutoBackup(decrypted).catch(() => {});
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       setError(getErrorMessage(err));
     } finally {
-      setIsLoading(false);
+      if (seq === loadSeqRef.current) setIsLoading(false);
     }
   }, [authorizedRequest]);
 
@@ -225,10 +240,26 @@ export default function Vault() {
   // Resynchronise automatiquement quand un AUTRE appareil du même compte modifie le coffre (voir
   // handlers/vault.rs côté backend + state/AuthContext.tsx::subscribeToVaultSync) — sans ça, il
   // faudrait recharger l'app manuellement pour voir les changements faits ailleurs.
+  //
+  // Débounce délibéré (voir le commentaire de loadSeqRef ci-dessus pour le pourquoi complet) : une
+  // action groupée sur CET appareil rediffuse une rafale de VAULT_UPDATE à lui-même en quelques
+  // millisecondes. `loadSeqRef` garantit déjà qu'aucune réponse périmée ne s'affiche, mais laisser
+  // partir un getFullVault() par événement reste un gaspillage réseau pur (voir lib/concurrency.ts
+  // pour le même raisonnement appliqué aux actions groupées elles-mêmes) — un seul rechargement
+  // une fois la rafale calmée suffit très largement.
   useEffect(() => {
-    return subscribeToVaultSync(() => {
-      void loadEntries();
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribeToVaultSync(() => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void loadEntries();
+      }, 400);
     });
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      unsubscribe();
+    };
   }, [subscribeToVaultSync, loadEntries]);
 
   // Entrées dont le mot de passe est identique à celui d'AU MOINS une autre entrée du coffre —

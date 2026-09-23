@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import * as sharedVault from "../lib/sharedVault";
@@ -39,11 +39,20 @@ export default function SharedVaultDetailPage() {
   // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
   const [listLayout] = useState(() => getEffectiveListLayout());
 
+  // CORRECTIF (même course que Vault.tsx pour le coffre personnel, voir son commentaire détaillé) :
+  // subscribeToVaultSync ne distingue pas les événements causés par CET appareil — chaque
+  // écriture individuelle sur ce coffre partagé se renvoie donc un signal de resynchro à
+  // elle-même. Sans garde, deux appels de `load()` qui se chevauchent peuvent résoudre dans le
+  // désordre et laisser le plus ANCIEN écraser un état pourtant plus à jour. `loadSeqRef` rend
+  // `load` sûr par construction, quel que soit l'ordre réel de résolution réseau.
+  const loadSeqRef = useRef(0);
   const load = useCallback(async () => {
     if (!id) return;
+    const seq = ++loadSeqRef.current;
     setError(null);
     try {
       const v = await sharedVault.getUnlockedSharedVault(authorizedRequest, id);
+      if (seq !== loadSeqRef.current) return; // une demande plus récente a déjà pris le dessus
       if (!v) {
         setError("Ce coffre partagé n'existe plus, ou tu n'y as plus accès.");
         setVault(null);
@@ -54,9 +63,11 @@ export default function SharedVaultDetailPage() {
         sharedVault.listEntries(authorizedRequest, id, v.vaultKeyB64),
         sharedVault.listMembers(authorizedRequest, id),
       ]);
+      if (seq !== loadSeqRef.current) return;
       setEntries(entryList);
       setMembers(memberList);
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       setError(getErrorMessage(err));
     }
   }, [id, authorizedRequest]);
@@ -70,11 +81,21 @@ export default function SharedVaultDetailPage() {
   // "SHARED_VAULT_UPDATE"/"SHARED_VAULT_MEMBERS_CHANGED"/"SHARED_VAULT_DELETED") — même mécanisme
   // que Vault.tsx pour le coffre personnel, sans filtrage par type d'événement (un rechargement
   // pour un événement sans rapport, ex: le coffre personnel, est un simple aller-retour réseau
-  // superflu, jamais une erreur).
+  // superflu, jamais une erreur). Débounce pour la même raison que Vault.tsx : coalescer une
+  // rafale d'événements rapprochés en un seul rechargement.
   useEffect(() => {
-    return subscribeToVaultSync(() => {
-      void load();
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribeToVaultSync(() => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void load();
+      }, 400);
     });
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      unsubscribe();
+    };
   }, [subscribeToVaultSync, load]);
 
   function openAddForm() {

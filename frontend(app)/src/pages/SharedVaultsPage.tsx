@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../state/AuthContext";
 import * as sharedVault from "../lib/sharedVault";
@@ -20,12 +20,20 @@ export default function SharedVaultsPage() {
   // Réglé dans Réglages (voir components/ListLayoutSettings.tsx) — même préférence que le Coffre.
   const [listLayout] = useState(() => getEffectiveListLayout());
 
+  // CORRECTIF (même course que Vault.tsx/SharedVaultDetailPage.tsx, voir leur commentaire
+  // détaillé) : deux appels de `load()` qui se chevauchent peuvent résoudre dans le désordre —
+  // `loadSeqRef` garantit qu'une réponse qui n'est plus la plus récente demandée n'est jamais
+  // appliquée.
+  const loadSeqRef = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setError(null);
     try {
       const list = await sharedVault.listMySharedVaults(authorizedRequest);
+      if (seq !== loadSeqRef.current) return;
       setVaults(list);
     } catch (err) {
+      if (seq !== loadSeqRef.current) return;
       setError(getErrorMessage(err));
     }
   }, [authorizedRequest]);
@@ -35,11 +43,21 @@ export default function SharedVaultsPage() {
   }, [load]);
 
   // Recharge en direct si un coffre partagé apparaît/disparaît pendant que cette liste est
-  // ouverte (voir le commentaire équivalent dans SharedVaultDetailPage.tsx).
+  // ouverte (voir le commentaire équivalent dans SharedVaultDetailPage.tsx) — débounce pour la
+  // même raison (coalescer une rafale d'événements rapprochés en un seul rechargement).
   useEffect(() => {
-    return subscribeToVaultSync(() => {
-      void load();
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribeToVaultSync(() => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void load();
+      }, 400);
     });
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      unsubscribe();
+    };
   }, [subscribeToVaultSync, load]);
 
   async function handleCreate(e: React.FormEvent) {
