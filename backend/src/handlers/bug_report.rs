@@ -128,8 +128,11 @@ mod tests {
         })
     }
 
+    /// -1 : `bug_reports` n'a pas de FK vers `users` (reporter_email reste un simple champ de
+    /// contact facultatif, voir la migration) — ces tests ne vérifient que des permissions
+    /// (is_admin/is_moderator), jamais une écriture qui dépendrait d'un vrai `user_id`.
     fn auth(email: &str, is_moderator: bool) -> AuthUser {
-        AuthUser { email: email.to_string(), is_moderator }
+        AuthUser { user_id: -1, email: email.to_string(), is_moderator }
     }
 
     /// Variante de build_test_state() avec `ADMIN_EMAIL` configuré (même pattern que

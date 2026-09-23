@@ -58,9 +58,9 @@ pub async fn create_ws_ticket(
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
 
-    sqlx::query("INSERT INTO ws_tickets (ticket_hash, user_email, expires_at) VALUES (?, ?, ?)")
+    sqlx::query("INSERT INTO ws_tickets (ticket_hash, user_id, expires_at) VALUES (?, ?, ?)")
         .bind(&ticket_hash)
-        .bind(&user.email)
+        .bind(user.user_id)
         .bind(&expires_at)
         .execute(&state.db)
         .await?;
@@ -82,16 +82,24 @@ pub async fn ws_handler(
         "DELETE FROM ws_tickets
          WHERE ticket_hash = ?
          AND expires_at > STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now')
-         RETURNING user_email"
+         RETURNING user_id"
     )
     .bind(&ticket_hash)
     .fetch_optional(&state.db)
     .await?;
 
-    let email: String = match row {
-        Some(r) => r.get("user_email"),
+    // `RETURNING` ne peut pas joindre `users` pour reconstituer l'email directement (voir
+    // repository.rs::FeatureSuggestionRepository::delete pour la même contrainte) — l'identité
+    // "email" reste nécessaire ici pour filtrer les SyncEvent (voir handle_socket ci-dessous, qui
+    // compare à `evt.user_email`), d'où cette seconde requête.
+    let user_id: i64 = match row {
+        Some(r) => r.get("user_id"),
         None => return Err(AppError::SessionExpired),
     };
+    let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = ?")
+        .bind(user_id)
+        .fetch_one(&state.db)
+        .await?;
 
     // Limite de connexions simultanées par utilisateur (voir MAX_WS_CONNECTIONS_PER_USER).
     // Le compteur est incrémenté ET le garde qui le décrémentera est construit ICI, d'un seul
@@ -279,13 +287,13 @@ mod tests {
         })
     }
 
-    async fn register_test_user(state: &Arc<AppState>, email: &str) {
-        sqlx::query("INSERT INTO users (email, password_hash, email_verified) VALUES (?, ?, 1)")
+    async fn register_test_user(state: &Arc<AppState>, email: &str) -> i64 {
+        sqlx::query_scalar("INSERT INTO users (email, password_hash, email_verified) VALUES (?, ?, 1) RETURNING id")
             .bind(email)
             .bind("hash_non_pertinent_pour_ce_test")
-            .execute(&state.db)
+            .fetch_one(&state.db)
             .await
-            .expect("l'insertion de l'utilisateur de test doit réussir");
+            .expect("l'insertion de l'utilisateur de test doit réussir")
     }
 
     /// create_ws_ticket() doit produire un ticket dont seul le hash est stocké en BDD (jamais
@@ -294,16 +302,16 @@ mod tests {
     async fn test_create_ws_ticket_stores_only_the_hash() {
         let state = build_test_state().await;
         let email = "wsticket@example.com";
-        register_test_user(&state, email).await;
+        let user_id = register_test_user(&state, email).await;
 
-        let result = create_ws_ticket(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false })
+        let result = create_ws_ticket(State(state.clone()), AuthUser { user_id, email: email.to_string(), is_moderator: false })
             .await
             .expect("la création du ticket doit réussir");
         let value = read_json_body(result.into_response()).await;
         let ticket = value["ticket"].as_str().expect("un ticket doit être renvoyé").to_string();
 
-        let stored_hash: String = sqlx::query_scalar("SELECT ticket_hash FROM ws_tickets WHERE user_email = ?")
-            .bind(email)
+        let stored_hash: String = sqlx::query_scalar("SELECT ticket_hash FROM ws_tickets WHERE user_id = ?")
+            .bind(user_id)
             .fetch_one(&state.db)
             .await
             .unwrap();
@@ -317,9 +325,9 @@ mod tests {
     async fn test_ws_ticket_is_single_use() {
         let state = build_test_state().await;
         let email = "singleuse@example.com";
-        register_test_user(&state, email).await;
+        let user_id = register_test_user(&state, email).await;
 
-        let result = create_ws_ticket(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false })
+        let result = create_ws_ticket(State(state.clone()), AuthUser { user_id, email: email.to_string(), is_moderator: false })
             .await
             .expect("la création du ticket doit réussir");
         let ticket = read_json_body(result.into_response()).await["ticket"].as_str().unwrap().to_string();
@@ -327,7 +335,7 @@ mod tests {
 
         // Première consommation : doit trouver et supprimer la ligne
         let row = sqlx::query(
-            "DELETE FROM ws_tickets WHERE ticket_hash = ? AND expires_at > STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now') RETURNING user_email"
+            "DELETE FROM ws_tickets WHERE ticket_hash = ? AND expires_at > STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now') RETURNING user_id"
         )
         .bind(&ticket_hash)
         .fetch_optional(&state.db)
@@ -337,7 +345,7 @@ mod tests {
 
         // Deuxième consommation (rejeu) : la ligne n'existe plus
         let replay = sqlx::query(
-            "DELETE FROM ws_tickets WHERE ticket_hash = ? AND expires_at > STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now') RETURNING user_email"
+            "DELETE FROM ws_tickets WHERE ticket_hash = ? AND expires_at > STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now') RETURNING user_id"
         )
         .bind(&ticket_hash)
         .fetch_optional(&state.db)
@@ -353,7 +361,7 @@ mod tests {
     async fn test_consuming_unknown_ticket_finds_nothing() {
         let state = build_test_state().await;
         let row = sqlx::query(
-            "DELETE FROM ws_tickets WHERE ticket_hash = ? AND expires_at > STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now') RETURNING user_email"
+            "DELETE FROM ws_tickets WHERE ticket_hash = ? AND expires_at > STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now') RETURNING user_id"
         )
         .bind(crypto::hash_token("ticket-jamais-emis"))
         .fetch_optional(&state.db)

@@ -14,7 +14,10 @@ use crate::{AppState, crypto::Claims};
 /// en paramètre de vos fonctions de routes d'API pour savoir "qui" appelle.
 #[derive(Debug)]
 pub struct AuthUser {
-    pub email: String,        // L'adresse e-mail de l'utilisateur identifié
+    pub user_id: i64,         // Clé numérique stable de l'utilisateur (users.id) — à utiliser pour
+                               // toute requête sur les tables qui lui appartiennent (voir repository.rs)
+    pub email: String,        // L'adresse e-mail de l'utilisateur identifié (affichage/comparaisons
+                               // métier ; n'est plus la clé de jointure vers les autres tables)
     pub is_moderator: bool,   // Indique si l'utilisateur possède les droits de modérateur
 }
 
@@ -82,10 +85,12 @@ where
         // volontaire (`sessions_revoked_at`, voir handlers/devices.rs::logout_all_devices()).
         // `MAX(a, b)` avec 2 arguments est la forme SCALAIRE (par ligne) de SQLite, pas la forme
         // agrégat à un seul argument — exactement ce qu'il faut ici.
-        let user_row = sqlx::query_as::<_, (String, bool, chrono::NaiveDateTime, bool)>(
-            "SELECT email, is_moderator, MAX(password_changed_at, sessions_revoked_at), is_suspended FROM users WHERE email = ?"
+        let user_row = sqlx::query_as::<_, (i64, String, bool, chrono::NaiveDateTime, bool)>(
+            "SELECT id, email, is_moderator, MAX(password_changed_at, sessions_revoked_at), is_suspended FROM users WHERE email = ?"
         )
-            // Le sujet (`sub`) du token contient l'email de l'utilisateur
+            // Le sujet (`sub`) du token contient l'email de l'utilisateur — le JWT continue de
+            // porter l'email (jamais l'id numérique interne), pour ne rien changer côté clients
+            // (desktop/extension) ; c'est ce SELECT qui résout l'id une fois par requête.
             .bind(&token_data.claims.sub)
             // Exécute la requête sur le pool de connexion de l'application
             .fetch_optional(&state.db)
@@ -112,22 +117,23 @@ where
         // expiration — soit une fenêtre résiduelle de plusieurs minutes pendant laquelle un compte
         // suspendu continuerait d'agir. Le contrôle a lieu à CHAQUE requête, donc une suspension
         // prend effet immédiatement.
-        if user_row.3 {
+        if user_row.4 {
             return Err((StatusCode::UNAUTHORIZED, "Ce compte est suspendu.".to_string()));
         }
 
         let issued_at = chrono::DateTime::from_timestamp(token_data.claims.iat as i64, 0)
             .map(|dt| dt.naive_utc())
             .ok_or((StatusCode::UNAUTHORIZED, "Jeton invalide".to_string()))?;
-        if issued_at <= user_row.2 {
+        if issued_at <= user_row.3 {
             return Err((StatusCode::UNAUTHORIZED, "Session expirée : le mot de passe a été modifié, veuillez vous reconnecter".to_string()));
         }
 
         // 7. Succès : On construit et on retourne l'objet `AuthUser` contenant les données validées.
         // Axum va maintenant autoriser l'accès à la route demandée et lui transmettre cet objet.
         Ok(AuthUser {
-            email: user_row.0,        // Récupère l'email issu du tuple de la BDD
-            is_moderator: user_row.1  // Récupère le booléen is_moderator issu du tuple de la BDD
+            user_id: user_row.0,      // users.id, résolu ci-dessus depuis l'email du JWT
+            email: user_row.1,        // Récupère l'email issu du tuple de la BDD
+            is_moderator: user_row.2  // Récupère le booléen is_moderator issu du tuple de la BDD
         })
     }
 }

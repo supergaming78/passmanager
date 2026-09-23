@@ -93,7 +93,7 @@ pub async fn register(
     // réutilise la table `tfa_codes` et son verrouillage anti-bruteforce).
     let verification_code = format!("{:06}", rand::rng().random_range(0..1000000));
     let expires_at = (Utc::now() + chrono::Duration::minutes(30)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+    sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES ((SELECT id FROM users WHERE email = ?), ?, ?, ?)")
         .bind(&email)
         .bind(PURPOSE_EMAIL_VERIFICATION)
         .bind(&verification_code)
@@ -124,7 +124,7 @@ pub async fn verify_email(
     payload.validate()?;
     let email = payload.email.to_lowercase();
 
-    let tfa: TfaCode = sqlx::query_as("SELECT * FROM tfa_codes WHERE email = ? AND purpose = ?")
+    let tfa: TfaCode = sqlx::query_as("SELECT * FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
         .bind(&email)
         .bind(PURPOSE_EMAIL_VERIFICATION)
         .fetch_optional(&state.db)
@@ -134,7 +134,7 @@ pub async fn verify_email(
     // Même verrouillage anti-bruteforce que le 2FA/reset (voir MAX_CODE_ATTEMPTS). Filtré par
     // `purpose` : ne touche jamais un code 2FA/reset éventuellement en cours pour le même email.
     if tfa.attempts >= MAX_CODE_ATTEMPTS {
-        sqlx::query("DELETE FROM tfa_codes WHERE email = ? AND purpose = ?")
+        sqlx::query("DELETE FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(&email)
             .bind(PURPOSE_EMAIL_VERIFICATION)
             .execute(&state.db)
@@ -144,7 +144,7 @@ pub async fn verify_email(
     }
 
     if !crypto::constant_time_eq(&payload.code, &tfa.code) {
-        sqlx::query("UPDATE tfa_codes SET attempts = attempts + 1 WHERE email = ? AND purpose = ?")
+        sqlx::query("UPDATE tfa_codes SET attempts = attempts + 1 WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(&email)
             .bind(PURPOSE_EMAIL_VERIFICATION)
             .execute(&state.db)
@@ -166,7 +166,7 @@ pub async fn verify_email(
         .await?;
 
     // Consommation du code : il ne doit plus pouvoir servir une seconde fois.
-    sqlx::query("DELETE FROM tfa_codes WHERE email = ? AND purpose = ?")
+    sqlx::query("DELETE FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
         .bind(&email)
         .bind(PURPOSE_EMAIL_VERIFICATION)
         .execute(&mut *tx)
@@ -214,7 +214,7 @@ pub async fn resend_verification_email(
         // INSERT OR REPLACE : remplace aussi le compteur `attempts` par sa valeur par défaut (0),
         // donc un renvoi donne bien un nouveau capital de MAX_CODE_ATTEMPTS tentatives. Filtré
         // par `purpose` : ne touche jamais un code 2FA/reset éventuellement en cours en parallèle.
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES ((SELECT id FROM users WHERE email = ?), ?, ?, ?)")
             .bind(&email)
             .bind(PURPOSE_EMAIL_VERIFICATION)
             .bind(&code)
@@ -360,7 +360,7 @@ mod tests {
         // verify_email() supprimerait normalement ce code en le consommant (voir plus haut) :
         // on reproduit le même effet de bord ici pour que l'état de test reflète fidèlement un
         // vrai compte vérifié (aucun code de vérification résiduel en BDD).
-        sqlx::query("DELETE FROM tfa_codes WHERE email = ?")
+        sqlx::query("DELETE FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(email.to_lowercase())
             .execute(&state.db)
             .await
@@ -378,7 +378,7 @@ mod tests {
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
 
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES ((SELECT id FROM users WHERE email = ?), ?, ?, ?)")
             .bind(email)
             .bind(crate::handlers::auth::PURPOSE_LOGIN_2FA)
             .bind(code)
@@ -448,7 +448,7 @@ mod tests {
             .await
             .expect("l'inscription doit réussir");
 
-        let code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
+        let code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(email)
             .bind(PURPOSE_EMAIL_VERIFICATION)
             .fetch_one(&state.db)
@@ -530,26 +530,26 @@ mod tests {
             .await
             .expect("l'inscription doit réussir");
 
-        let original_code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
+        let original_code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(email).bind(PURPOSE_EMAIL_VERIFICATION).fetch_one(&state.db).await.unwrap();
 
         // On épuise quelques tentatives sur le code d'origine, pour vérifier que le renvoi
         // repart bien avec un compteur à zéro (INSERT OR REPLACE), pas un compteur hérité.
-        sqlx::query("UPDATE tfa_codes SET attempts = 3 WHERE email = ? AND purpose = ?")
+        sqlx::query("UPDATE tfa_codes SET attempts = 3 WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(email).bind(PURPOSE_EMAIL_VERIFICATION).execute(&state.db).await.unwrap();
 
         // Le code vient d'être émis par l'inscription juste au-dessus : le cooldown
         // anti-email-bombing (voir handlers/auth.rs::is_code_within_cooldown) bloquerait le renvoi.
         // On vieillit artificiellement son expiration pour simuler l'écoulement du cooldown — c'est
         // bien le RENVOI qu'on teste ici, pas le cooldown (couvert par son propre test plus bas).
-        sqlx::query("UPDATE tfa_codes SET expires_at = STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now', '+5 minutes') WHERE email = ? AND purpose = ?")
+        sqlx::query("UPDATE tfa_codes SET expires_at = STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now', '+5 minutes') WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(email).bind(PURPOSE_EMAIL_VERIFICATION).execute(&state.db).await.unwrap();
 
         resend_verification_email(State(state.clone()), Json(ForgotPasswordPayload { email: email.to_string() }))
             .await
             .expect("le renvoi doit réussir pour un compte non vérifié");
 
-        let (new_code, attempts): (String, i64) = sqlx::query_as("SELECT code, attempts FROM tfa_codes WHERE email = ? AND purpose = ?")
+        let (new_code, attempts): (String, i64) = sqlx::query_as("SELECT code, attempts FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(email).bind(PURPOSE_EMAIL_VERIFICATION).fetch_one(&state.db).await.unwrap();
         assert_ne!(new_code, original_code, "un renvoi doit générer un code différent du précédent (probabilité négligeable de collision sur 1M de valeurs)");
         assert_eq!(attempts, 0, "le compteur de tentatives doit repartir à zéro après un renvoi");
@@ -575,13 +575,13 @@ mod tests {
             max_trusted_devices: None,
         })).await.expect("l'inscription doit réussir");
 
-        let original_code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
+        let original_code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(email).bind(PURPOSE_EMAIL_VERIFICATION).fetch_one(&state.db).await.unwrap();
 
         let result = resend_verification_email(State(state.clone()), Json(ForgotPasswordPayload { email: email.to_string() })).await;
         assert!(result.is_ok(), "le renvoi trop rapproché doit répondre le même 202 (anti-énumération)");
 
-        let code_after: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
+        let code_after: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(email).bind(PURPOSE_EMAIL_VERIFICATION).fetch_one(&state.db).await.unwrap();
         assert_eq!(
             code_after, original_code,
@@ -600,7 +600,7 @@ mod tests {
 
         let result = resend_verification_email(State(state.clone()), Json(ForgotPasswordPayload { email: verified_email.to_string() })).await;
         assert!(result.is_ok(), "la requête doit répondre succès même pour un compte déjà vérifié (anti-énumération)");
-        let code_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE email = ?")
+        let code_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(verified_email).fetch_one(&state.db).await.unwrap();
         assert_eq!(code_count, 0, "aucun code ne doit être généré pour un compte déjà vérifié");
 
@@ -660,7 +660,7 @@ mod tests {
         let login_expires_at = (Utc::now() + chrono::Duration::minutes(5))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES ((SELECT id FROM users WHERE email = ?), ?, ?, ?)")
             .bind(email)
             .bind(crate::handlers::auth::PURPOSE_LOGIN_2FA)
             .bind(&login_code)
@@ -675,17 +675,17 @@ mod tests {
             .await
             .expect("la demande de reset doit réussir");
 
-        let reset_code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
+        let reset_code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(email).bind(PURPOSE_PASSWORD_RESET).fetch_one(&state.db).await
             .expect("un code de reset doit avoir été généré, sans écraser le code 2FA");
 
         // Les deux codes doivent coexister comme deux lignes distinctes, jamais s'écraser.
-        let total_codes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE email = ?")
+        let total_codes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(email).fetch_one(&state.db).await.unwrap();
         assert_eq!(total_codes, 2, "les deux flux doivent coexister comme deux lignes distinctes (email, purpose)");
         assert_ne!(login_code, reset_code, "probabilité négligeable de collision sur 1M de valeurs");
 
-        let login_code_after: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
+        let login_code_after: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(email).bind(crate::handlers::auth::PURPOSE_LOGIN_2FA).fetch_one(&state.db).await.unwrap();
         assert_eq!(login_code_after, login_code, "le code 2FA de connexion ne doit pas avoir été écrasé par la demande de reset");
 
@@ -698,9 +698,9 @@ mod tests {
         };
         let _ = crate::handlers::auth::account::confirm_password_reset(State(state.clone()), Json(bad_reset_payload)).await;
 
-        let reset_attempts: i64 = sqlx::query_scalar("SELECT attempts FROM tfa_codes WHERE email = ? AND purpose = ?")
+        let reset_attempts: i64 = sqlx::query_scalar("SELECT attempts FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(email).bind(PURPOSE_PASSWORD_RESET).fetch_one(&state.db).await.unwrap();
-        let login_attempts: i64 = sqlx::query_scalar("SELECT attempts FROM tfa_codes WHERE email = ? AND purpose = ?")
+        let login_attempts: i64 = sqlx::query_scalar("SELECT attempts FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?) AND purpose = ?")
             .bind(email).bind(crate::handlers::auth::PURPOSE_LOGIN_2FA).fetch_one(&state.db).await.unwrap();
         assert_eq!(reset_attempts, 1, "la tentative échouée doit incrémenter le compteur du code de reset");
         assert_eq!(login_attempts, 0, "le code 2FA du flux concurrent ne doit jamais être affecté par les tentatives sur le code de reset");
@@ -718,7 +718,7 @@ mod tests {
             .await
             .expect("le bon code de reset doit réussir malgré le flux 2FA concurrent");
 
-        let remaining_codes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE email = ?")
+        let remaining_codes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(email).fetch_one(&state.db).await.unwrap();
         assert_eq!(remaining_codes, 0, "confirm_password_reset() purge volontairement tous les codes en attente pour cet email");
     }

@@ -43,10 +43,10 @@ const IP_ALERT_COOLDOWN_HOURS: i64 = 24;
 /// avant, voir verify_2fa_and_register_device()) ET un appareil approuvé AVANT l'existence de
 /// cette table (évite une vague d'alertes non pertinentes pour tous les appareils déjà existants
 /// juste après le déploiement de cette fonctionnalité).
-async fn record_device_ip_and_maybe_alert(state: &AppState, email: &str, device_id: &str, device_label: &str, ip: &str, agent: Option<String>) {
-    let already_known = sqlx::query("SELECT 1 FROM trusted_device_ips WHERE device_id = ? AND user_email = ? AND ip_address = ?")
+async fn record_device_ip_and_maybe_alert(state: &AppState, user_id: i64, email: &str, device_id: &str, device_label: &str, ip: &str, agent: Option<String>) {
+    let already_known = sqlx::query("SELECT 1 FROM trusted_device_ips WHERE device_id = ? AND user_id = ? AND ip_address = ?")
         .bind(device_id)
-        .bind(email)
+        .bind(user_id)
         .bind(ip)
         .fetch_optional(&state.db)
         .await;
@@ -54,26 +54,26 @@ async fn record_device_ip_and_maybe_alert(state: &AppState, email: &str, device_
     match already_known {
         // IP déjà connue pour cet appareil : simple mise à jour de fraîcheur, jamais d'alerte.
         Ok(Some(_)) => {
-            let _ = sqlx::query("UPDATE trusted_device_ips SET last_seen_at = CURRENT_TIMESTAMP WHERE device_id = ? AND user_email = ? AND ip_address = ?")
+            let _ = sqlx::query("UPDATE trusted_device_ips SET last_seen_at = CURRENT_TIMESTAMP WHERE device_id = ? AND user_id = ? AND ip_address = ?")
                 .bind(device_id)
-                .bind(email)
+                .bind(user_id)
                 .bind(ip)
                 .execute(&state.db)
                 .await;
         }
         Ok(None) => {
             let previously_known_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_email = ?",
+                "SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_id = ?",
             )
             .bind(device_id)
-            .bind(email)
+            .bind(user_id)
             .fetch_one(&state.db)
             .await
             .unwrap_or(0);
 
-            if sqlx::query("INSERT INTO trusted_device_ips (device_id, user_email, ip_address) VALUES (?, ?, ?)")
+            if sqlx::query("INSERT INTO trusted_device_ips (device_id, user_id, ip_address) VALUES (?, ?, ?)")
                 .bind(device_id)
-                .bind(email)
+                .bind(user_id)
                 .bind(ip)
                 .execute(&state.db)
                 .await
@@ -87,14 +87,14 @@ async fn record_device_ip_and_maybe_alert(state: &AppState, email: &str, device_
             // passe (`id DESC` en second critère de tri : last_seen_at n'a qu'une précision à la
             // seconde en SQLite, deux insertions rapprochées pourraient sinon être ambiguës).
             let _ = sqlx::query(
-                "DELETE FROM trusted_device_ips WHERE device_id = ? AND user_email = ? AND id NOT IN (
-                    SELECT id FROM trusted_device_ips WHERE device_id = ? AND user_email = ? ORDER BY last_seen_at DESC, id DESC LIMIT 5
+                "DELETE FROM trusted_device_ips WHERE device_id = ? AND user_id = ? AND id NOT IN (
+                    SELECT id FROM trusted_device_ips WHERE device_id = ? AND user_id = ? ORDER BY last_seen_at DESC, id DESC LIMIT 5
                 )",
             )
             .bind(device_id)
-            .bind(email)
+            .bind(user_id)
             .bind(device_id)
-            .bind(email)
+            .bind(user_id)
             .execute(&state.db)
             .await;
 
@@ -113,10 +113,10 @@ async fn record_device_ip_and_maybe_alert(state: &AppState, email: &str, device_
                 // 20260902000000_trusted_device_ip_alert_cooldown.sql. Ne throttle QUE l'ENVOI DE
                 // L'EMAIL — la détection et l'audit ci-dessus restent, eux, inconditionnels.
                 let last_alert: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
-                    "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_email = ?",
+                    "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_id = ?",
                 )
                 .bind(device_id)
-                .bind(email)
+                .bind(user_id)
                 .fetch_one(&state.db)
                 .await
                 .unwrap_or(None);
@@ -125,9 +125,9 @@ async fn record_device_ip_and_maybe_alert(state: &AppState, email: &str, device_
                     .is_some_and(|last| Utc::now().naive_utc() - last < chrono::Duration::hours(IP_ALERT_COOLDOWN_HOURS));
 
                 if !within_cooldown {
-                    let _ = sqlx::query("UPDATE trusted_devices SET last_ip_alert_at = CURRENT_TIMESTAMP WHERE device_id = ? AND user_email = ?")
+                    let _ = sqlx::query("UPDATE trusted_devices SET last_ip_alert_at = CURRENT_TIMESTAMP WHERE device_id = ? AND user_id = ?")
                         .bind(device_id)
-                        .bind(email)
+                        .bind(user_id)
                         .execute(&state.db)
                         .await;
 
@@ -269,9 +269,9 @@ pub async fn login(
     // 5. Vérification de l'appareil : est-il déjà enregistré dans les "appareils de confiance" ?
     // On récupère aussi device_name ici (pas juste l'existence) : réutilisé plus bas par l'alerte
     // de connexion depuis une IP inhabituelle, pour un message nommant l'appareil concerné.
-    let trusted_device_row: Option<(Option<String>,)> = sqlx::query_as("SELECT device_name FROM trusted_devices WHERE device_id = ? AND user_email = ?")
+    let trusted_device_row: Option<(Option<String>,)> = sqlx::query_as("SELECT device_name FROM trusted_devices WHERE device_id = ? AND user_id = ?")
         .bind(&payload.device_id)
-        .bind(&user.email)
+        .bind(user.id)
         .fetch_optional(&state.db)
         .await?;
     let is_trusted = trusted_device_row.is_some();
@@ -285,8 +285,8 @@ pub async fn login(
         let expires_at = (Utc::now() + chrono::Duration::minutes(5)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
         // c. Enregistrement (ou remplacement) du code 2FA en base de données
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
-            .bind(&user.email)
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+            .bind(user.id)
             .bind(PURPOSE_LOGIN_2FA)
             .bind(&generated_code)
             .bind(expires_at)
@@ -324,9 +324,9 @@ pub async fn login(
 
     // Trace que CET appareil de confiance vient d'être utilisé — permet à l'utilisateur de
     // repérer sur GET /devices un appareil inactif depuis longtemps, pour le révoquer en confiance.
-    sqlx::query("UPDATE trusted_devices SET last_used_at = CURRENT_TIMESTAMP WHERE device_id = ? AND user_email = ?")
+    sqlx::query("UPDATE trusted_devices SET last_used_at = CURRENT_TIMESTAMP WHERE device_id = ? AND user_id = ?")
         .bind(&payload.device_id)
-        .bind(&user.email)
+        .bind(user.id)
         .execute(&state.db)
         .await?;
 
@@ -339,7 +339,7 @@ pub async fn login(
     // qui garde `addr.to_string()` AVEC port : lui n'est qu'un enregistrement informatif, jamais
     // comparé pour égalité, donc pas concerné par ce problème).
     let device_label = trusted_device_row.and_then(|(name,)| name).unwrap_or_else(|| "un appareil sans nom".to_string());
-    record_device_ip_and_maybe_alert(&state, &user.email, &payload.device_id, &device_label, &addr.ip().to_string(), agent.clone()).await;
+    record_device_ip_and_maybe_alert(&state, user.id, &user.email, &payload.device_id, &device_label, &addr.ip().to_string(), agent.clone()).await;
 
     // 8. CALCUL DU TEMPS DE SESSION DYNAMIQUE ("Se souvenir de moi")
     let is_remembered = payload.remember_me.unwrap_or(false);
@@ -361,8 +361,8 @@ pub async fn login(
     // 9. Gestion des sessions en base : on supprime l'ancien refresh token de CET APPAREIL uniquement
     // (et pas ceux des autres appareils : un utilisateur doit pouvoir rester connecté sur
     // son app ET son extension en même temps).
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ? AND device_id = ?")
-        .bind(&user.email)
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ? AND device_id = ?")
+        .bind(user.id)
         .bind(&payload.device_id)
         .execute(&state.db)
         .await?;
@@ -373,9 +373,9 @@ pub async fn login(
     // directement accès à des sessions valides.
     let refresh_token_hash = crypto::hash_token(&refresh_token);
 
-    sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
+    sqlx::query("INSERT INTO refresh_tokens (token, user_id, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
         .bind(&refresh_token_hash)
-        .bind(&user.email)
+        .bind(user.id)
         .bind(&payload.device_id)
         .bind(expires_at)
         .bind(is_remembered) // Stocke l'état de persistance de la session
@@ -409,9 +409,19 @@ pub async fn verify_2fa_and_register_device(
     // ni le compte utilisateur référencé par la FK de trusted_devices.
     let email = payload.email.to_lowercase();
 
-    // 1. Récupération du code 2FA stocké pour cet email
-    let tfa: TfaCode = sqlx::query_as("SELECT * FROM tfa_codes WHERE email = ? AND purpose = ?")
+    // Résolution de l'id une fois pour toutes : tfa_codes/trusted_devices sont désormais
+    // clés par user_id, pas par email (voir la migration users_numeric_id). Un email inconnu
+    // n'a jamais pu produire de ligne tfa_codes (FK vers users) : même erreur "Aucun code
+    // généré" que l'ancien comportement (SELECT sur une ligne qui n'existe pas).
+    let user_id: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
         .bind(&email)
+        .fetch_optional(&state.db)
+        .await?;
+    let user_id = user_id.ok_or(AppError::ValidationError("Aucun code généré".to_string()))?;
+
+    // 1. Récupération du code 2FA stocké pour cet email
+    let tfa: TfaCode = sqlx::query_as("SELECT * FROM tfa_codes WHERE user_id = ? AND purpose = ?")
+        .bind(user_id)
         .bind(PURPOSE_LOGIN_2FA)
         .fetch_optional(&state.db)
         .await?
@@ -431,8 +441,8 @@ pub async fn verify_2fa_and_register_device(
     // 2bis. Verrouillage : trop de tentatives échouées sur ce code -> on le supprime
     // et on force l'utilisateur à en redemander un nouveau (ex: via un nouveau login).
     if tfa.attempts >= MAX_CODE_ATTEMPTS {
-        sqlx::query("DELETE FROM tfa_codes WHERE email = ? AND purpose = ?")
-            .bind(&email)
+        sqlx::query("DELETE FROM tfa_codes WHERE user_id = ? AND purpose = ?")
+            .bind(user_id)
             .bind(PURPOSE_LOGIN_2FA)
             .execute(&state.db)
             .await?;
@@ -443,8 +453,8 @@ pub async fn verify_2fa_and_register_device(
     // 3. Vérification de la correspondance exacte du code (temps constant : voir crypto::constant_time_eq)
     if !crypto::constant_time_eq(&payload.code, &saved_code) {
         // Tentative échouée : on incrémente le compteur avant de rejeter la requête
-        sqlx::query("UPDATE tfa_codes SET attempts = attempts + 1 WHERE email = ? AND purpose = ?")
-            .bind(&email)
+        sqlx::query("UPDATE tfa_codes SET attempts = attempts + 1 WHERE user_id = ? AND purpose = ?")
+            .bind(user_id)
             .bind(PURPOSE_LOGIN_2FA)
             .execute(&state.db)
             .await?;
@@ -455,19 +465,19 @@ pub async fn verify_2fa_and_register_device(
     // l'inscription, et update_device_limit() dans handlers/devices.rs pour le modifier ensuite).
     // On ne compte QUE les appareils réellement NOUVEAUX : re-valider un appareil déjà connu
     // (INSERT OR REPLACE plus bas) ne doit jamais être bloqué par sa propre présence.
-    let already_trusted = sqlx::query("SELECT 1 FROM trusted_devices WHERE device_id = ? AND user_email = ?")
+    let already_trusted = sqlx::query("SELECT 1 FROM trusted_devices WHERE device_id = ? AND user_id = ?")
         .bind(&payload.device_id)
-        .bind(&email)
+        .bind(user_id)
         .fetch_optional(&state.db)
         .await?
         .is_some();
 
     if !already_trusted {
         let (current_count, max_devices): (i64, i64) = sqlx::query_as(
-            "SELECT (SELECT COUNT(*) FROM trusted_devices WHERE user_email = ?), (SELECT max_trusted_devices FROM users WHERE email = ?)"
+            "SELECT (SELECT COUNT(*) FROM trusted_devices WHERE user_id = ?), (SELECT max_trusted_devices FROM users WHERE id = ?)"
         )
-        .bind(&email)
-        .bind(&email)
+        .bind(user_id)
+        .bind(user_id)
         .fetch_one(&state.db)
         .await?;
 
@@ -485,16 +495,16 @@ pub async fn verify_2fa_and_register_device(
     // Enregistrement du terminal dans les appareils de confiance (last_used_at = maintenant :
     // il vient justement de servir à valider ce code, DEFAULT CURRENT_TIMESTAMP suffirait mais
     // on le rend explicite pour la lisibilité — INSERT OR REPLACE recrée la ligne à chaque fois).
-    sqlx::query("INSERT OR REPLACE INTO trusted_devices (device_id, user_email, device_name, last_used_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)")
+    sqlx::query("INSERT OR REPLACE INTO trusted_devices (device_id, user_id, device_name, last_used_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)")
         .bind(&payload.device_id)
-        .bind(&email)
+        .bind(user_id)
         .bind(&payload.device_name)
         .execute(&mut *tx)
         .await?;
 
     // Consommation du code : on supprime le code 2FA pour qu'il ne serve plus
-    sqlx::query("DELETE FROM tfa_codes WHERE email = ? AND purpose = ?")
-        .bind(&email)
+    sqlx::query("DELETE FROM tfa_codes WHERE user_id = ? AND purpose = ?")
+        .bind(user_id)
         .bind(PURPOSE_LOGIN_2FA)
         .execute(&mut *tx)
         .await?;
@@ -527,7 +537,7 @@ pub async fn verify_2fa_and_register_device(
     // `addr.ip()`, pas `addr.to_string()` — voir le commentaire équivalent dans login() (le port
     // source TCP change presque à chaque connexion, comparer "adresse:port" viderait la fenêtre
     // glissante de tout intérêt).
-    record_device_ip_and_maybe_alert(&state, &email, &payload.device_id, device_label, &addr.ip().to_string(), None).await;
+    record_device_ip_and_maybe_alert(&state, user_id, &email, &payload.device_id, device_label, &addr.ip().to_string(), None).await;
 
     info!("Appareil {} validé avec succès pour {}", payload.device_id, email);
     Ok(StatusCode::OK)
@@ -558,7 +568,7 @@ pub async fn refresh(
     "DELETE FROM refresh_tokens
      WHERE token = ?
      AND expires_at > STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now')
-     RETURNING user_email, device_id, is_persistent"
+     RETURNING user_id, device_id, is_persistent"
     )
         .bind(&old_token_hash)
         .fetch_optional(&mut *tx)
@@ -566,9 +576,16 @@ pub async fn refresh(
 
     if let Some(r) = row {
         // Extraction des données de la ligne lue grâce au trait 'sqlx::Row'
-        let email: String = r.get("user_email");
+        let user_id: i64 = r.get("user_id");
         let device_id: String = r.get("device_id");
         let is_persistent: bool = r.get("is_persistent");
+
+        // RETURNING ne peut pas joindre : l'email (matériau cryptographique du JWT `sub`, voir
+        // crypto.rs) se résout séparément depuis l'id qu'on vient d'obtenir.
+        let email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await?;
 
         // Génération du nouveau couple de tokens (Rotation des Refresh Tokens)
         let new_access = crypto::create_jwt(&email, &state.encoding_key, state.config.access_token_seconds)?;
@@ -585,9 +602,9 @@ pub async fn refresh(
         let expires_at = (Utc::now() + refresh_duration).format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
         // Insertion du nouveau Refresh Token dans la transaction, rattaché au même appareil
-        sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO refresh_tokens (token, user_id, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
             .bind(&new_refresh_hash)
-            .bind(&email)
+            .bind(user_id)
             .bind(&device_id)
             .bind(expires_at)
             .bind(is_persistent) // On propage l'état 'is_persistent' d'origine
@@ -716,7 +733,7 @@ mod tests {
             .await
             .expect("le marquage du compte de test comme vérifié doit réussir");
 
-        sqlx::query("DELETE FROM tfa_codes WHERE email = ?")
+        sqlx::query("DELETE FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(email.to_lowercase())
             .execute(&state.db)
             .await
@@ -732,7 +749,7 @@ mod tests {
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
 
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES ((SELECT id FROM users WHERE email = ?), ?, ?, ?)")
             .bind(email)
             .bind(PURPOSE_LOGIN_2FA)
             .bind(code)
@@ -790,7 +807,7 @@ mod tests {
         }
 
         // Les DEUX appareils doivent avoir chacun leur refresh token actif, pas un seul.
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_email = ?")
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(email)
             .fetch_one(&state.db)
             .await
@@ -811,7 +828,7 @@ mod tests {
         let expires_at = (Utc::now() + chrono::Duration::minutes(5))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES ((SELECT id FROM users WHERE email = ?), ?, ?, ?)")
             .bind(email)
             .bind(PURPOSE_LOGIN_2FA)
             .bind(real_code)
@@ -850,7 +867,7 @@ mod tests {
         );
 
         // Le code doit avoir été supprimé de la BDD par le verrouillage.
-        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE email = ?")
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(email)
             .fetch_one(&state.db)
             .await
@@ -1025,7 +1042,7 @@ mod tests {
         assert_ne!(old_token, new_token, "le token doit avoir changé après un refresh");
 
         // La BDD ne doit contenir QUE le hash du nouveau token, jamais un token en clair
-        let stored_token: String = sqlx::query_scalar("SELECT token FROM refresh_tokens WHERE user_email = ?")
+        let stored_token: String = sqlx::query_scalar("SELECT token FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(email)
             .fetch_one(&state.db)
             .await
@@ -1076,14 +1093,14 @@ mod tests {
             .await
             .expect("le logout doit réussir");
 
-        let remaining_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_email = ?")
+        let remaining_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(email)
             .fetch_one(&state.db)
             .await
             .unwrap();
         assert_eq!(remaining_count, 1, "seule la session de device-a doit avoir été révoquée");
 
-        let remaining_device: String = sqlx::query_scalar("SELECT device_id FROM refresh_tokens WHERE user_email = ?")
+        let remaining_device: String = sqlx::query_scalar("SELECT device_id FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(email)
             .fetch_one(&state.db)
             .await
@@ -1103,7 +1120,7 @@ mod tests {
         let expires_at = (Utc::now() + chrono::Duration::minutes(5))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES ((SELECT id FROM users WHERE email = ?), ?, ?, ?)")
             .bind(email_lowercase)
             .bind(PURPOSE_LOGIN_2FA)
             .bind(code)
@@ -1238,7 +1255,7 @@ mod tests {
         // Un 3ème appareil NOUVEAU doit être refusé (plafond atteint)
         let code = "444444";
         let expires_at = (Utc::now() + chrono::Duration::minutes(5)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES ((SELECT id FROM users WHERE email = ?), ?, ?, ?)")
             .bind(email)
             .bind(PURPOSE_LOGIN_2FA).bind(code).bind(expires_at).execute(&state.db).await.unwrap();
         let result = verify_2fa_and_register_device(State(state.clone()), ConnectInfo("127.0.0.1:1".parse().unwrap()), Json(VerifyTfaPayload {
@@ -1250,7 +1267,7 @@ mod tests {
         // pas un NOUVEL appareil, il ne doit jamais être bloqué par sa propre présence.
         let code2 = "555555";
         let expires_at2 = (Utc::now() + chrono::Duration::minutes(5)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES ((SELECT id FROM users WHERE email = ?), ?, ?, ?)")
             .bind(email)
             .bind(PURPOSE_LOGIN_2FA).bind(code2).bind(expires_at2).execute(&state.db).await.unwrap();
         let result2 = verify_2fa_and_register_device(State(state.clone()), ConnectInfo("127.0.0.1:1".parse().unwrap()), Json(VerifyTfaPayload {
@@ -1282,7 +1299,7 @@ mod tests {
 
         assert_eq!(count_new_ip_alerts(&state, email).await, 0, "aucune alerte 'nouvelle IP' pour le tout premier login d'un appareil");
 
-        let ip_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_email = ?")
+        let ip_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)")
             .bind("device-baseline").bind(email).fetch_one(&state.db).await.unwrap();
         assert_eq!(ip_count, 1, "la toute première IP doit tout de même être enregistrée comme référence");
     }
@@ -1309,7 +1326,7 @@ mod tests {
             .expect("le login doit réussir");
 
         assert_eq!(count_new_ip_alerts(&state, email).await, 0, "une IP déjà connue ne doit jamais déclencher d'alerte");
-        let ip_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_email = ?")
+        let ip_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)")
             .bind("device-sameip").bind(email).fetch_one(&state.db).await.unwrap();
         assert_eq!(ip_count, 1, "aucune nouvelle ligne pour une IP déjà connue");
     }
@@ -1345,7 +1362,7 @@ mod tests {
             count_new_ip_alerts(&state, email).await, 0,
             "un port TCP source différent ne doit jamais être confondu avec une IP différente"
         );
-        let ip_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_email = ?")
+        let ip_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)")
             .bind("device-sameipdiffport").bind(email).fetch_one(&state.db).await.unwrap();
         assert_eq!(ip_count, 1, "l'adresse IP (sans le port) doit être reconnue comme déjà connue");
     }
@@ -1373,7 +1390,7 @@ mod tests {
             .expect("le login doit réussir malgré l'IP inhabituelle (jamais bloquant)");
 
         assert_eq!(count_new_ip_alerts(&state, email).await, 1, "une IP jamais vue sur un appareil déjà approuvé doit déclencher l'alerte");
-        let ip_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_email = ?")
+        let ip_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)")
             .bind("device-newip").bind(email).fetch_one(&state.db).await.unwrap();
         assert_eq!(ip_count, 2, "la nouvelle IP doit s'ajouter aux IP déjà connues pour cet appareil");
     }
@@ -1411,7 +1428,7 @@ mod tests {
         login_from("203.0.113.1:1", state.clone()).await;
         assert_eq!(count_new_ip_alerts(&state, email).await, 1, "audit toujours journalisé, même throttlé");
         let alert_at_1: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
-            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_email = ?",
+            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)",
         )
         .bind("device-cooldown").bind(email).fetch_one(&state.db).await.unwrap();
         assert!(alert_at_1.is_some(), "la première alerte doit renseigner last_ip_alert_at");
@@ -1421,7 +1438,7 @@ mod tests {
         login_from("203.0.113.2:1", state.clone()).await;
         assert_eq!(count_new_ip_alerts(&state, email).await, 2, "l'audit continue d'enregistrer CHAQUE nouvelle IP");
         let alert_at_2: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
-            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_email = ?",
+            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)",
         )
         .bind("device-cooldown").bind(email).fetch_one(&state.db).await.unwrap();
         assert_eq!(alert_at_2, alert_at_1, "dans la fenêtre de cooldown, l'email ne doit PAS être re-déclenché");
@@ -1433,16 +1450,16 @@ mod tests {
         // n'a qu'une précision à la SECONDE (voir la fenêtre glissante des 5 IP plus bas, même
         // limite) — un test rapide pourrait sinon comparer deux horodatages arrondis à la même
         // seconde et échouer par flakiness, sans rapport avec un vrai bug.
-        sqlx::query("UPDATE trusted_devices SET last_ip_alert_at = datetime('now', '-25 hours') WHERE device_id = ? AND user_email = ?")
+        sqlx::query("UPDATE trusted_devices SET last_ip_alert_at = datetime('now', '-25 hours') WHERE device_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)")
             .bind("device-cooldown").bind(email).execute(&state.db).await.unwrap();
         let backdated: chrono::NaiveDateTime = sqlx::query_scalar(
-            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_email = ?",
+            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)",
         )
         .bind("device-cooldown").bind(email).fetch_one(&state.db).await.unwrap();
         login_from("203.0.113.3:1", state.clone()).await;
         assert_eq!(count_new_ip_alerts(&state, email).await, 3);
         let alert_at_3: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
-            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_email = ?",
+            "SELECT last_ip_alert_at FROM trusted_devices WHERE device_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)",
         )
         .bind("device-cooldown").bind(email).fetch_one(&state.db).await.unwrap();
         assert!(alert_at_3.unwrap() > backdated, "une fois le cooldown écoulé, l'email doit pouvoir se re-déclencher");
@@ -1472,7 +1489,7 @@ mod tests {
                 .expect("le login doit réussir");
         }
 
-        let ip_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_email = ?")
+        let ip_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_device_ips WHERE device_id = ? AND user_id = (SELECT id FROM users WHERE email = ?)")
             .bind("device-window").bind(email).fetch_one(&state.db).await.unwrap();
         assert_eq!(ip_count, 5, "seules les 5 IP les plus récentes doivent être conservées par appareil");
     }

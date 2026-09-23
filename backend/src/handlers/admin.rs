@@ -63,13 +63,17 @@ pub async fn list_users(
     // lignes (une par entrée ET par pièce jointe) et fausserait les totaux sans un GROUP BY
     // acrobatique. Deux petites requêtes agrégées, lues dans des tables de correspondance, restent
     // plus simples à relire — et le panneau Administration n'est pas un chemin chaud.
+    // JOIN vers `users` : ces tables ne stockent plus qu'un `user_id` (voir migration
+    // 20260923000000_users_numeric_id.sql), la jointure reconstitue l'email — clé encore utilisée
+    // par les HashMap ci-dessous, pour ne rien changer au reste de cette fonction ni à
+    // `AdminUserView` (qui n'expose que l'email, jamais l'id interne).
     let entry_counts: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT user_email, COUNT(*) FROM vault WHERE deleted_at IS NULL GROUP BY user_email",
+        "SELECT u.email, COUNT(*) FROM vault v JOIN users u ON u.id = v.user_id WHERE v.deleted_at IS NULL GROUP BY u.email",
     )
     .fetch_all(&state.db)
     .await?;
     let attachment_sizes: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT user_email, COALESCE(SUM(content_size), 0) FROM vault_attachments GROUP BY user_email",
+        "SELECT u.email, COALESCE(SUM(v.content_size), 0) FROM vault_attachments v JOIN users u ON u.id = v.user_id GROUP BY u.email",
     )
     .fetch_all(&state.db)
     .await?;
@@ -79,7 +83,7 @@ pub async fn list_users(
     // mois et un compte inactif depuis onze jours seraient indiscernables : tous deux « aucune
     // trace ». C'est justement la distinction qu'on cherche.
     let last_seen: Vec<(String, String)> = sqlx::query_as(
-        "SELECT user_email, MAX(last_seen) FROM account_ip_history GROUP BY user_email",
+        "SELECT u.email, MAX(h.last_seen) FROM account_ip_history h JOIN users u ON u.id = h.user_id GROUP BY u.email",
     )
     .fetch_all(&state.db)
     .await?;
@@ -263,8 +267,9 @@ pub async fn admin_update_user_email(
 
     // Invalidation forcée des sessions, même raison que le changement d'email en libre-service
     // (voir handlers/auth/account.rs::update_email) : le compte doit se reconnecter sous sa
-    // nouvelle adresse.
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?")
+    // nouvelle adresse. L'id ne change jamais lors d'un UPDATE email, donc on peut le résoudre
+    // depuis la nouvelle adresse (déjà en base ci-dessus).
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = ?)")
         .bind(&new_email)
         .execute(&mut *tx)
         .await?;
@@ -487,7 +492,7 @@ pub async fn revoke_user_sessions(
 
     let mut tx = state.db.begin().await?;
 
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?")
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = ?)")
         .bind(&target_email)
         .execute(&mut *tx)
         .await?;
@@ -639,15 +644,32 @@ pub async fn get_user_ip_history(
     }
     let target_email = target_email.to_lowercase();
 
+    // Compte inexistant : aucune ligne account_ip_history n'a jamais pu être écrite pour lui,
+    // donc une réponse vide — même comportement silencieux que l'ancienne requête filtrée par
+    // email (pas de NotFound ici, ce n'était déjà pas le cas avant la migration vers user_id).
+    let target_id: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+        .bind(&target_email)
+        .fetch_optional(&state.db)
+        .await?;
+
     // Plafond dur : un compte visé par une rotation d'adresses pourrait sinon renvoyer une réponse
     // sans borne. 500 adresses distinctes dépassent de très loin tout usage réel, et la purge de
     // maintenance ramène de toute façon la table sous ce seuil (voir maintenance.rs).
-    let history = sqlx::query_as::<_, crate::models::UserIpHistoryEntry>(
-        "SELECT h.ip_address,                 h.first_seen,                 h.last_seen,                 h.event_count,                 h.success_count,                 h.failure_count,                 (SELECT COUNT(*) FROM account_ip_history AS o                   WHERE o.ip_address = h.ip_address AND o.user_email <> h.user_email) AS other_accounts            FROM account_ip_history AS h           WHERE h.user_email = ?           ORDER BY h.last_seen DESC           LIMIT 500",
-    )
-    .bind(&target_email)
-    .fetch_all(&state.db)
-    .await?;
+    let history = if let Some(target_id) = target_id {
+        sqlx::query_as::<_, crate::models::UserIpHistoryEntry>(
+            "SELECT h.ip_address, h.first_seen, h.last_seen, h.event_count, h.success_count, h.failure_count, \
+                    (SELECT COUNT(*) FROM account_ip_history AS o \
+                      WHERE o.ip_address = h.ip_address AND o.user_id <> h.user_id) AS other_accounts \
+               FROM account_ip_history AS h \
+              WHERE h.user_id = ? \
+              ORDER BY h.last_seen DESC LIMIT 500",
+        )
+        .bind(target_id)
+        .fetch_all(&state.db)
+        .await?
+    } else {
+        Vec::new()
+    };
 
     // Résolution de l'origine APRÈS la requête, en mémoire : la base MMDB est déjà chargée (voir
     // geoip.rs), donc chaque adresse coûte une lecture d'arbre, sans I/O ni réseau. Inerte tant
@@ -979,7 +1001,7 @@ pub async fn update_suspended(
     }
 
     if payload.is_suspended {
-        sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?")
+        sqlx::query("DELETE FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind(&target_email)
             .execute(&mut *tx)
             .await?;
@@ -1049,7 +1071,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_audit_logs_requires_admin() {
         let state = build_test_state().await;
-        let user = AuthUser { email: "simple_user@example.com".to_string(), is_moderator: false };
+        let user = AuthUser { user_id: -1, email: "simple_user@example.com".to_string(), is_moderator: false };
 
         let result = get_audit_logs(State(state.clone()), user).await;
         assert!(
@@ -1081,7 +1103,7 @@ mod tests {
             .await
             .unwrap();
 
-        let admin = AuthUser { email: "admin@example.com".to_string(), is_moderator: true };
+        let admin = AuthUser { user_id: -1, email: "admin@example.com".to_string(), is_moderator: true };
         let result = get_audit_logs(State(state.clone()), admin).await;
         assert!(result.is_ok(), "un administrateur doit pouvoir consulter les logs");
     }
@@ -1132,11 +1154,11 @@ mod tests {
         register_test_user(&state, "userone@example.com", false).await;
         register_test_user(&state, "usertwo@example.com", true).await;
 
-        let non_admin = AuthUser { email: "userone@example.com".to_string(), is_moderator: false };
+        let non_admin = AuthUser { user_id: -1, email: "userone@example.com".to_string(), is_moderator: false };
         let denied = list_users(State(state.clone()), non_admin).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un non-admin ne doit pas pouvoir lister les comptes");
 
-        let admin = AuthUser { email: "usertwo@example.com".to_string(), is_moderator: true };
+        let admin = AuthUser { user_id: -1, email: "usertwo@example.com".to_string(), is_moderator: true };
         let result = list_users(State(state.clone()), admin).await.expect("un admin doit pouvoir lister les comptes");
         let bytes = axum::body::to_bytes(result.into_response().into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1156,7 +1178,7 @@ mod tests {
         register_test_user(&state, "moderator@example.com", true).await;
         register_test_user(&state, "regular@example.com", false).await;
 
-        let admin = AuthUser { email: "owner@example.com".to_string(), is_moderator: true };
+        let admin = AuthUser { user_id: -1, email: "owner@example.com".to_string(), is_moderator: true };
         let result = list_users(State(state.clone()), admin).await.expect("le premier admin doit pouvoir lister les comptes");
         let bytes = axum::body::to_bytes(result.into_response().into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1176,7 +1198,7 @@ mod tests {
         register_test_user(&state, "admin@example.com", true).await;
         register_test_user(&state, "target@example.com", false).await;
 
-        let non_admin = AuthUser { email: "target@example.com".to_string(), is_moderator: false };
+        let non_admin = AuthUser { user_id: -1, email: "target@example.com".to_string(), is_moderator: false };
         let denied = update_user_role(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), non_admin,
             Path("admin@example.com".to_string()), Json(UpdateUserRolePayload { is_moderator: false }),
@@ -1186,7 +1208,7 @@ mod tests {
         // Auto-modification refusée, même pour le premier admin
         let self_mod = update_user_role(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "admin@example.com".to_string(), is_moderator: true },
             Path("admin@example.com".to_string()), Json(UpdateUserRolePayload { is_moderator: false }),
         ).await;
         assert!(matches!(self_mod, Err(AppError::ValidationError(_))), "le premier admin ne doit pas pouvoir modifier son propre rôle");
@@ -1194,7 +1216,7 @@ mod tests {
         // Promotion réelle d'un autre compte, par le premier admin
         update_user_role(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "admin@example.com".to_string(), is_moderator: true },
             Path("target@example.com".to_string()), Json(UpdateUserRolePayload { is_moderator: true }),
         ).await.expect("la promotion doit réussir");
 
@@ -1220,7 +1242,7 @@ mod tests {
         // Un AUTRE admin ne doit pouvoir NI promouvoir...
         let denied_promote = update_user_role(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("regular@example.com".to_string()), Json(UpdateUserRolePayload { is_moderator: true }),
         ).await;
         assert!(matches!(denied_promote, Err(AppError::Forbidden)), "seul le premier admin peut promouvoir quelqu'un");
@@ -1228,7 +1250,7 @@ mod tests {
         // ... NI rétrograder, même le premier admin lui-même.
         let denied_demote = update_user_role(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("owner@example.com".to_string()), Json(UpdateUserRolePayload { is_moderator: false }),
         ).await;
         assert!(matches!(denied_demote, Err(AppError::Forbidden)), "seul le premier admin peut rétrograder quelqu'un");
@@ -1243,7 +1265,7 @@ mod tests {
         // Le PREMIER admin, lui, peut promouvoir normalement.
         update_user_role(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "owner@example.com".to_string(), is_moderator: true },
             Path("regular@example.com".to_string()), Json(UpdateUserRolePayload { is_moderator: true }),
         ).await.expect("le premier admin doit pouvoir promouvoir quelqu'un");
     }
@@ -1253,7 +1275,7 @@ mod tests {
     async fn test_update_user_role_unknown_target_not_found() {
         let state = build_test_state_with_admin_email("admin@example.com").await;
         register_test_user(&state, "admin@example.com", true).await;
-        let admin = AuthUser { email: "admin@example.com".to_string(), is_moderator: true };
+        let admin = AuthUser { user_id: -1, email: "admin@example.com".to_string(), is_moderator: true };
 
         let result = update_user_role(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), admin,
@@ -1272,7 +1294,7 @@ mod tests {
         register_test_user(&state, "admin@example.com", true).await;
         register_test_user(&state, "target@example.com", false).await;
 
-        sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO refresh_tokens (token, user_id, device_id, expires_at, is_persistent) VALUES (?, (SELECT id FROM users WHERE email = ?), ?, ?, ?)")
             .bind("token-target")
             .bind("target@example.com")
             .bind("device-target")
@@ -1282,17 +1304,17 @@ mod tests {
             .await
             .unwrap();
 
-        let non_admin = AuthUser { email: "target@example.com".to_string(), is_moderator: false };
+        let non_admin = AuthUser { user_id: -1, email: "target@example.com".to_string(), is_moderator: false };
         let denied = admin_update_user_email(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), non_admin,
             Path("admin@example.com".to_string()), Json(AdminUpdateEmailPayload { new_email: "hacked@example.com".to_string() }),
         ).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un non-admin ne doit pas pouvoir changer l'email d'un compte");
 
-        let admin = AuthUser { email: "admin@example.com".to_string(), is_moderator: true };
+        let admin = AuthUser { user_id: -1, email: "admin@example.com".to_string(), is_moderator: true };
         let self_mod = admin_update_user_email(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "admin@example.com".to_string(), is_moderator: true },
             Path("admin@example.com".to_string()), Json(AdminUpdateEmailPayload { new_email: "nouveau-admin@example.com".to_string() }),
         ).await;
         assert!(matches!(self_mod, Err(AppError::ValidationError(_))), "un admin ne doit pas pouvoir changer son propre email via cet endpoint");
@@ -1303,7 +1325,7 @@ mod tests {
         ).await;
         assert!(matches!(unknown, Err(AppError::NotFound)), "un email cible inconnu doit renvoyer NotFound");
 
-        let admin = AuthUser { email: "admin@example.com".to_string(), is_moderator: true };
+        let admin = AuthUser { user_id: -1, email: "admin@example.com".to_string(), is_moderator: true };
         admin_update_user_email(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), admin,
             Path("target@example.com".to_string()), Json(AdminUpdateEmailPayload { new_email: "renomme@example.com".to_string() }),
@@ -1316,7 +1338,7 @@ mod tests {
             .bind("renomme@example.com").fetch_one(&state.db).await.unwrap();
         assert_eq!(new_exists, 1, "le nouvel email doit exister");
 
-        let remaining_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_email = ?")
+        let remaining_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind("renomme@example.com").fetch_one(&state.db).await.unwrap();
         assert_eq!(remaining_sessions, 0, "les sessions doivent être invalidées après un changement d'email par un admin");
 
@@ -1338,27 +1360,27 @@ mod tests {
 
         admin_update_user_email(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("regular@example.com".to_string()), Json(AdminUpdateEmailPayload { new_email: "regular-renomme@example.com".to_string() }),
         ).await.expect("un admin normal doit pouvoir changer l'email d'un compte non-admin");
 
         let denied = admin_update_user_email(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("another-admin@example.com".to_string()), Json(AdminUpdateEmailPayload { new_email: "vole@example.com".to_string() }),
         ).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un admin normal ne doit pas pouvoir changer l'email d'un autre admin");
 
         let denied_owner = admin_update_user_email(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("owner@example.com".to_string()), Json(AdminUpdateEmailPayload { new_email: "vole@example.com".to_string() }),
         ).await;
         assert!(matches!(denied_owner, Err(AppError::Forbidden)), "le premier admin ne doit jamais pouvoir se faire changer son email par quelqu'un d'autre");
 
         admin_update_user_email(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "owner@example.com".to_string(), is_moderator: true },
             Path("another-admin@example.com".to_string()), Json(AdminUpdateEmailPayload { new_email: "another-admin-renomme@example.com".to_string() }),
         ).await.expect("le premier admin doit pouvoir changer l'email d'un autre admin");
     }
@@ -1373,7 +1395,7 @@ mod tests {
         register_test_user(&state, "bystander@example.com", false).await;
 
         for (owner, device) in [("target@example.com", "device-a"), ("bystander@example.com", "device-b")] {
-            sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO refresh_tokens (token, user_id, device_id, expires_at, is_persistent) VALUES (?, (SELECT id FROM users WHERE email = ?), ?, ?, ?)")
                 .bind(format!("token-{device}"))
                 .bind(owner)
                 .bind(device)
@@ -1384,19 +1406,19 @@ mod tests {
                 .unwrap();
         }
 
-        let non_admin = AuthUser { email: "bystander@example.com".to_string(), is_moderator: false };
+        let non_admin = AuthUser { user_id: -1, email: "bystander@example.com".to_string(), is_moderator: false };
         let denied = revoke_user_sessions(State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), non_admin, Path("target@example.com".to_string())).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un non-admin ne doit pas pouvoir révoquer les sessions d'un compte");
 
-        let admin = AuthUser { email: "admin@example.com".to_string(), is_moderator: true };
+        let admin = AuthUser { user_id: -1, email: "admin@example.com".to_string(), is_moderator: true };
         revoke_user_sessions(State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), admin, Path("target@example.com".to_string()))
             .await.expect("la révocation par un admin doit réussir");
 
-        let target_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_email = ?")
+        let target_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind("target@example.com").fetch_one(&state.db).await.unwrap();
         assert_eq!(target_sessions, 0, "les sessions de la cible doivent être révoquées");
 
-        let bystander_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_email = ?")
+        let bystander_sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind("bystander@example.com").fetch_one(&state.db).await.unwrap();
         assert_eq!(bystander_sessions, 1, "les sessions d'un AUTRE compte ne doivent jamais être touchées");
     }
@@ -1409,25 +1431,28 @@ mod tests {
         register_test_user(&state, "admin@example.com", true).await;
         register_test_user(&state, "target@example.com", false).await;
 
-        sqlx::query("INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_email) VALUES (?, ?, ?, ?, ?)")
-            .bind("vault-id-1").bind("Site").bind("chiffre").bind("email").bind("target@example.com")
+        let target_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+            .bind("target@example.com").fetch_one(&state.db).await.unwrap();
+
+        sqlx::query("INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_id) VALUES (?, ?, ?, ?, ?)")
+            .bind("vault-id-1").bind("Site").bind("chiffre").bind("email").bind(target_id)
             .execute(&state.db).await.unwrap();
-        sqlx::query("INSERT OR REPLACE INTO trusted_devices (device_id, user_email) VALUES (?, ?)")
-            .bind("device-x").bind("target@example.com")
+        sqlx::query("INSERT OR REPLACE INTO trusted_devices (device_id, user_id) VALUES (?, ?)")
+            .bind("device-x").bind(target_id)
             .execute(&state.db).await.unwrap();
 
-        let non_admin = AuthUser { email: "target@example.com".to_string(), is_moderator: false };
+        let non_admin = AuthUser { user_id: -1, email: "target@example.com".to_string(), is_moderator: false };
         let denied = delete_user(State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), non_admin, Path("target@example.com".to_string())).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un non-admin ne doit pas pouvoir supprimer un compte");
 
         let self_delete = delete_user(
             State(state.clone()), ConnectInfo(addr()),
-            HeaderMap::new(), AuthUser { email: "admin@example.com".to_string(), is_moderator: true },
+            HeaderMap::new(), AuthUser { user_id: -1, email: "admin@example.com".to_string(), is_moderator: true },
             Path("admin@example.com".to_string()),
         ).await;
         assert!(matches!(self_delete, Err(AppError::ValidationError(_))), "un admin ne doit pas pouvoir se supprimer lui-même via cet endpoint");
 
-        let admin = AuthUser { email: "admin@example.com".to_string(), is_moderator: true };
+        let admin = AuthUser { user_id: -1, email: "admin@example.com".to_string(), is_moderator: true };
         delete_user(State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), admin, Path("target@example.com".to_string()))
             .await.expect("la suppression par un admin doit réussir");
 
@@ -1435,12 +1460,12 @@ mod tests {
             .bind("target@example.com").fetch_one(&state.db).await.unwrap();
         assert_eq!(remaining_user, 0, "le compte doit avoir été supprimé");
 
-        let remaining_vault: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_email = ?")
-            .bind("target@example.com").fetch_one(&state.db).await.unwrap();
+        let remaining_vault: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_id = ?")
+            .bind(target_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(remaining_vault, 0, "le coffre du compte supprimé doit disparaître (ON DELETE CASCADE)");
 
-        let remaining_devices: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_devices WHERE user_email = ?")
-            .bind("target@example.com").fetch_one(&state.db).await.unwrap();
+        let remaining_devices: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_devices WHERE user_id = ?")
+            .bind(target_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(remaining_devices, 0, "les appareils de confiance du compte supprimé doivent disparaître");
 
         // L'événement doit être tracé sous l'email de la CIBLE (voir le commentaire dans
@@ -1456,7 +1481,7 @@ mod tests {
     async fn test_delete_user_unknown_target_not_found() {
         let state = build_test_state().await;
         register_test_user(&state, "admin@example.com", true).await;
-        let admin = AuthUser { email: "admin@example.com".to_string(), is_moderator: true };
+        let admin = AuthUser { user_id: -1, email: "admin@example.com".to_string(), is_moderator: true };
 
         let result = delete_user(State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), admin, Path("personne@example.com".to_string())).await;
         assert!(matches!(result, Err(AppError::NotFound)), "un email inconnu doit renvoyer NotFound");
@@ -1475,14 +1500,14 @@ mod tests {
         // Un admin normal PEUT supprimer un compte non-admin.
         delete_user(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("regular@example.com".to_string()),
         ).await.expect("un admin normal doit pouvoir supprimer un compte non-admin");
 
         // Un admin normal NE PEUT PAS supprimer un AUTRE admin.
         let denied = delete_user(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("another-admin@example.com".to_string()),
         ).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un admin normal ne doit pas pouvoir supprimer un autre admin");
@@ -1490,7 +1515,7 @@ mod tests {
         // PERSONNE ne peut supprimer le premier admin — même un autre admin qui essaierait.
         let denied_owner = delete_user(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("owner@example.com".to_string()),
         ).await;
         assert!(matches!(denied_owner, Err(AppError::Forbidden)), "le premier admin ne doit jamais pouvoir être supprimé");
@@ -1498,7 +1523,7 @@ mod tests {
         // Le PREMIER admin, lui, peut supprimer un autre admin.
         delete_user(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "owner@example.com".to_string(), is_moderator: true },
             Path("another-admin@example.com".to_string()),
         ).await.expect("le premier admin doit pouvoir supprimer un autre admin");
     }
@@ -1515,27 +1540,27 @@ mod tests {
 
         revoke_user_sessions(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("regular@example.com".to_string()),
         ).await.expect("un admin normal doit pouvoir révoquer les sessions d'un compte non-admin");
 
         let denied = revoke_user_sessions(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("another-admin@example.com".to_string()),
         ).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un admin normal ne doit pas pouvoir révoquer les sessions d'un autre admin");
 
         let denied_owner = revoke_user_sessions(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("owner@example.com".to_string()),
         ).await;
         assert!(matches!(denied_owner, Err(AppError::Forbidden)), "le premier admin ne doit jamais pouvoir être ciblé, même pour révoquer ses sessions");
 
         revoke_user_sessions(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "owner@example.com".to_string(), is_moderator: true },
             Path("another-admin@example.com".to_string()),
         ).await.expect("le premier admin doit pouvoir révoquer les sessions d'un autre admin");
     }
@@ -1551,20 +1576,20 @@ mod tests {
 
         update_extension_email_change_setting(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("regular@example.com".to_string()), Json(UpdateExtensionEmailChangePayload { enabled: true }),
         ).await.expect("un admin normal doit pouvoir régler ce paramètre pour un compte non-admin");
 
         let denied = update_extension_email_change_setting(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("another-admin@example.com".to_string()), Json(UpdateExtensionEmailChangePayload { enabled: true }),
         ).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un admin normal ne doit pas pouvoir régler ce paramètre pour un autre admin");
 
         let denied_owner = update_extension_email_change_setting(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Path("owner@example.com".to_string()), Json(UpdateExtensionEmailChangePayload { enabled: true }),
         ).await;
         assert!(matches!(denied_owner, Err(AppError::Forbidden)), "le premier admin ne doit jamais pouvoir être ciblé par ce réglage");
@@ -1580,14 +1605,14 @@ mod tests {
 
         let denied = update_extension_email_change_setting_all(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "other-admin@example.com".to_string(), is_moderator: true },
             Json(UpdateExtensionEmailChangePayload { enabled: true }),
         ).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un admin normal ne doit pas pouvoir activer ce réglage pour tout le monde");
 
         update_extension_email_change_setting_all(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "owner@example.com".to_string(), is_moderator: true },
             Json(UpdateExtensionEmailChangePayload { enabled: true }),
         ).await.expect("le premier admin doit pouvoir activer ce réglage pour tout le monde");
     }
@@ -1606,21 +1631,21 @@ mod tests {
 
         let denied = update_server_choice_in_settings(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "moderator@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "moderator@example.com".to_string(), is_moderator: true },
             Path("regular@example.com".to_string()), Json(UpdateServerChoiceInSettingsPayload { enabled: true }),
         ).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un modérateur non-admin ne doit jamais pouvoir régler ce paramètre, même pour un compte non-modérateur");
 
         let denied_on_self = update_server_choice_in_settings(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "owner@example.com".to_string(), is_moderator: true },
             Path("owner@example.com".to_string()), Json(UpdateServerChoiceInSettingsPayload { enabled: true }),
         ).await;
         assert!(matches!(denied_on_self, Err(AppError::Forbidden)), "l'Admin ne peut pas être la cible de ce réglage, même par lui-même (il y est toujours autorisé indépendamment de la colonne)");
 
         update_server_choice_in_settings(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "owner@example.com".to_string(), is_moderator: true },
             Path("moderator@example.com".to_string()), Json(UpdateServerChoiceInSettingsPayload { enabled: true }),
         ).await.expect("l'Admin doit pouvoir régler ce paramètre pour n'importe quel compte, modérateur compris");
     }
@@ -1635,14 +1660,14 @@ mod tests {
 
         let denied = update_server_choice_in_settings_all(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "moderator@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "moderator@example.com".to_string(), is_moderator: true },
             Json(UpdateServerChoiceInSettingsPayload { enabled: true }),
         ).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un modérateur non-admin ne doit pas pouvoir activer ce réglage pour tout le monde");
 
         update_server_choice_in_settings_all(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "owner@example.com".to_string(), is_moderator: true },
             Json(UpdateServerChoiceInSettingsPayload { enabled: true }),
         ).await.expect("l'Admin doit pouvoir activer ce réglage pour tout le monde");
     }
@@ -1658,14 +1683,14 @@ mod tests {
 
         let denied = update_server_choice_at_login(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "moderator@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "moderator@example.com".to_string(), is_moderator: true },
             Json(UpdateServerChoiceAtLoginPayload { enabled: true }),
         ).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "un modérateur non-admin ne doit pas pouvoir changer ce réglage global");
 
         update_server_choice_at_login(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "owner@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "owner@example.com".to_string(), is_moderator: true },
             Json(UpdateServerChoiceAtLoginPayload { enabled: true }),
         ).await.expect("l'Admin doit pouvoir changer ce réglage global");
 
@@ -1748,11 +1773,11 @@ mod tests {
     #[tokio::test]
     async fn test_suspending_account_revokes_its_sessions() {
         let state = build_test_state().await;
-        let admin = AuthUser { email: "boss@example.com".to_string(), is_moderator: true };
+        let admin = AuthUser { user_id: -1, email: "boss@example.com".to_string(), is_moderator: true };
         register_test_user(&state, &admin.email, true).await;
         register_test_user(&state, "cible@example.com", false).await;
 
-        sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, 0)")
+        sqlx::query("INSERT INTO refresh_tokens (token, user_id, device_id, expires_at, is_persistent) VALUES (?, (SELECT id FROM users WHERE email = ?), ?, ?, 0)")
             .bind("un-hash-de-token")
             .bind("cible@example.com")
             .bind("dev")
@@ -1779,7 +1804,7 @@ mod tests {
             .unwrap();
         assert!(suspended, "le compte doit être marqué suspendu");
 
-        let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_email = ?")
+        let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = (SELECT id FROM users WHERE email = ?)")
             .bind("cible@example.com")
             .fetch_one(&state.db)
             .await
@@ -1803,7 +1828,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(ctrl_addr()),
             HeaderMap::new(),
-            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "moderateur@example.com".to_string(), is_moderator: true },
             Path(admin_email.to_string()),
             Json(UpdateSuspendedPayload { is_suspended: true }),
         )
@@ -1815,7 +1840,7 @@ mod tests {
     #[tokio::test]
     async fn test_registration_setting_refused_to_moderators() {
         let state = build_test_state().await;
-        let moderator = || AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true };
+        let moderator = || AuthUser { user_id: -1, email: "moderateur@example.com".to_string(), is_moderator: true };
 
         let r1 = update_registration_open(
             State(state.clone()), ConnectInfo(ctrl_addr()), HeaderMap::new(), moderator(),
@@ -1840,7 +1865,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr()),
             HeaderMap::new(),
-            AuthUser { email: "boss@example.com".to_string(), is_moderator: caller_is_moderator },
+            AuthUser { user_id: -1, email: "boss@example.com".to_string(), is_moderator: caller_is_moderator },
             Path(target.to_string()),
         ).await.expect("la consultation doit réussir");
         let bytes = axum::body::to_bytes(result.into_response().into_body(), usize::MAX).await.unwrap();
@@ -1856,7 +1881,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr()),
             HeaderMap::new(),
-            AuthUser { email: "curieux@example.com".to_string(), is_moderator: false },
+            AuthUser { user_id: -1, email: "curieux@example.com".to_string(), is_moderator: false },
             Path("cible@example.com".to_string()),
         ).await;
         assert!(matches!(result, Err(AppError::Forbidden)), "un non-modérateur ne doit pas voir les IP");
@@ -1972,7 +1997,7 @@ mod tests {
     }
 
     fn admin_user(email: &str) -> AuthUser {
-        AuthUser { email: email.to_string(), is_moderator: true }
+        AuthUser { user_id: -1, email: email.to_string(), is_moderator: true }
     }
 
     /// Régler un quota doit être réservé à l'Admin, et un quota négatif refusé.
@@ -1983,7 +2008,7 @@ mod tests {
 
         let refus = update_quotas(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "moderateur@example.com".to_string(), is_moderator: true },
             Path("cible@example.com".to_string()),
             Json(UpdateQuotasPayload { max_vault_entries: Some(Some(10)), max_attachments: Some(None) }),
         ).await;
@@ -2149,7 +2174,7 @@ mod tests {
 
         let refus = vacuum_database(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "moderateur@example.com".to_string(), is_moderator: true },
         ).await;
         assert!(matches!(refus, Err(AppError::Forbidden)), "un modérateur ne compacte pas la base");
 
@@ -2183,7 +2208,7 @@ mod tests {
 
         let reponse = export_audit_logs_csv(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "moderateur@example.com".to_string(), is_moderator: true },
         ).await.expect("l'export doit réussir");
         let bytes = axum::body::to_bytes(reponse.into_response().into_body(), usize::MAX).await.unwrap();
         let csv = String::from_utf8(bytes.to_vec()).unwrap();
@@ -2202,7 +2227,7 @@ mod tests {
         let state = build_test_state().await;
         let r = export_audit_logs_csv(
             State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-            AuthUser { email: "curieux@example.com".to_string(), is_moderator: false },
+            AuthUser { user_id: -1, email: "curieux@example.com".to_string(), is_moderator: false },
         ).await;
         assert!(matches!(r, Err(AppError::Forbidden)));
     }
@@ -2237,7 +2262,7 @@ mod tests {
         let state = build_test_state().await;
         let refus = get_server_health(
             State(state.clone()),
-            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "moderateur@example.com".to_string(), is_moderator: true },
         )
         .await;
         assert!(matches!(refus, Err(AppError::Forbidden)), "un modérateur ne doit pas voir l'état du serveur");
@@ -2259,7 +2284,7 @@ mod tests {
 
         let reponse = get_server_health(
             State(state.clone()),
-            AuthUser { email: admin_email.to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: admin_email.to_string(), is_moderator: true },
         )
         .await
         .expect("l'Admin doit pouvoir consulter l'état");
@@ -2291,7 +2316,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr()),
             HeaderMap::new(),
-            AuthUser { email: "moderateur@example.com".to_string(), is_moderator: true },
+            AuthUser { user_id: -1, email: "moderateur@example.com".to_string(), is_moderator: true },
             Path("surveille@example.com".to_string()),
         )
         .await
@@ -2321,7 +2346,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr()),
             HeaderMap::new(),
-            AuthUser { email: "curieux@example.com".to_string(), is_moderator: false },
+            AuthUser { user_id: -1, email: "curieux@example.com".to_string(), is_moderator: false },
             Path("cible@example.com".to_string()),
         )
         .await;
@@ -2343,12 +2368,16 @@ mod tests {
         register_test_user(&state, "partant@example.com", false).await;
         seen(&state, "partant@example.com", "LOGIN", "10.0.0.42").await;
 
+        let partant_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+            .bind("partant@example.com")
+            .fetch_one(&state.db).await.unwrap();
+
         sqlx::query("DELETE FROM users WHERE email = ?")
             .bind("partant@example.com")
             .execute(&state.db).await.unwrap();
 
-        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_ip_history WHERE user_email = ?")
-            .bind("partant@example.com")
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_ip_history WHERE user_id = ?")
+            .bind(partant_id)
             .fetch_one(&state.db).await.unwrap();
         assert_eq!(left, 0, "l'historique IP doit disparaître avec le compte");
     }

@@ -9,7 +9,12 @@
 # projet), le conteneur n'a plus besoin du moindre accès réseau pour démarrer — juste pour être
 # construit, une fois.
 FROM alpine:3.20
-RUN apk add --no-cache sqlite
+# gnupg : chiffrement optionnel des sauvegardes (voir BACKUP_ENCRYPTION_PASSPHRASE dans
+# scripts/backup.sh et docker-compose.yml) — le fichier .db contient, en plus du coffre chiffré
+# côté client, des métadonnées en clair (emails, IP, noms d'appareils...) qui ne devraient pas
+# quitter le serveur sans protection supplémentaire si ces sauvegardes sont ensuite synchronisées
+# vers un NAS/stockage externe.
+RUN apk add --no-cache sqlite gnupg
 
 COPY scripts/backup.sh /scripts/backup.sh
 RUN chmod +x /scripts/backup.sh

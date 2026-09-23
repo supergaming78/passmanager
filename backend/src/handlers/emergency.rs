@@ -20,7 +20,7 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
-use crate::{AppState, error::AppError, mailer, middleware::AuthUser, repository::{EmergencyRepository, VaultRepository}, models::*};
+use crate::{AppState, error::AppError, mailer, middleware::AuthUser, repository::{EmergencyRepository, VaultRepository, UserRepository}, models::*};
 use validator::Validate;
 use std::net::SocketAddr;
 use axum::extract::ConnectInfo;
@@ -39,7 +39,7 @@ pub async fn upsert_keys(
     Json(payload): Json<UserKeysInput>,
 ) -> Result<impl IntoResponse, AppError> {
     payload.validate()?;
-    EmergencyRepository::upsert_user_keys(&state.db, &user.email, &payload).await?;
+    EmergencyRepository::upsert_user_keys(&state.db, user.user_id, &payload).await?;
     Ok(StatusCode::OK)
 }
 
@@ -67,7 +67,7 @@ pub async fn get_public_key(
 /// N'IMPORTE quel email) : jamais la même route ne doit pouvoir renvoyer une clé privée, même la
 /// sienne, selon le paramètre fourni.
 pub async fn get_own_keys(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
-    let keys = EmergencyRepository::get_own_keys(&state.db, &user.email).await?;
+    let keys = EmergencyRepository::get_own_keys(&state.db, user.user_id).await?;
     Ok(Json(keys))
 }
 
@@ -86,8 +86,10 @@ pub async fn add_contact(
     if contact_email == user.email {
         return Err(AppError::ValidationError("Impossible de se désigner soi-même comme contact de confiance.".to_string()));
     }
+    let contact_id = UserRepository::find_id_by_email(&state.db, &contact_email).await?
+        .ok_or_else(|| AppError::ValidationError("Aucun compte n'existe avec cet email.".to_string()))?;
 
-    let id = EmergencyRepository::add_contact(&state.db, &user.email, &contact_email, payload.waiting_period_days).await?;
+    let id = EmergencyRepository::add_contact(&state.db, user.user_id, contact_id, payload.waiting_period_days).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "EMERGENCY_CONTACT_ADD", addr.to_string(), agent).await;
@@ -103,14 +105,14 @@ pub async fn add_contact(
 
 /// Contacts désignés par l'utilisateur connecté ("les gens en qui j'ai confiance").
 pub async fn list_contacts_as_owner(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
-    let contacts = EmergencyRepository::list_as_owner(&state.db, &user.email).await?;
+    let contacts = EmergencyRepository::list_as_owner(&state.db, user.user_id).await?;
     Ok(Json(contacts))
 }
 
 /// Relations où l'utilisateur connecté est LE CONTACT désigné ("les comptes où on m'a fait
 /// confiance").
 pub async fn list_granted_to_me(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
-    let contacts = EmergencyRepository::list_as_contact(&state.db, &user.email).await?;
+    let contacts = EmergencyRepository::list_as_contact(&state.db, user.user_id).await?;
     Ok(Json(contacts))
 }
 
@@ -122,7 +124,7 @@ pub async fn accept_contact(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    EmergencyRepository::accept(&state.db, &id, &user.email).await?;
+    EmergencyRepository::accept(&state.db, &id, user.user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "EMERGENCY_CONTACT_ACCEPT", addr.to_string(), agent).await;
@@ -136,7 +138,7 @@ pub async fn decline_contact(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    EmergencyRepository::decline(&state.db, &id, &user.email).await?;
+    EmergencyRepository::decline(&state.db, &id, user.user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -150,7 +152,7 @@ pub async fn seed_contact(
     Json(payload): Json<SeedEmergencyKeyPayload>,
 ) -> Result<impl IntoResponse, AppError> {
     payload.validate()?;
-    EmergencyRepository::seed(&state.db, &id, &user.email, &payload.sealed_vault_key).await?;
+    EmergencyRepository::seed(&state.db, &id, user.user_id, &payload.sealed_vault_key).await?;
     Ok(StatusCode::OK)
 }
 
@@ -173,7 +175,7 @@ pub async fn request_access(
 
     let requested_at = chrono::Utc::now().naive_utc();
     let available_at = requested_at + chrono::Duration::days(contact.waiting_period_days);
-    EmergencyRepository::request_access(&state.db, &id, &user.email, requested_at, available_at).await?;
+    EmergencyRepository::request_access(&state.db, &id, user.user_id, requested_at, available_at).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "EMERGENCY_ACCESS_REQUEST", addr.to_string(), agent).await;
@@ -198,7 +200,7 @@ pub async fn approve_access(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    EmergencyRepository::approve(&state.db, &id, &user.email).await?;
+    EmergencyRepository::approve(&state.db, &id, user.user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "EMERGENCY_ACCESS_APPROVE", addr.to_string(), agent).await;
@@ -215,7 +217,7 @@ pub async fn reject_access(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    EmergencyRepository::reject(&state.db, &id, &user.email).await?;
+    EmergencyRepository::reject(&state.db, &id, user.user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "EMERGENCY_ACCESS_REJECT", addr.to_string(), agent).await;
@@ -235,10 +237,10 @@ pub async fn get_emergency_vault(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    EmergencyRepository::maybe_auto_grant(&state.db, &id, &user.email).await?;
+    EmergencyRepository::maybe_auto_grant(&state.db, &id, user.user_id).await?;
 
-    let (owner_email, sealed_vault_key) = EmergencyRepository::get_granted_vault_key(&state.db, &id, &user.email).await?;
-    let entries = VaultRepository::get_all(&state.db, &owner_email, MAX_VAULT_ENTRIES, 0).await?;
+    let (owner_id, owner_email, sealed_vault_key) = EmergencyRepository::get_granted_vault_key(&state.db, &id, user.user_id).await?;
+    let entries = VaultRepository::get_all(&state.db, owner_id, &owner_email, MAX_VAULT_ENTRIES, 0).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "EMERGENCY_VAULT_VIEW", addr.to_string(), agent).await;
@@ -262,7 +264,7 @@ pub async fn revoke_contact(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    EmergencyRepository::revoke(&state.db, &id, &user.email).await?;
+    EmergencyRepository::revoke(&state.db, &id, user.user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "EMERGENCY_CONTACT_REVOKE", addr.to_string(), agent).await;
@@ -339,8 +341,16 @@ mod tests {
         ConnectInfo("127.0.0.1:1".parse().unwrap())
     }
 
-    fn auth(email: &str) -> AuthUser {
-        AuthUser { email: email.to_string(), is_moderator: false }
+    /// Résout l'id (désormais nécessaire sur `AuthUser`) depuis l'email de test — panique si
+    /// l'utilisateur n'a pas été enregistré au préalable via register_test_user(), ce qui est
+    /// toujours le cas dans ces tests.
+    async fn auth(state: &Arc<AppState>, email: &str) -> AuthUser {
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_one(&state.db)
+            .await
+            .expect("l'utilisateur de test doit déjà être enregistré");
+        AuthUser { user_id, email: email.to_string(), is_moderator: false }
     }
 
     async fn read_json_body(response: axum::response::Response) -> serde_json::Value {
@@ -355,7 +365,7 @@ mod tests {
     async fn setup_keys(state: &Arc<AppState>, email: &str) {
         upsert_keys(
             State(state.clone()),
-            auth(email),
+            auth(state, email).await,
             Json(UserKeysInput { public_key: format!("pubkey_{email}"), encrypted_private_key: format!("privkey_chiffre_{email}") }),
         )
         .await
@@ -376,7 +386,7 @@ mod tests {
         // bien visible via l'accès d'urgence.
         VaultRepository::add(
             &state.db,
-            "owner@example.com",
+            auth(&state, "owner@example.com").await.user_id,
             VaultEntryInput {
                 encrypted_site_name: "chiffre_site".to_string(), encrypted_username: None, encrypted_login_email: None,
                 encrypted_folder: None, encrypted_notes: None, encrypted_url: None, password_changed: false, expected_version: None,
@@ -387,30 +397,30 @@ mod tests {
 
         // 0 jour d'attente : la demande d'accès doit pouvoir s'auto-accorder immédiatement.
         let add_result = add_contact(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner@example.com").await,
             Json(AddEmergencyContactPayload { contact_email: "contact@example.com".to_string(), waiting_period_days: 0 }),
         ).await.expect("l'ajout du contact doit réussir");
         let id = read_json_body(add_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         // Avant acceptation : le contact ne peut ni sceller (c'est le propriétaire qui scelle) ni
         // demander l'accès.
-        let premature = request_access(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact@example.com"), Path(id.clone())).await;
+        let premature = request_access(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact@example.com").await, Path(id.clone())).await;
         assert!(premature.is_err(), "impossible de demander l'accès avant d'avoir accepté l'invitation");
 
-        accept_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact@example.com"), Path(id.clone()))
+        accept_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact@example.com").await, Path(id.clone()))
             .await.expect("l'acceptation doit réussir");
 
         seed_contact(
-            State(state.clone()), auth("owner@example.com"), Path(id.clone()),
+            State(state.clone()), auth(&state, "owner@example.com").await, Path(id.clone()),
             Json(SeedEmergencyKeyPayload { sealed_vault_key: "blob_scelle_pour_contact".to_string() }),
         ).await.expect("le scellement doit réussir");
 
-        request_access(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact@example.com"), Path(id.clone()))
+        request_access(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact@example.com").await, Path(id.clone()))
             .await.expect("la demande d'accès doit réussir");
 
         // Personne n'approuve ni ne refuse : après le délai (ici 0 jour, donc immédiatement), la
         // consultation doit fonctionner grâce à la promotion paresseuse (maybe_auto_grant).
-        let vault_result = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact@example.com"), Path(id.clone()))
+        let vault_result = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact@example.com").await, Path(id.clone()))
             .await.expect("la consultation doit réussir une fois le délai (nul) écoulé");
         let value = read_json_body(vault_result.into_response()).await;
         assert_eq!(value["sealed_vault_key"].as_str(), Some("blob_scelle_pour_contact"));
@@ -419,9 +429,9 @@ mod tests {
         assert_eq!(entries[0]["encrypted_site_name"].as_str(), Some("chiffre_site"));
 
         // La révocation, par n'importe lequel des deux côtés, met fin à tout.
-        revoke_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact@example.com"), Path(id.clone()))
+        revoke_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact@example.com").await, Path(id.clone()))
             .await.expect("la révocation doit réussir");
-        let after_revoke = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact@example.com"), Path(id)).await;
+        let after_revoke = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact@example.com").await, Path(id)).await;
         assert!(matches!(after_revoke, Err(AppError::NotFound)), "après révocation, plus aucun accès ne doit être possible");
     }
 
@@ -438,30 +448,30 @@ mod tests {
         setup_keys(&state, "contact2@example.com").await;
 
         let add_result = add_contact(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner2@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner2@example.com").await,
             // Délai long : la demande d'accès ne doit PAS pouvoir s'auto-accorder pendant ce test.
             Json(AddEmergencyContactPayload { contact_email: "contact2@example.com".to_string(), waiting_period_days: 30 }),
         ).await.unwrap();
         let id = read_json_body(add_result.into_response()).await["id"].as_str().unwrap().to_string();
 
-        accept_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact2@example.com"), Path(id.clone())).await.unwrap();
+        accept_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact2@example.com").await, Path(id.clone())).await.unwrap();
         seed_contact(
-            State(state.clone()), auth("owner2@example.com"), Path(id.clone()),
+            State(state.clone()), auth(&state, "owner2@example.com").await, Path(id.clone()),
             Json(SeedEmergencyKeyPayload { sealed_vault_key: "secret_scelle".to_string() }),
         ).await.unwrap();
 
         // Ni juste après l'acceptation...
-        let too_early = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact2@example.com"), Path(id.clone())).await;
+        let too_early = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact2@example.com").await, Path(id.clone())).await;
         assert!(matches!(too_early, Err(AppError::NotFound)));
 
         // ...ni juste après avoir demandé l'accès (délai de 30 jours, pas encore écoulé).
-        request_access(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact2@example.com"), Path(id.clone())).await.unwrap();
-        let still_too_early = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact2@example.com"), Path(id.clone())).await;
+        request_access(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact2@example.com").await, Path(id.clone())).await.unwrap();
+        let still_too_early = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact2@example.com").await, Path(id.clone())).await;
         assert!(matches!(still_too_early, Err(AppError::NotFound)), "le délai de 30 jours n'est pas écoulé, l'accès ne doit pas être accordé");
 
         // Le propriétaire approuve explicitement -> maintenant seulement, ça fonctionne.
-        approve_access(State(state.clone()), test_addr(), HeaderMap::new(), auth("owner2@example.com"), Path(id.clone())).await.unwrap();
-        let now_ok = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact2@example.com"), Path(id)).await;
+        approve_access(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner2@example.com").await, Path(id.clone())).await.unwrap();
+        let now_ok = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact2@example.com").await, Path(id)).await;
         assert!(now_ok.is_ok(), "après approbation explicite du propriétaire, la consultation doit réussir");
     }
 
@@ -476,24 +486,24 @@ mod tests {
         setup_keys(&state, "contact3@example.com").await;
 
         let add_result = add_contact(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner3@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner3@example.com").await,
             Json(AddEmergencyContactPayload { contact_email: "contact3@example.com".to_string(), waiting_period_days: 7 }),
         ).await.unwrap();
         let id = read_json_body(add_result.into_response()).await["id"].as_str().unwrap().to_string();
 
-        accept_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact3@example.com"), Path(id.clone())).await.unwrap();
-        seed_contact(State(state.clone()), auth("owner3@example.com"), Path(id.clone()), Json(SeedEmergencyKeyPayload { sealed_vault_key: "blob".to_string() })).await.unwrap();
-        request_access(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact3@example.com"), Path(id.clone())).await.unwrap();
+        accept_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact3@example.com").await, Path(id.clone())).await.unwrap();
+        seed_contact(State(state.clone()), auth(&state, "owner3@example.com").await, Path(id.clone()), Json(SeedEmergencyKeyPayload { sealed_vault_key: "blob".to_string() })).await.unwrap();
+        request_access(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact3@example.com").await, Path(id.clone())).await.unwrap();
 
-        reject_access(State(state.clone()), test_addr(), HeaderMap::new(), auth("owner3@example.com"), Path(id.clone()))
+        reject_access(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner3@example.com").await, Path(id.clone()))
             .await.expect("le refus doit réussir");
 
-        let denied = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth("contact3@example.com"), Path(id.clone())).await;
+        let denied = get_emergency_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "contact3@example.com").await, Path(id.clone())).await;
         assert!(matches!(denied, Err(AppError::NotFound)), "après refus, la consultation doit échouer");
 
         // La relation existe toujours (juste plus de demande en cours) — le contact peut refaire
         // une demande plus tard.
-        let contacts = list_contacts_as_owner(State(state.clone()), auth("owner3@example.com")).await.unwrap();
+        let contacts = list_contacts_as_owner(State(state.clone()), auth(&state, "owner3@example.com").await).await.unwrap();
         let value = read_json_body(contacts.into_response()).await;
         assert_eq!(value.as_array().unwrap().len(), 1, "la relation ne doit pas avoir été supprimée par le refus");
     }
@@ -510,21 +520,21 @@ mod tests {
         setup_keys(&state, "contact4@example.com").await;
 
         let add_result = add_contact(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner4@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner4@example.com").await,
             Json(AddEmergencyContactPayload { contact_email: "contact4@example.com".to_string(), waiting_period_days: 1 }),
         ).await.unwrap();
         let id = read_json_body(add_result.into_response()).await["id"].as_str().unwrap().to_string();
 
-        let wrong_accept = accept_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth("stranger@example.com"), Path(id.clone())).await;
+        let wrong_accept = accept_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "stranger@example.com").await, Path(id.clone())).await;
         assert!(matches!(wrong_accept, Err(AppError::NotFound)));
 
         let wrong_seed = seed_contact(
-            State(state.clone()), auth("stranger@example.com"), Path(id.clone()),
+            State(state.clone()), auth(&state, "stranger@example.com").await, Path(id.clone()),
             Json(SeedEmergencyKeyPayload { sealed_vault_key: "intrus".to_string() }),
         ).await;
         assert!(matches!(wrong_seed, Err(AppError::NotFound)));
 
-        let wrong_revoke = revoke_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth("stranger@example.com"), Path(id)).await;
+        let wrong_revoke = revoke_contact(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "stranger@example.com").await, Path(id)).await;
         assert!(matches!(wrong_revoke, Err(AppError::NotFound)), "un tiers étranger à la relation ne doit jamais pouvoir la révoquer");
     }
 
@@ -534,7 +544,7 @@ mod tests {
         register_test_user(&state, "solo@example.com").await;
 
         let result = add_contact(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("solo@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "solo@example.com").await,
             Json(AddEmergencyContactPayload { contact_email: "solo@example.com".to_string(), waiting_period_days: 1 }),
         ).await;
         assert!(matches!(result, Err(AppError::ValidationError(_))));
@@ -547,12 +557,12 @@ mod tests {
         register_test_user(&state, "contact5@example.com").await;
 
         add_contact(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner5@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner5@example.com").await,
             Json(AddEmergencyContactPayload { contact_email: "contact5@example.com".to_string(), waiting_period_days: 1 }),
         ).await.expect("le premier ajout doit réussir");
 
         let duplicate = add_contact(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner5@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner5@example.com").await,
             Json(AddEmergencyContactPayload { contact_email: "contact5@example.com".to_string(), waiting_period_days: 5 }),
         ).await;
         assert!(matches!(duplicate, Err(AppError::Conflict(_))), "désigner deux fois le même contact doit être refusé");
@@ -565,14 +575,14 @@ mod tests {
         register_test_user(&state, "contact6@example.com").await;
 
         let add_result = add_contact(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner6@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner6@example.com").await,
             Json(AddEmergencyContactPayload { contact_email: "contact6@example.com".to_string(), waiting_period_days: 1 }),
         ).await.unwrap();
         let id = read_json_body(add_result.into_response()).await["id"].as_str().unwrap().to_string();
 
-        decline_contact(State(state.clone()), auth("contact6@example.com"), Path(id)).await.expect("le refus de l'invitation doit réussir");
+        decline_contact(State(state.clone()), auth(&state, "contact6@example.com").await, Path(id)).await.expect("le refus de l'invitation doit réussir");
 
-        let contacts = list_contacts_as_owner(State(state.clone()), auth("owner6@example.com")).await.unwrap();
+        let contacts = list_contacts_as_owner(State(state.clone()), auth(&state, "owner6@example.com").await).await.unwrap();
         let value = read_json_body(contacts.into_response()).await;
         assert_eq!(value.as_array().unwrap().len(), 0, "une invitation déclinée ne doit laisser aucune trace");
     }
@@ -585,7 +595,7 @@ mod tests {
         setup_keys(&state, "keyowner@example.com").await;
 
         // N'importe quel utilisateur authentifié peut lire la clé PUBLIQUE d'un autre.
-        let public_result = get_public_key(State(state.clone()), auth("viewer@example.com"), Path("keyowner@example.com".to_string()))
+        let public_result = get_public_key(State(state.clone()), auth(&state, "viewer@example.com").await, Path("keyowner@example.com".to_string()))
             .await.expect("la lecture de la clé publique doit réussir");
         let public_value = read_json_body(public_result.into_response()).await;
         assert_eq!(public_value["public_key"].as_str(), Some("pubkey_keyowner@example.com"));
@@ -593,7 +603,7 @@ mod tests {
 
         // Seul le propriétaire peut lire SES PROPRES clés complètes (via son propre AuthUser, pas
         // un paramètre d'URL arbitraire).
-        let own_result = get_own_keys(State(state.clone()), auth("keyowner@example.com")).await.expect("la lecture de ses propres clés doit réussir");
+        let own_result = get_own_keys(State(state.clone()), auth(&state, "keyowner@example.com").await).await.expect("la lecture de ses propres clés doit réussir");
         let own_value = read_json_body(own_result.into_response()).await;
         assert_eq!(own_value["encrypted_private_key"].as_str(), Some("privkey_chiffre_keyowner@example.com"));
     }
@@ -607,7 +617,7 @@ mod tests {
         register_test_user(&state, "viewer2@example.com").await;
         setup_keys(&state, "keyowner2@example.com").await;
 
-        let result = get_public_key(State(state.clone()), auth("viewer2@example.com"), Path("KeyOwner2@Example.com".to_string()))
+        let result = get_public_key(State(state.clone()), auth(&state, "viewer2@example.com").await, Path("KeyOwner2@Example.com".to_string()))
             .await.expect("la casse de l'email cible ne doit pas empêcher de trouver la clé publique");
         let value = read_json_body(result.into_response()).await;
         assert_eq!(value["public_key"].as_str(), Some("pubkey_keyowner2@example.com"));
@@ -619,7 +629,7 @@ mod tests {
         register_test_user(&state, "nokeys@example.com").await;
         register_test_user(&state, "asker@example.com").await;
 
-        let result = get_public_key(State(state.clone()), auth("asker@example.com"), Path("nokeys@example.com".to_string())).await;
+        let result = get_public_key(State(state.clone()), auth(&state, "asker@example.com").await, Path("nokeys@example.com".to_string())).await;
         assert!(matches!(result, Err(AppError::NotFound)), "un utilisateur qui n'a jamais configuré l'accès d'urgence ne doit avoir aucune clé publique");
     }
 
@@ -632,18 +642,18 @@ mod tests {
         register_test_user(&state, "contact7@example.com").await;
 
         add_contact(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner7@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner7@example.com").await,
             Json(AddEmergencyContactPayload { contact_email: "contact7@example.com".to_string(), waiting_period_days: 3 }),
         ).await.unwrap();
 
-        let granted = list_granted_to_me(State(state.clone()), auth("contact7@example.com")).await.unwrap();
+        let granted = list_granted_to_me(State(state.clone()), auth(&state, "contact7@example.com").await).await.unwrap();
         let value = read_json_body(granted.into_response()).await;
         let rows = value.as_array().unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["owner_email"].as_str(), Some("owner7@example.com"));
 
         // Le propriétaire, lui, n'apparaît pas dans SES PROPRES "granted-to-me".
-        let owner_granted = list_granted_to_me(State(state.clone()), auth("owner7@example.com")).await.unwrap();
+        let owner_granted = list_granted_to_me(State(state.clone()), auth(&state, "owner7@example.com").await).await.unwrap();
         let owner_value = read_json_body(owner_granted.into_response()).await;
         assert_eq!(owner_value.as_array().unwrap().len(), 0);
     }

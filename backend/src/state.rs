@@ -111,12 +111,29 @@ impl AppState {
             "LOGIN_FAILED" | "LOGIN_BLOCKED_TOO_MANY_ATTEMPTS" | "LOGIN_BLOCKED_UNVERIFIED" | "LOGIN_BLOCKED_SUSPENDED"
         );
 
+        // Un compte inexistant (ex: LOGIN_FAILED sur un email tenté qui ne correspond à personne)
+        // est simplement ignoré — même comportement que l'ancienne FK vers users(email), qui
+        // faisait échouer silencieusement (capturé par le `if let Err` ci-dessous) l'INSERT pour
+        // un compte inconnu.
+        let user_id: Option<i64> = match sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_optional(&self.db)
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                error!(target: "audit", user = %email, error = %e, "échec de la résolution de l'id pour l'historique IP du compte");
+                return;
+            }
+        };
+        let Some(user_id) = user_id else { return };
+
         // `first_seen` n'est PAS touché par le UPDATE : c'est toute sa valeur — savoir depuis quand
         // cette adresse existe pour ce compte. `last_seen` et les compteurs, eux, avancent.
         let result = sqlx::query(
-            "INSERT INTO account_ip_history                  (user_email, ip_address, first_seen, last_seen, event_count, success_count, failure_count)              VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, ?, ?)              ON CONFLICT(user_email, ip_address) DO UPDATE SET                  last_seen = CURRENT_TIMESTAMP,                  event_count = event_count + 1,                  success_count = success_count + excluded.success_count,                  failure_count = failure_count + excluded.failure_count",
+            "INSERT INTO account_ip_history                  (user_id, ip_address, first_seen, last_seen, event_count, success_count, failure_count)              VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, ?, ?)              ON CONFLICT(user_id, ip_address) DO UPDATE SET                  last_seen = CURRENT_TIMESTAMP,                  event_count = event_count + 1,                  success_count = success_count + excluded.success_count,                  failure_count = failure_count + excluded.failure_count",
         )
-        .bind(email)
+        .bind(user_id)
         .bind(ip)
         .bind(i64::from(is_success))
         .bind(i64::from(is_failure))
@@ -225,6 +242,110 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1, "log_audit doit insérer exactement une ligne en BDD");
+    }
+
+    /// RÉGRESSION : log_audit() doit aussi alimenter account_ip_history (via record_ip_seen), pas
+    /// seulement audit_logs — sans test dédié, un bug ici (ex: une colonne renommée côté schéma
+    /// sans que ce chemin d'écriture ne suive) resterait invisible : ces requêtes ne sont pas
+    /// vérifiées à la compilation, et l'autre test ci-dessus ne regarde que audit_logs.
+    #[tokio::test]
+    async fn test_log_audit_also_records_ip_history() {
+        let pool = build_test_pool().await;
+        sqlx::query("INSERT INTO users (email, password_hash) VALUES (?, ?)")
+            .bind("iphistoryuser@example.com")
+            .bind("hash_non_pertinent")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let config = Config {
+            database_url: "sqlite::memory:".to_string(),
+            jwt_secret: "test_jwt_secret_au_moins_32_caracteres_ici".to_string(),
+            port: 0,
+            app_env: "test".to_string(),
+            access_token_seconds: 600,
+            refresh_token_hours: 24,
+            refresh_token_short_seconds: 5,
+            password_pepper: "test_password_pepper_au_moins_32_caracteres".to_string(),
+            smtp_host: "localhost".to_string(),
+            smtp_user: "test@example.com".to_string(),
+            smtp_pass: "unused".to_string(),
+            allowed_origins: vec!["http://localhost:5173".to_string()],
+            admin_email: None,
+            trust_proxy_headers: false,
+            geoip_database_path: None,
+        };
+        let state = AppState {
+            encoding_key: EncodingKey::from_secret(config.jwt_secret.as_bytes()),
+            decoding_key: DecodingKey::from_secret(config.jwt_secret.as_bytes()),
+            app_env: config.app_env.clone(),
+            db: pool,
+            config,
+            sync_tx: tokio::sync::broadcast::channel(16).0,
+            shutdown_tx: tokio::sync::broadcast::channel(1).0,
+            ws_connections: Default::default(),
+            geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
+            started_at: std::time::Instant::now(),
+            vacuum_in_progress: Default::default(),
+        };
+
+        state.log_audit("iphistoryuser@example.com", "LOGIN_SUCCESS_SESSION", "198.51.100.7:1234".to_string(), None).await;
+
+        let (ip, success_count): (String, i64) = sqlx::query_as(
+            "SELECT h.ip_address, h.success_count FROM account_ip_history h JOIN users u ON u.id = h.user_id WHERE u.email = ?",
+        )
+        .bind("iphistoryuser@example.com")
+        .fetch_one(&state.db)
+        .await
+        .expect("une ligne account_ip_history doit exister pour ce compte après log_audit");
+        assert_eq!(ip, "198.51.100.7", "l'adresse doit être enregistrée sans le port source");
+        assert_eq!(success_count, 1, "une connexion réussie doit incrémenter success_count");
+    }
+
+    /// RÉGRESSION : un compte inconnu (ex: tentative de login sur un email jamais inscrit) ne
+    /// doit jamais faire planter/échouer log_audit, et ne doit laisser aucune ligne orpheline
+    /// dans account_ip_history (la table est désormais liée par user_id, pas par email).
+    #[tokio::test]
+    async fn test_log_audit_ignores_ip_history_for_unknown_account() {
+        let pool = build_test_pool().await;
+        let config = Config {
+            database_url: "sqlite::memory:".to_string(),
+            jwt_secret: "test_jwt_secret_au_moins_32_caracteres_ici".to_string(),
+            port: 0,
+            app_env: "test".to_string(),
+            access_token_seconds: 600,
+            refresh_token_hours: 24,
+            refresh_token_short_seconds: 5,
+            password_pepper: "test_password_pepper_au_moins_32_caracteres".to_string(),
+            smtp_host: "localhost".to_string(),
+            smtp_user: "test@example.com".to_string(),
+            smtp_pass: "unused".to_string(),
+            allowed_origins: vec!["http://localhost:5173".to_string()],
+            admin_email: None,
+            trust_proxy_headers: false,
+            geoip_database_path: None,
+        };
+        let state = AppState {
+            encoding_key: EncodingKey::from_secret(config.jwt_secret.as_bytes()),
+            decoding_key: DecodingKey::from_secret(config.jwt_secret.as_bytes()),
+            app_env: config.app_env.clone(),
+            db: pool,
+            config,
+            sync_tx: tokio::sync::broadcast::channel(16).0,
+            shutdown_tx: tokio::sync::broadcast::channel(1).0,
+            ws_connections: Default::default(),
+            geoip: Arc::new(crate::geoip::GeoIpResolver::load(None)),
+            started_at: std::time::Instant::now(),
+            vacuum_in_progress: Default::default(),
+        };
+
+        state.log_audit("personne-nexiste-pas@example.com", "LOGIN_FAILED", "127.0.0.1".to_string(), None).await;
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_ip_history")
+            .fetch_one(&state.db)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "un compte inconnu ne doit jamais produire de ligne account_ip_history");
     }
 }
 

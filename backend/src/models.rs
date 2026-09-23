@@ -70,6 +70,7 @@ pub struct TrustedDevice {
 /// `sqlx::FromRow` permet à SQLx de mapper automatiquement les colonnes d'une ligne SQL vers cette structure.
 #[derive(Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {
+    pub id: i64,
     pub email: String,
     pub password_hash: String,
     pub is_moderator: bool,    // Indicateur de rôle pour les privilèges de modérateur
@@ -158,7 +159,7 @@ pub struct AuditLog {
 #[allow(dead_code)]
 #[derive(Serialize, Deserialize, sqlx::FromRow)]
 pub struct TfaCode {
-    pub email: String,
+    pub user_id: i64,
     pub purpose: String,
     pub code: String,
     pub expires_at: String,         // Date de fin de validité sous forme de chaîne de caractères

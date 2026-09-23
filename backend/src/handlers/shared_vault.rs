@@ -19,7 +19,7 @@ use axum::{
 use std::sync::Arc;
 use std::net::SocketAddr;
 use axum::extract::ConnectInfo;
-use crate::{AppState, error::AppError, mailer, middleware::AuthUser, repository::SharedVaultRepository, models::*};
+use crate::{AppState, error::AppError, mailer, middleware::AuthUser, repository::{SharedVaultRepository, UserRepository}, models::*};
 use validator::Validate;
 use super::common::get_user_agent;
 
@@ -52,7 +52,7 @@ pub async fn create_shared_vault(
 ) -> Result<impl IntoResponse, AppError> {
     payload.validate()?;
 
-    let id = SharedVaultRepository::create(&state.db, &user.email, &payload.encrypted_name, &payload.sealed_vault_key).await?;
+    let id = SharedVaultRepository::create(&state.db, user.user_id, &payload.encrypted_name, &payload.sealed_vault_key).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "SHARED_VAULT_CREATE", addr.to_string(), agent).await;
@@ -62,7 +62,7 @@ pub async fn create_shared_vault(
 
 /// Liste les coffres partagés dont l'appelant est membre.
 pub async fn list_shared_vaults(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
-    let vaults = SharedVaultRepository::list_for_member(&state.db, &user.email).await?;
+    let vaults = SharedVaultRepository::list_for_member(&state.db, user.user_id).await?;
     Ok(Json(vaults))
 }
 
@@ -77,7 +77,7 @@ pub async fn delete_shared_vault(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     broadcast_to_members(&state, &id, "SHARED_VAULT_DELETED").await;
-    SharedVaultRepository::delete_vault(&state.db, &id, &user.email).await?;
+    SharedVaultRepository::delete_vault(&state.db, &id, user.user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "SHARED_VAULT_DELETE", addr.to_string(), agent).await;
@@ -101,8 +101,10 @@ pub async fn invite_shared_vault_member(
     if member_email == user.email {
         return Err(AppError::ValidationError("Impossible de s'inviter soi-même.".to_string()));
     }
+    let member_id = UserRepository::find_id_by_email(&state.db, &member_email).await?
+        .ok_or_else(|| AppError::ValidationError("Aucun compte n'existe avec cet email.".to_string()))?;
 
-    SharedVaultRepository::invite_member(&state.db, &id, &user.email, &member_email, &payload.sealed_vault_key).await?;
+    SharedVaultRepository::invite_member(&state.db, &id, user.user_id, member_id, &payload.sealed_vault_key).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "SHARED_VAULT_MEMBER_ADD", addr.to_string(), agent).await;
@@ -122,7 +124,7 @@ pub async fn list_shared_vault_members(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let members = SharedVaultRepository::list_members(&state.db, &id, &user.email).await?;
+    let members = SharedVaultRepository::list_members(&state.db, &id, user.user_id).await?;
     Ok(Json(members))
 }
 
@@ -140,11 +142,13 @@ pub async fn remove_shared_vault_member(
     let target_email = target_email.to_lowercase();
 
     if target_email == user.email {
-        SharedVaultRepository::leave(&state.db, &id, &user.email).await?;
+        SharedVaultRepository::leave(&state.db, &id, user.user_id).await?;
         let agent = get_user_agent(&headers);
         state.log_audit(&user.email, "SHARED_VAULT_MEMBER_LEAVE", addr.to_string(), agent).await;
     } else {
-        SharedVaultRepository::remove_member(&state.db, &id, &user.email, &target_email).await?;
+        let target_id = UserRepository::find_id_by_email(&state.db, &target_email).await?
+            .ok_or(AppError::NotFound)?;
+        SharedVaultRepository::remove_member(&state.db, &id, user.user_id, target_id).await?;
         let agent = get_user_agent(&headers);
         state.log_audit(&user.email, "SHARED_VAULT_MEMBER_REMOVE", addr.to_string(), agent).await;
         // Prévient la personne retirée sur son PROCHAIN chargement (elle ne peut plus recevoir
@@ -162,7 +166,7 @@ pub async fn list_shared_vault_entries(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let entries = SharedVaultRepository::list_entries(&state.db, &id, &user.email).await?;
+    let entries = SharedVaultRepository::list_entries(&state.db, &id, user.user_id).await?;
     Ok(Json(entries))
 }
 
@@ -179,7 +183,7 @@ pub async fn add_shared_vault_entry(
 ) -> Result<impl IntoResponse, AppError> {
     payload.validate()?;
 
-    let entry_id = SharedVaultRepository::add_entry(&state.db, &id, &user.email, &payload).await?;
+    let entry_id = SharedVaultRepository::add_entry(&state.db, &id, user.user_id, &payload).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "SHARED_VAULT_ENTRY_ADD", addr.to_string(), agent).await;
@@ -199,7 +203,7 @@ pub async fn update_shared_vault_entry(
 ) -> Result<impl IntoResponse, AppError> {
     payload.validate()?;
 
-    SharedVaultRepository::update_entry(&state.db, &id, &entry_id, &user.email, &payload).await?;
+    SharedVaultRepository::update_entry(&state.db, &id, &entry_id, user.user_id, &payload).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "SHARED_VAULT_ENTRY_UPDATE", addr.to_string(), agent).await;
@@ -216,7 +220,7 @@ pub async fn delete_shared_vault_entry(
     user: AuthUser,
     Path((id, entry_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    SharedVaultRepository::delete_entry(&state.db, &id, &entry_id, &user.email).await?;
+    SharedVaultRepository::delete_entry(&state.db, &id, &entry_id, user.user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "SHARED_VAULT_ENTRY_DELETE", addr.to_string(), agent).await;
@@ -292,8 +296,13 @@ mod tests {
         ConnectInfo("127.0.0.1:1".parse().unwrap())
     }
 
-    fn auth(email: &str) -> AuthUser {
-        AuthUser { email: email.to_string(), is_moderator: false }
+    async fn auth(state: &Arc<AppState>, email: &str) -> AuthUser {
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_one(&state.db)
+            .await
+            .expect("l'utilisateur de test doit déjà être enregistré");
+        AuthUser { user_id, email: email.to_string(), is_moderator: false }
     }
 
     async fn read_json_body(response: axum::response::Response) -> serde_json::Value {
@@ -327,13 +336,13 @@ mod tests {
         register_test_user(&state, "enfant@example.com").await;
 
         let create_result = create_shared_vault(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("parent@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "parent@example.com").await,
             Json(CreateSharedVaultPayload { encrypted_name: "nom_chiffre".to_string(), sealed_vault_key: "cle_scellee_pour_parent".to_string() }),
         ).await.expect("la création doit réussir");
         let vault_id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         // Le propriétaire se voit lui-même dans la liste, avec SA clé scellée et is_owner=true.
-        let owner_list = read_json_body(list_shared_vaults(State(state.clone()), auth("parent@example.com")).await.unwrap().into_response()).await;
+        let owner_list = read_json_body(list_shared_vaults(State(state.clone()), auth(&state, "parent@example.com").await).await.unwrap().into_response()).await;
         let owner_rows = owner_list.as_array().unwrap();
         assert_eq!(owner_rows.len(), 1);
         assert_eq!(owner_rows[0]["sealed_vault_key"].as_str(), Some("cle_scellee_pour_parent"));
@@ -341,14 +350,14 @@ mod tests {
 
         // Invite un membre.
         invite_shared_vault_member(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("parent@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "parent@example.com").await,
             Path(vault_id.clone()),
             Json(InviteSharedVaultMemberPayload { member_email: "enfant@example.com".to_string(), sealed_vault_key: "cle_scellee_pour_enfant".to_string() }),
         ).await.expect("l'invitation doit réussir");
 
         // Le membre invité voit désormais le coffre, avec SA PROPRE clé scellée (différente de
         // celle du propriétaire) et is_owner=false.
-        let member_list = read_json_body(list_shared_vaults(State(state.clone()), auth("enfant@example.com")).await.unwrap().into_response()).await;
+        let member_list = read_json_body(list_shared_vaults(State(state.clone()), auth(&state, "enfant@example.com").await).await.unwrap().into_response()).await;
         let member_rows = member_list.as_array().unwrap();
         assert_eq!(member_rows.len(), 1);
         assert_eq!(member_rows[0]["sealed_vault_key"].as_str(), Some("cle_scellee_pour_enfant"));
@@ -356,25 +365,25 @@ mod tests {
 
         // Le membre (pas le propriétaire) ajoute une entrée.
         let add_result = add_shared_vault_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("enfant@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "enfant@example.com").await,
             Path(vault_id.clone()), Json(sample_entry_input()),
         ).await.expect("un membre non-propriétaire doit pouvoir ajouter une entrée");
         let entry_id = read_json_body(add_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         // Le propriétaire la voit immédiatement (même clé symétrique partagée, pas de re-partage).
-        let owner_entries = read_json_body(list_shared_vault_entries(State(state.clone()), auth("parent@example.com"), Path(vault_id.clone())).await.unwrap().into_response()).await;
+        let owner_entries = read_json_body(list_shared_vault_entries(State(state.clone()), auth(&state, "parent@example.com").await, Path(vault_id.clone())).await.unwrap().into_response()).await;
         let owner_entry_rows = owner_entries.as_array().unwrap();
         assert_eq!(owner_entry_rows.len(), 1);
         assert_eq!(owner_entry_rows[0]["id"].as_str(), Some(entry_id.as_str()));
         assert_eq!(owner_entry_rows[0]["created_by"].as_str(), Some("enfant@example.com"));
 
         // Suppression du coffre par le propriétaire -> plus rien pour personne.
-        delete_shared_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth("parent@example.com"), Path(vault_id.clone()))
+        delete_shared_vault(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "parent@example.com").await, Path(vault_id.clone()))
             .await.expect("la suppression doit réussir");
 
-        let owner_after = read_json_body(list_shared_vaults(State(state.clone()), auth("parent@example.com")).await.unwrap().into_response()).await;
+        let owner_after = read_json_body(list_shared_vaults(State(state.clone()), auth(&state, "parent@example.com").await).await.unwrap().into_response()).await;
         assert_eq!(owner_after.as_array().unwrap().len(), 0);
-        let member_entries_after = list_shared_vault_entries(State(state.clone()), auth("enfant@example.com"), Path(vault_id)).await;
+        let member_entries_after = list_shared_vault_entries(State(state.clone()), auth(&state, "enfant@example.com").await, Path(vault_id)).await;
         assert!(matches!(member_entries_after, Err(AppError::NotFound)), "le coffre supprimé ne doit plus être accessible à personne");
     }
 
@@ -386,20 +395,20 @@ mod tests {
         register_test_user(&state, "outsider5@example.com").await;
 
         let create_result = create_shared_vault(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner5@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner5@example.com").await,
             Json(CreateSharedVaultPayload { encrypted_name: "nom".to_string(), sealed_vault_key: "cle".to_string() }),
         ).await.unwrap();
         let vault_id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         invite_shared_vault_member(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner5@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner5@example.com").await,
             Path(vault_id.clone()),
             Json(InviteSharedVaultMemberPayload { member_email: "member5@example.com".to_string(), sealed_vault_key: "cle_membre".to_string() }),
         ).await.unwrap();
 
         // Un membre SIMPLE (non-propriétaire) ne peut pas inviter quelqu'un d'autre.
         let result = invite_shared_vault_member(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("member5@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "member5@example.com").await,
             Path(vault_id),
             Json(InviteSharedVaultMemberPayload { member_email: "outsider5@example.com".to_string(), sealed_vault_key: "x".to_string() }),
         ).await;
@@ -413,16 +422,16 @@ mod tests {
         register_test_user(&state, "stranger6@example.com").await;
 
         let create_result = create_shared_vault(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner6@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner6@example.com").await,
             Json(CreateSharedVaultPayload { encrypted_name: "nom".to_string(), sealed_vault_key: "cle".to_string() }),
         ).await.unwrap();
         let vault_id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
-        let list_attempt = list_shared_vault_entries(State(state.clone()), auth("stranger6@example.com"), Path(vault_id.clone())).await;
+        let list_attempt = list_shared_vault_entries(State(state.clone()), auth(&state, "stranger6@example.com").await, Path(vault_id.clone())).await;
         assert!(matches!(list_attempt, Err(AppError::NotFound)), "un non-membre ne doit jamais pouvoir lister les entrées d'un coffre partagé");
 
         let add_attempt = add_shared_vault_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("stranger6@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "stranger6@example.com").await,
             Path(vault_id), Json(sample_entry_input()),
         ).await;
         assert!(matches!(add_attempt, Err(AppError::NotFound)), "un non-membre ne doit jamais pouvoir ajouter une entrée");
@@ -435,31 +444,31 @@ mod tests {
         register_test_user(&state, "member7@example.com").await;
 
         let create_result = create_shared_vault(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner7@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner7@example.com").await,
             Json(CreateSharedVaultPayload { encrypted_name: "nom".to_string(), sealed_vault_key: "cle".to_string() }),
         ).await.unwrap();
         let vault_id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         invite_shared_vault_member(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner7@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner7@example.com").await,
             Path(vault_id.clone()),
             Json(InviteSharedVaultMemberPayload { member_email: "member7@example.com".to_string(), sealed_vault_key: "cle_membre".to_string() }),
         ).await.unwrap();
 
         // Le propriétaire ne peut pas se retirer lui-même (doit supprimer le coffre entier à la place).
         let owner_leave_attempt = remove_shared_vault_member(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner7@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner7@example.com").await,
             Path((vault_id.clone(), "owner7@example.com".to_string())),
         ).await;
         assert!(owner_leave_attempt.is_err(), "le propriétaire ne doit pas pouvoir quitter son propre coffre partagé");
 
         // Le membre simple peut quitter de lui-même.
         remove_shared_vault_member(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("member7@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "member7@example.com").await,
             Path((vault_id.clone(), "member7@example.com".to_string())),
         ).await.expect("un membre simple doit pouvoir quitter de lui-même");
 
-        let members_after = read_json_body(list_shared_vault_members(State(state.clone()), auth("owner7@example.com"), Path(vault_id)).await.unwrap().into_response()).await;
+        let members_after = read_json_body(list_shared_vault_members(State(state.clone()), auth(&state, "owner7@example.com").await, Path(vault_id)).await.unwrap().into_response()).await;
         assert_eq!(members_after.as_array().unwrap().len(), 1, "après son départ, seul le propriétaire doit rester membre");
     }
 
@@ -470,24 +479,24 @@ mod tests {
         register_test_user(&state, "member8@example.com").await;
 
         let create_result = create_shared_vault(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner8@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner8@example.com").await,
             Json(CreateSharedVaultPayload { encrypted_name: "nom".to_string(), sealed_vault_key: "cle".to_string() }),
         ).await.unwrap();
         let vault_id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         invite_shared_vault_member(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner8@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner8@example.com").await,
             Path(vault_id.clone()),
             Json(InviteSharedVaultMemberPayload { member_email: "member8@example.com".to_string(), sealed_vault_key: "cle_membre".to_string() }),
         ).await.unwrap();
 
         remove_shared_vault_member(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner8@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner8@example.com").await,
             Path((vault_id.clone(), "member8@example.com".to_string())),
         ).await.expect("le propriétaire doit pouvoir retirer un autre membre");
 
         // Le membre retiré n'a plus accès.
-        let access_attempt = list_shared_vault_entries(State(state.clone()), auth("member8@example.com"), Path(vault_id)).await;
+        let access_attempt = list_shared_vault_entries(State(state.clone()), auth(&state, "member8@example.com").await, Path(vault_id)).await;
         assert!(matches!(access_attempt, Err(AppError::NotFound)), "un membre retiré ne doit plus avoir accès au coffre");
     }
 
@@ -499,13 +508,13 @@ mod tests {
         register_test_user(&state, "owner9@example.com").await;
 
         let create_result = create_shared_vault(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner9@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner9@example.com").await,
             Json(CreateSharedVaultPayload { encrypted_name: "nom".to_string(), sealed_vault_key: "cle".to_string() }),
         ).await.unwrap();
         let vault_id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         let add_result = add_shared_vault_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner9@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner9@example.com").await,
             Path(vault_id.clone()), Json(sample_entry_input()),
         ).await.unwrap();
         let entry_id = read_json_body(add_result.into_response()).await["id"].as_str().unwrap().to_string();
@@ -514,7 +523,7 @@ mod tests {
         let mut first_update = sample_entry_input();
         first_update.expected_version = Some(1);
         update_shared_vault_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner9@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner9@example.com").await,
             Path((vault_id.clone(), entry_id.clone())), Json(first_update),
         ).await.expect("la première modification doit réussir");
 
@@ -523,7 +532,7 @@ mod tests {
         let mut stale_update = sample_entry_input();
         stale_update.expected_version = Some(1);
         let result = update_shared_vault_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner9@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner9@example.com").await,
             Path((vault_id, entry_id)), Json(stale_update),
         ).await;
         assert!(matches!(result, Err(AppError::Conflict(_))), "une modification basée sur une version périmée doit être rejetée");
@@ -535,13 +544,13 @@ mod tests {
         register_test_user(&state, "solo10@example.com").await;
 
         let create_result = create_shared_vault(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("solo10@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "solo10@example.com").await,
             Json(CreateSharedVaultPayload { encrypted_name: "nom".to_string(), sealed_vault_key: "cle".to_string() }),
         ).await.unwrap();
         let vault_id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         let result = invite_shared_vault_member(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("solo10@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "solo10@example.com").await,
             Path(vault_id),
             Json(InviteSharedVaultMemberPayload { member_email: "solo10@example.com".to_string(), sealed_vault_key: "x".to_string() }),
         ).await;
@@ -557,7 +566,7 @@ mod tests {
         register_test_user(&state, "owner11@example.com").await;
 
         let create_result = create_shared_vault(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner11@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner11@example.com").await,
             Json(CreateSharedVaultPayload { encrypted_name: "nom".to_string(), sealed_vault_key: "cle".to_string() }),
         ).await.unwrap();
         let vault_id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
@@ -567,7 +576,7 @@ mod tests {
             let email = format!("member11-{i}@example.com");
             register_test_user(&state, &email).await;
             invite_shared_vault_member(
-                State(state.clone()), test_addr(), HeaderMap::new(), auth("owner11@example.com"),
+                State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner11@example.com").await,
                 Path(vault_id.clone()),
                 Json(InviteSharedVaultMemberPayload { member_email: email, sealed_vault_key: "cle".to_string() }),
             ).await.expect("chaque invitation jusqu'à la limite doit réussir");
@@ -576,7 +585,7 @@ mod tests {
         // La 26e personne (limite déjà atteinte) doit être refusée.
         register_test_user(&state, "over-the-limit@example.com").await;
         let result = invite_shared_vault_member(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner11@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner11@example.com").await,
             Path(vault_id),
             Json(InviteSharedVaultMemberPayload { member_email: "over-the-limit@example.com".to_string(), sealed_vault_key: "x".to_string() }),
         ).await;

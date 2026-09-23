@@ -38,16 +38,27 @@ const MAX_VAULT_ENTRIES_FOR_RECOVERY: i64 = 5000;
 /// s'autoriser — la seconde en le consommant. Une seule implémentation pour les trois appels : le
 /// verrouillage anti-bruteforce ne peut pas diverger d'un chemin à l'autre.
 async fn verify_reset_code(state: &AppState, email: &str, code: &str, consume: bool) -> Result<(), AppError> {
-    let tfa: TfaCode = sqlx::query_as("SELECT * FROM tfa_codes WHERE email = ? AND purpose = ?")
+    // Résolu une seule fois ici : les trois appelants (confirm_password_reset, get_recovery_data,
+    // complete_recovery) n'ont pour certains qu'un email (pré-connexion, pas d'AuthUser) — plus
+    // simple de résoudre l'id à cet unique endroit partagé que de le faire remonter par chacun.
+    let user_id: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
         .bind(email)
+        .fetch_optional(&state.db)
+        .await?;
+    let Some(user_id) = user_id else {
+        return Err(AppError::ValidationError("Code invalide ou expiré".to_string()));
+    };
+
+    let tfa: TfaCode = sqlx::query_as("SELECT * FROM tfa_codes WHERE user_id = ? AND purpose = ?")
+        .bind(user_id)
         .bind(PURPOSE_PASSWORD_RESET)
         .fetch_optional(&state.db)
         .await?
         .ok_or(AppError::ValidationError("Code invalide ou expiré".to_string()))?;
 
     if tfa.attempts >= MAX_CODE_ATTEMPTS {
-        sqlx::query("DELETE FROM tfa_codes WHERE email = ? AND purpose = ?")
-            .bind(email)
+        sqlx::query("DELETE FROM tfa_codes WHERE user_id = ? AND purpose = ?")
+            .bind(user_id)
             .bind(PURPOSE_PASSWORD_RESET)
             .execute(&state.db)
             .await?;
@@ -56,8 +67,8 @@ async fn verify_reset_code(state: &AppState, email: &str, code: &str, consume: b
     }
 
     if !crypto::constant_time_eq(code, &tfa.code) {
-        sqlx::query("UPDATE tfa_codes SET attempts = attempts + 1 WHERE email = ? AND purpose = ?")
-            .bind(email)
+        sqlx::query("UPDATE tfa_codes SET attempts = attempts + 1 WHERE user_id = ? AND purpose = ?")
+            .bind(user_id)
             .bind(PURPOSE_PASSWORD_RESET)
             .execute(&state.db)
             .await?;
@@ -71,8 +82,8 @@ async fn verify_reset_code(state: &AppState, email: &str, code: &str, consume: b
     }
 
     if consume {
-        sqlx::query("DELETE FROM tfa_codes WHERE email = ? AND purpose = ?")
-            .bind(email)
+        sqlx::query("DELETE FROM tfa_codes WHERE user_id = ? AND purpose = ?")
+            .bind(user_id)
             .bind(PURPOSE_PASSWORD_RESET)
             .execute(&state.db)
             .await?;
@@ -157,8 +168,8 @@ pub async fn update_password(
     }
 
     // 1. Récupération des informations actuelles de l'utilisateur en base
-    let current_user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = ?")
-        .bind(&user.email)
+    let current_user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
+        .bind(user.user_id)
         .fetch_one(&state.db)
         .await?;
 
@@ -184,9 +195,9 @@ pub async fn update_password(
     // `password_changed_at` : voir middleware.rs::AuthUser, qui rejette tout access token émis
     // avant cette date — ferme la fenêtre résiduelle où un token déjà émis restait valide malgré
     // la révocation des refresh tokens juste en dessous.
-    sqlx::query("UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE email = ?")
+    sqlx::query("UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(&new_password_hash)
-        .bind(&user.email)
+        .bind(user.user_id)
         .execute(&mut *tx)
         .await?;
 
@@ -207,16 +218,16 @@ pub async fn update_password(
     // plus changer avant le COMMIT. L'ancienne version lisait ses COUNT hors transaction, si bien
     // qu'une entrée ajoutée par un AUTRE appareil entretemps n'était jamais re-chiffrée — même
     // perte définitive, par une course cette fois.
-    let active_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ? AND deleted_at IS NULL")
-        .bind(&user.email)
+    let active_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ? AND deleted_at IS NULL")
+        .bind(user.user_id)
         .fetch_all(&mut *tx)
         .await?;
-    let history_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_password_history WHERE user_email = ?")
-        .bind(&user.email)
+    let history_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_password_history WHERE user_id = ?")
+        .bind(user.user_id)
         .fetch_all(&mut *tx)
         .await?;
-    let attachment_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_attachments WHERE user_email = ?")
-        .bind(&user.email)
+    let attachment_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_attachments WHERE user_id = ?")
+        .bind(user.user_id)
         .fetch_all(&mut *tx)
         .await?;
 
@@ -224,15 +235,9 @@ pub async fn update_password(
     check_reencrypted_ids("de l'historique", &history_ids, payload.reencrypted_history.iter().map(|e| e.id.as_str()))?;
     check_reencrypted_ids("des pièces jointes", &attachment_ids, payload.reencrypted_attachments.iter().map(|a| a.id.as_str()))?;
 
-    for entry in &payload.reencrypted_entries {
-        VaultRepository::reencrypt(&mut tx, &user.email, entry).await?;
-    }
-    for entry in &payload.reencrypted_history {
-        VaultRepository::reencrypt_history_row(&mut tx, &user.email, entry).await?;
-    }
-    for attachment in &payload.reencrypted_attachments {
-        VaultRepository::reencrypt_attachment(&mut tx, &user.email, attachment).await?;
-    }
+    VaultRepository::reencrypt_many(&mut tx, user.user_id, &payload.reencrypted_entries).await?;
+    VaultRepository::reencrypt_history_many(&mut tx, user.user_id, &payload.reencrypted_history).await?;
+    VaultRepository::reencrypt_attachment_many(&mut tx, user.user_id, &payload.reencrypted_attachments).await?;
 
     // Le kit de récupération scelle l'ANCIENNE clé du coffre, dérivée du mot de passe qu'on vient
     // de remplacer : il ne déchiffrerait plus rien. Le laisser en place donnerait un kit
@@ -241,14 +246,14 @@ pub async fn update_password(
     // jamais vu le code), et le client non plus (le code n'est affiché qu'une fois, jamais stocké)
     // : l'invalider et laisser l'utilisateur en régénérer un est la seule issue correcte.
     // GET /me repassera à has_recovery_kit=false, ce que l'écran Réglages reflète aussitôt.
-    sqlx::query("UPDATE users SET recovery_sealed_vault_key = NULL WHERE email = ?")
-        .bind(&user.email)
+    sqlx::query("UPDATE users SET recovery_sealed_vault_key = NULL WHERE id = ?")
+        .bind(user.user_id)
         .execute(&mut *tx)
         .await?;
 
     // MESURE DE SÉCURITÉ : Invalidation immédiate de TOUTES les sessions actives (déconnexion globale)
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?")
-        .bind(&user.email)
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
+        .bind(user.user_id)
         .execute(&mut *tx)
         .await?;
 
@@ -281,8 +286,8 @@ pub async fn update_email(
     payload.validate()?;
 
     if is_extension_origin(&headers) && !user.is_moderator {
-        let enabled: bool = sqlx::query_scalar("SELECT can_change_email_via_extension FROM users WHERE email = ?")
-            .bind(&user.email)
+        let enabled: bool = sqlx::query_scalar("SELECT can_change_email_via_extension FROM users WHERE id = ?")
+            .bind(user.user_id)
             .fetch_one(&state.db)
             .await?;
         if !enabled {
@@ -292,8 +297,8 @@ pub async fn update_email(
     }
 
     // 1. Récupération de l'utilisateur pour vérifier son mot de passe (Défense en profondeur)
-    let current_user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = ?")
-        .bind(&user.email)
+    let current_user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
+        .bind(user.user_id)
         .fetch_one(&state.db)
         .await?;
 
@@ -307,18 +312,19 @@ pub async fn update_email(
     // 2. Transaction SQL
     let mut tx = state.db.begin().await?;
 
-    // Mise à jour de l'email dans la table principale 'users'
-    // Note : Le mécanisme 'ON UPDATE CASCADE' configuré au niveau de la base de données
-    // répercute automatiquement ce changement d'email sur toutes les tables liées.
-    sqlx::query("UPDATE users SET email = ? WHERE email = ?")
+    // Mise à jour de l'email dans la table principale 'users'. Depuis le passage à un id
+    // numérique stable (voir migration 20260923000000_users_numeric_id.sql), toutes les tables
+    // dépendantes référencent `user_id`, pas l'email — ce simple UPDATE ne se propage donc plus
+    // nulle part ailleurs (avant, un `ON UPDATE CASCADE` répercutait ce changement sur ~20 tables).
+    sqlx::query("UPDATE users SET email = ? WHERE id = ?")
         .bind(&new_email)
-        .bind(&old_email)
+        .bind(user.user_id)
         .execute(&mut *tx)
         .await?;
 
     // Invalidation forcée des sessions pour obliger l'utilisateur à se reconnecter avec son nouvel email
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?")
-        .bind(&new_email)
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
+        .bind(user.user_id)
         .execute(&mut *tx)
         .await?;
 
@@ -413,11 +419,10 @@ pub async fn request_password_reset(
     // IMPORTANT : quel que soit le résultat, cette route doit TOUJOURS répondre 202,
     // sans quoi la différence de statut (202 vs 500 dû à la contrainte FK sur tfa_codes)
     // permettrait à un attaquant de deviner quels emails sont enregistrés (énumération de comptes).
-    let user_exists = sqlx::query("SELECT 1 FROM users WHERE email = ?")
+    let user_id: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
         .bind(&email)
         .fetch_optional(&state.db)
-        .await?
-        .is_some();
+        .await?;
 
     // ANTI-EMAIL-BOMBING : un code déjà envoyé il y a moins de EMAIL_RESEND_COOLDOWN_SECONDS
     // interdit d'en renvoyer un. Sans ce contrôle, seule la limite PAR IP protégeait cette route,
@@ -434,14 +439,14 @@ pub async fn request_password_reset(
     // fonction s'applique à masquer.
     let recently_sent = is_code_within_cooldown(&state, &email, PURPOSE_PASSWORD_RESET, RESET_CODE_LIFETIME_MINUTES).await?;
 
-    if user_exists && !recently_sent {
+    if let Some(user_id) = user_id.filter(|_| !recently_sent) {
         // 1. Génère un code de sécurité temporaire à 6 chiffres
         let reset_code = format!("{:06}", rand::rng().random_range(0..1000000));
         let expires_at = (Utc::now() + chrono::Duration::minutes(RESET_CODE_LIFETIME_MINUTES)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
 
-        // 2. Sauvegarde ou remplace le code en base pour cet email
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
-            .bind(&email)
+        // 2. Sauvegarde ou remplace le code en base pour cet utilisateur
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+            .bind(user_id)
             .bind(PURPOSE_PASSWORD_RESET)
             .bind(&reset_code)
             .bind(expires_at)
@@ -454,7 +459,7 @@ pub async fn request_password_reset(
         if let Err(e) = mailer::send_reset_email(&email, &reset_code, &state.config).await {
             warn!("Échec envoi email de reset pour {} : {:?}", email, e);
         }
-    } else if user_exists {
+    } else if user_id.is_some() {
         warn!("Demande de reset ignorée (cooldown anti-email-bombing encore actif) pour {}", email);
     } else {
         warn!("Demande de reset de mot de passe pour un email inconnu : {}", email);
@@ -486,6 +491,13 @@ pub async fn confirm_password_reset(
     // coffre, le code ne doit pas pouvoir resservir.
     verify_reset_code(&state, &email, &payload.code, true).await?;
 
+    // verify_reset_code() vient de réussir : le compte existe forcément (elle résout et exige
+    // déjà cet id en interne) — nouvelle résolution ici, cette fonction ne l'expose pas.
+    let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+        .bind(&email)
+        .fetch_one(&state.db)
+        .await?;
+
     // 2. Calcul du hash du nouveau mot de passe maître
     let new_hash = crypto::hash_password(&payload.new_master_password_hash, &state.config.password_pepper)
         .await
@@ -496,9 +508,9 @@ pub async fn confirm_password_reset(
 
     // a. Changement effectif du mot de passe de l'utilisateur. `password_changed_at` : même
     // raison que dans update_password() (voir middleware.rs::AuthUser).
-    sqlx::query("UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE email = ?")
+    sqlx::query("UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(new_hash)
-        .bind(&email)
+        .bind(user_id)
         .execute(&mut *tx).await?;
 
     // b. PURGE INTÉGRALE DU COFFRE-FORT (Stratégie Zero-Knowledge) :
@@ -506,8 +518,8 @@ pub async fn confirm_password_reset(
     // avec une clé dérivée de l'ancien mot de passe maître. Le serveur ne la possède pas.
     // Si l'utilisateur perd son mot de passe, ses données stockées deviennent définitivement indéchiffrables.
     // Par sécurité, le serveur supprime (purge) donc l'intégralité du coffre-fort ('vault').
-    sqlx::query("DELETE FROM vault WHERE user_email = ?")
-        .bind(&email)
+    sqlx::query("DELETE FROM vault WHERE user_id = ?")
+        .bind(user_id)
         .execute(&mut *tx).await?;
 
     // c. Nettoyage des sessions actives et des codes émis pour ce compte. Volontairement SANS
@@ -516,13 +528,13 @@ pub async fn confirm_password_reset(
     // même ceux d'un autre flux (2FA, vérification d'email) qui n'aurait plus de sens après ça.
     // Même raison que dans update_password (voir son commentaire) — et ici le coffre lui-même
     // vient d'être vidé : le kit scellerait la clé d'un contenu qui n'existe plus.
-    sqlx::query("UPDATE users SET recovery_sealed_vault_key = NULL WHERE email = ?")
-        .bind(&email)
+    sqlx::query("UPDATE users SET recovery_sealed_vault_key = NULL WHERE id = ?")
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
 
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?").bind(&email).execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM tfa_codes WHERE email = ?").bind(&email).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?").bind(user_id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM tfa_codes WHERE user_id = ?").bind(user_id).execute(&mut *tx).await?;
 
     tx.commit().await?;
 
@@ -614,11 +626,13 @@ pub async fn get_recovery_data(
 
     verify_reset_code(&state, &email, &payload.code, false).await?;
 
-    let sealed: Option<String> = sqlx::query_scalar("SELECT recovery_sealed_vault_key FROM users WHERE email = ?")
+    let user_row: Option<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT id, recovery_sealed_vault_key FROM users WHERE email = ?"
+    )
         .bind(&email)
         .fetch_optional(&state.db)
-        .await?
-        .flatten();
+        .await?;
+    let (user_id, sealed) = user_row.ok_or(AppError::NotFound)?;
     let sealed = sealed.ok_or_else(|| {
         AppError::ValidationError(
             "Aucun kit de récupération n'est configuré pour ce compte. La réinitialisation du mot de passe reste possible, mais elle videra le coffre.".to_string(),
@@ -632,9 +646,9 @@ pub async fn get_recovery_data(
     //
     // Ces octets restent chiffrés de bout en bout : sans le code de récupération, ils ne servent à
     // rien. Volume comparable à celui de PUT /auth/password, d'où les mêmes plafonds sur la route.
-    let entries = VaultRepository::get_all(&state.db, &email, MAX_VAULT_ENTRIES_FOR_RECOVERY, 0).await?;
-    let history = VaultRepository::get_all_history_for_user(&state.db, &email).await?;
-    let attachments = VaultRepository::get_all_attachments_for_user(&state.db, &email).await?;
+    let entries = VaultRepository::get_all(&state.db, user_id, &email, MAX_VAULT_ENTRIES_FOR_RECOVERY, 0).await?;
+    let history = VaultRepository::get_all_history_for_user(&state.db, user_id).await?;
+    let attachments = VaultRepository::get_all_attachments_for_user(&state.db, user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&email, "RECOVERY_STARTED", addr.to_string(), agent).await;
@@ -676,6 +690,11 @@ pub async fn complete_recovery(
     // Consommé cette fois : la récupération va aboutir, le code ne doit pas pouvoir resservir.
     verify_reset_code(&state, &email, &payload.code, true).await?;
 
+    let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+        .bind(&email)
+        .fetch_one(&state.db)
+        .await?;
+
     let new_password_hash = crypto::hash_password(&payload.new_master_password_hash, &state.config.password_pepper)
         .await
         .map_err(|_| AppError::HashError)?;
@@ -684,22 +703,22 @@ pub async fn complete_recovery(
 
     // Première écriture de la transaction : prend le verrou d'écriture SQLite avant les lectures
     // ci-dessous (voir update_password pour le raisonnement détaillé).
-    sqlx::query("UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE email = ?")
+    sqlx::query("UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(&new_password_hash)
-        .bind(&email)
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
 
-    let active_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ? AND deleted_at IS NULL")
-        .bind(&email)
+    let active_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ? AND deleted_at IS NULL")
+        .bind(user_id)
         .fetch_all(&mut *tx)
         .await?;
-    let history_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_password_history WHERE user_email = ?")
-        .bind(&email)
+    let history_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_password_history WHERE user_id = ?")
+        .bind(user_id)
         .fetch_all(&mut *tx)
         .await?;
-    let attachment_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_attachments WHERE user_email = ?")
-        .bind(&email)
+    let attachment_ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault_attachments WHERE user_id = ?")
+        .bind(user_id)
         .fetch_all(&mut *tx)
         .await?;
 
@@ -707,27 +726,21 @@ pub async fn complete_recovery(
     check_reencrypted_ids("de l'historique", &history_ids, payload.reencrypted_history.iter().map(|e| e.id.as_str()))?;
     check_reencrypted_ids("des pièces jointes", &attachment_ids, payload.reencrypted_attachments.iter().map(|a| a.id.as_str()))?;
 
-    for entry in &payload.reencrypted_entries {
-        VaultRepository::reencrypt(&mut tx, &email, entry).await?;
-    }
-    for entry in &payload.reencrypted_history {
-        VaultRepository::reencrypt_history_row(&mut tx, &email, entry).await?;
-    }
-    for attachment in &payload.reencrypted_attachments {
-        VaultRepository::reencrypt_attachment(&mut tx, &email, attachment).await?;
-    }
+    VaultRepository::reencrypt_many(&mut tx, user_id, &payload.reencrypted_entries).await?;
+    VaultRepository::reencrypt_history_many(&mut tx, user_id, &payload.reencrypted_history).await?;
+    VaultRepository::reencrypt_attachment_many(&mut tx, user_id, &payload.reencrypted_attachments).await?;
 
     // Le kit qui vient de servir est INVALIDÉ : il scelle la clé de l'ANCIEN mot de passe, qui ne
     // déchiffre plus rien. Le laisser en place donnerait un kit silencieusement inopérant — pire
     // qu'aucun kit, puisqu'on croirait être couvert. L'utilisateur en régénère un après coup.
-    sqlx::query("UPDATE users SET recovery_sealed_vault_key = NULL WHERE email = ?")
-        .bind(&email)
+    sqlx::query("UPDATE users SET recovery_sealed_vault_key = NULL WHERE id = ?")
+        .bind(user_id)
         .execute(&mut *tx)
         .await?;
 
     // Toutes les sessions tombent, y compris celle délivrée à l'étape 1.
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?").bind(&email).execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM tfa_codes WHERE email = ?").bind(&email).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?").bind(user_id).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM tfa_codes WHERE user_id = ?").bind(user_id).execute(&mut *tx).await?;
 
     tx.commit().await?;
 
@@ -831,11 +844,32 @@ mod tests {
             .await
             .expect("le marquage du compte de test comme vérifié doit réussir");
 
-        sqlx::query("DELETE FROM tfa_codes WHERE email = ?")
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
             .bind(email.to_lowercase())
+            .fetch_one(&state.db)
+            .await
+            .expect("le compte de test doit exister");
+        sqlx::query("DELETE FROM tfa_codes WHERE user_id = ?")
+            .bind(user_id)
             .execute(&state.db)
             .await
             .expect("le nettoyage du code de vérification de test doit réussir");
+    }
+
+    /// Construit un `AuthUser` en résolvant SON VRAI `user_id` depuis la BDD (désormais requis,
+    /// voir middleware.rs) — panique si l'email n'a pas été enregistré au préalable via
+    /// register_test_user(), toujours le cas dans ce module.
+    async fn auth(state: &Arc<AppState>, email: &str) -> AuthUser {
+        auth_with_role(state, email, false).await
+    }
+
+    async fn auth_with_role(state: &Arc<AppState>, email: &str, is_moderator: bool) -> AuthUser {
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+            .bind(email.to_lowercase())
+            .fetch_one(&state.db)
+            .await
+            .expect("l'utilisateur de test doit déjà être enregistré");
+        AuthUser { user_id, email: email.to_string(), is_moderator }
     }
 
     /// Fait passer un appareil en "appareil de confiance" SANS passer par l'envoi d'email réel.
@@ -845,8 +879,13 @@ mod tests {
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
 
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
-            .bind(email)
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+            .bind(email.to_lowercase())
+            .fetch_one(&state.db)
+            .await
+            .expect("le compte de test doit exister");
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+            .bind(user_id)
             .bind(crate::handlers::auth::PURPOSE_LOGIN_2FA)
             .bind(code)
             .bind(expires_at)
@@ -872,13 +911,16 @@ mod tests {
         let state = build_test_state().await;
         let email_lowercase = "casetest@example.com";
         register_test_user(&state, email_lowercase, "ancien_mot_de_passe").await;
+        let user_id = auth(&state, email_lowercase).await.user_id;
 
         let code = "222222";
         let expires_at = (Utc::now() + chrono::Duration::minutes(15))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
-            .bind(email_lowercase) // stocké en minuscules, comme le ferait request_password_reset()
+        // user_id résolu depuis l'email EN MINUSCULES (voir auth() ci-dessus), comme le ferait
+        // réellement request_password_reset() avant d'écrire cette même ligne.
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+            .bind(user_id)
             .bind(PURPOSE_PASSWORD_RESET)
             .bind(code)
             .bind(expires_at)
@@ -920,7 +962,7 @@ mod tests {
             .await
             .expect("le login doit réussir");
 
-        let user = AuthUser { email: email.to_string(), is_moderator: false };
+        let user = auth_with_role(&state, &email.to_string(), false).await;
 
         // Mauvais ancien hash -> doit échouer (coffre vide ici, reencrypted_entries vide aussi)
         let bad_payload = ChangeMasterPasswordPayload {
@@ -930,7 +972,7 @@ mod tests {
             reencrypted_history: vec![],
             reencrypted_attachments: vec![],
         };
-        let result = update_password(State(state.clone()), AuthUser { email: user.email.clone(), is_moderator: false }, Json(bad_payload)).await;
+        let result = update_password(State(state.clone()), auth(&state, &user.email.clone()).await, Json(bad_payload)).await;
         assert!(
             matches!(result, Err(AppError::InvalidCredentials)),
             "un mauvais ancien hash d'authentification doit être rejeté"
@@ -944,13 +986,13 @@ mod tests {
             reencrypted_history: vec![],
             reencrypted_attachments: vec![],
         };
-        update_password(State(state.clone()), AuthUser { email: user.email.clone(), is_moderator: false }, Json(good_payload))
+        update_password(State(state.clone()), auth(&state, &user.email.clone()).await, Json(good_payload))
             .await
             .expect("le changement de mot de passe doit réussir avec le bon ancien hash");
 
         // Toutes les sessions doivent avoir été invalidées
-        let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_email = ?")
-            .bind(email)
+        let session_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id)
             .fetch_one(&state.db)
             .await
             .unwrap();
@@ -979,7 +1021,7 @@ mod tests {
             reencrypted_history: vec![],
             reencrypted_attachments: vec![],
         };
-        update_password(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false }, Json(payload))
+        update_password(State(state.clone()), auth_with_role(&state, &email.to_string(), false).await, Json(payload))
             .await
             .expect("le changement de mot de passe doit réussir");
 
@@ -1012,13 +1054,13 @@ mod tests {
                 encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
             };
             crate::handlers::vault::add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-                AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+                auth_with_role(&state, &email.to_string(), false).await, Json(entry))
                 .await.expect("l'ajout doit réussir");
         }
 
         // Le client ne renvoie qu'UNE SEULE entrée re-chiffrée sur les deux -> doit être refusé
-        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_all(&state.db).await.unwrap();
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_all(&state.db).await.unwrap();
         let incomplete_payload = ChangeMasterPasswordPayload {
             old_master_password_hash: "mot_de_passe_actuel_123".to_string(),
             new_master_password_hash: "nouveau_mot_de_passe_789".to_string(),
@@ -1034,7 +1076,7 @@ mod tests {
             reencrypted_history: vec![],
             reencrypted_attachments: vec![],
         };
-        let result = update_password(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false }, Json(incomplete_payload)).await;
+        let result = update_password(State(state.clone()), auth_with_role(&state, &email.to_string(), false).await, Json(incomplete_payload)).await;
         assert!(
             matches!(result, Err(AppError::ValidationError(_))),
             "un re-chiffrement incomplet doit être refusé"
@@ -1069,12 +1111,12 @@ mod tests {
                 encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
             };
             crate::handlers::vault::add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-                AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+                auth_with_role(&state, &email.to_string(), false).await, Json(entry))
                 .await.expect("l'ajout doit réussir");
         }
 
-        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_all(&state.db).await.unwrap();
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_all(&state.db).await.unwrap();
 
         // Le BON NOMBRE d'entrées (2 pour 2 en base), mais c'est deux fois la MÊME.
         let make = |id: &str| crate::models::ReencryptedVaultEntry {
@@ -1093,7 +1135,7 @@ mod tests {
             reencrypted_history: vec![],
             reencrypted_attachments: vec![],
         };
-        let result = update_password(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false }, Json(duplicate_payload)).await;
+        let result = update_password(State(state.clone()), auth_with_role(&state, &email.to_string(), false).await, Json(duplicate_payload)).await;
         assert!(
             matches!(result, Err(AppError::ValidationError(_))),
             "un identifiant envoyé deux fois doit être refusé, même si le NOMBRE d'entrées correspond"
@@ -1126,10 +1168,10 @@ mod tests {
             encrypted_password: "ancien_chiffre_pw".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         crate::handlers::vault::add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth_with_role(&state, &email.to_string(), false).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         let payload = ChangeMasterPasswordPayload {
             old_master_password_hash: "mot_de_passe_initial_123".to_string(),
@@ -1146,7 +1188,7 @@ mod tests {
             reencrypted_history: vec![],
             reencrypted_attachments: vec![],
         };
-        update_password(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false }, Json(payload))
+        update_password(State(state.clone()), auth_with_role(&state, &email.to_string(), false).await, Json(payload))
             .await
             .expect("le changement de mot de passe avec re-chiffrement doit réussir");
 
@@ -1173,10 +1215,10 @@ mod tests {
             encrypted_password: "v0".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         crate::handlers::vault::add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth_with_role(&state, &email.to_string(), false).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         // Un changement RÉEL de mot de passe crée une ligne d'historique à re-chiffrer plus tard.
         let updated = VaultEntryInput {
@@ -1186,7 +1228,7 @@ mod tests {
             encrypted_password: "v1".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         crate::handlers::vault::update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()), Json(updated))
+            auth_with_role(&state, &email.to_string(), false).await, Path(id.clone()), Json(updated))
             .await.expect("la modification doit réussir");
 
         // reencrypted_entries est complet (1/1), mais reencrypted_history est vide alors qu'une
@@ -1206,7 +1248,7 @@ mod tests {
             reencrypted_history: vec![],
             reencrypted_attachments: vec![],
         };
-        let result = update_password(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false }, Json(payload)).await;
+        let result = update_password(State(state.clone()), auth_with_role(&state, &email.to_string(), false).await, Json(payload)).await;
         assert!(
             matches!(result, Err(AppError::ValidationError(_))),
             "un historique re-chiffré incomplet doit être refusé"
@@ -1237,10 +1279,10 @@ mod tests {
             encrypted_password: "v0".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         crate::handlers::vault::add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth_with_role(&state, &email.to_string(), false).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         let updated = VaultEntryInput {
             encrypted_site_name: "Site".to_string(), encrypted_username: None, encrypted_login_email: None,
@@ -1249,7 +1291,7 @@ mod tests {
             encrypted_password: "v1".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         crate::handlers::vault::update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()), Json(updated))
+            auth_with_role(&state, &email.to_string(), false).await, Path(id.clone()), Json(updated))
             .await.expect("la modification doit réussir");
 
         let history_id: String = sqlx::query_scalar("SELECT id FROM vault_password_history WHERE vault_id = ?")
@@ -1273,7 +1315,7 @@ mod tests {
             }],
             reencrypted_attachments: vec![],
         };
-        update_password(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false }, Json(payload))
+        update_password(State(state.clone()), auth_with_role(&state, &email.to_string(), false).await, Json(payload))
             .await
             .expect("le changement de mot de passe avec historique complet doit réussir");
 
@@ -1300,14 +1342,14 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         crate::handlers::vault::add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth_with_role(&state, &email.to_string(), false).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         crate::handlers::vault::add_vault_attachment(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth_with_role(&state, &email.to_string(), false).await,
             Path(vault_id.clone()),
             Json(VaultAttachmentInput {
                 encrypted_filename: "ancien_nom_chiffre".to_string(),
@@ -1337,7 +1379,7 @@ mod tests {
                 encrypted_content: "nouveau_contenu_chiffre".to_string(),
             }],
         };
-        update_password(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false }, Json(payload))
+        update_password(State(state.clone()), auth_with_role(&state, &email.to_string(), false).await, Json(payload))
             .await
             .expect("le changement de mot de passe avec pièce jointe re-chiffrée doit réussir");
 
@@ -1366,14 +1408,14 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         crate::handlers::vault::add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth_with_role(&state, &email.to_string(), false).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         crate::handlers::vault::add_vault_attachment(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth_with_role(&state, &email.to_string(), false).await,
             Path(vault_id.clone()),
             Json(VaultAttachmentInput {
                 encrypted_filename: "nom_chiffre".to_string(),
@@ -1399,7 +1441,7 @@ mod tests {
             reencrypted_history: vec![],
             reencrypted_attachments: vec![],
         };
-        let result = update_password(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false }, Json(payload)).await;
+        let result = update_password(State(state.clone()), auth_with_role(&state, &email.to_string(), false).await, Json(payload)).await;
         assert!(
             matches!(result, Err(AppError::ValidationError(_))),
             "un re-chiffrement de pièce jointe incomplet doit être refusé"
@@ -1414,20 +1456,18 @@ mod tests {
         );
     }
 
-    /// update_email() doit changer l'email, et grâce à ON UPDATE CASCADE, les tables liées
-    /// (refresh_tokens, vault, etc.) doivent suivre automatiquement le nouvel email.
+    /// update_email() doit changer l'email SANS RIEN DÉPLACER ailleurs : depuis le passage à un id
+    /// numérique stable (voir migration 20260923000000_users_numeric_id.sql), `vault`/
+    /// `refresh_tokens`/etc. référencent `user_id`, qui ne change JAMAIS — le coffre reste donc
+    /// accessible via ce même id après coup, sans plus dépendre d'un `ON UPDATE CASCADE`.
     #[tokio::test]
-    async fn test_update_email_changes_email_and_cascades() {
+    async fn test_update_email_changes_email_and_vault_stays_accessible() {
         let state = build_test_state().await;
         let old_email = "oldemail@example.com";
         let new_email = "newemail@example.com";
         register_test_user(&state, old_email, "mot_de_passe_test_123").await;
+        let user_id = auth(&state, old_email).await.user_id;
 
-        // Une entrée de coffre AVANT le changement d'email : sert à vérifier que ON UPDATE
-        // CASCADE propage réellement le changement à `vault`, pas seulement à `users` (sqlx
-        // active `foreign_keys` par défaut sur chaque connexion, voir main.rs, mais on le
-        // vérifie ici avec un vrai test bout en bout plutôt que de se fier uniquement au
-        // comportement par défaut d'une lib tierce).
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
         let entry = VaultEntryInput {
             encrypted_site_name: "AvantRenommage".to_string(), encrypted_username: None, encrypted_login_email: None, encrypted_folder: None, encrypted_notes: None, encrypted_url: None, password_changed: false, expected_version: None,
@@ -1435,10 +1475,10 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         crate::handlers::vault::add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: old_email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, old_email).await, Json(entry))
             .await.expect("l'ajout doit réussir");
 
-        let user = AuthUser { email: old_email.to_string(), is_moderator: false };
+        let user = auth(&state, old_email).await;
         let payload = UpdateEmailPayload {
             new_email: new_email.to_string(),
             master_password_hash: "mot_de_passe_test_123".to_string(),
@@ -1461,12 +1501,11 @@ mod tests {
             .unwrap();
         assert_eq!(new_exists, 1, "le nouvel email doit exister");
 
-        // L'entrée de coffre doit être accessible sous le NOUVEL email (cascade réelle), et plus
-        // du tout sous l'ancien — sinon l'utilisateur "perdrait" silencieusement son coffre.
-        let entries_new_email = VaultRepository::get_all(&state.db, new_email, 50, 0).await.unwrap();
-        assert_eq!(entries_new_email.len(), 1, "le coffre doit rester accessible sous le nouvel email grâce à ON UPDATE CASCADE");
-        let entries_old_email = VaultRepository::get_all(&state.db, old_email, 50, 0).await.unwrap();
-        assert!(entries_old_email.is_empty(), "plus aucune entrée ne doit rester associée à l'ancien email");
+        // Le même user_id (jamais modifié par le changement d'email) doit continuer à voir
+        // exactement la même entrée de coffre — c'est tout l'intérêt d'une clé stable.
+        let entries = VaultRepository::get_all(&state.db, user_id, &new_email, 50, 0).await.unwrap();
+        assert_eq!(entries.len(), 1, "le coffre doit rester accessible via le même user_id après un changement d'email");
+        assert_eq!(entries[0].user_email, new_email, "la réponse JSON doit refléter le NOUVEL email, pas l'ancien");
     }
 
     /// update_email() doit refuser un appel venant de l'extension (Origin chrome-extension://…)
@@ -1490,12 +1529,12 @@ mod tests {
         // 1. Depuis l'extension, flag désactivé (valeur par défaut) : refusé.
         let denied = update_email(
             State(state.clone()), extension_headers.clone(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(payload()),
+            auth_with_role(&state, &email.to_string(), false).await, Json(payload()),
         ).await;
         assert!(matches!(denied, Err(AppError::Forbidden)), "doit être refusé depuis l'extension tant que le flag est désactivé");
 
         // 2. Depuis le desktop (pas d'Origin d'extension) : autorisé malgré le flag désactivé.
-        let user = AuthUser { email: email.to_string(), is_moderator: false };
+        let user = auth_with_role(&state, &email.to_string(), false).await;
         update_email(State(state.clone()), HeaderMap::new(), user, Json(payload()))
             .await
             .expect("le desktop ne doit jamais être concerné par cette restriction");
@@ -1504,7 +1543,7 @@ mod tests {
         let admin_email = "admin-ext@example.com";
         register_test_user(&state, admin_email, "mot_de_passe_test_123").await;
         sqlx::query("UPDATE users SET is_moderator = 1 WHERE email = ?").bind(admin_email).execute(&state.db).await.unwrap();
-        let admin = AuthUser { email: admin_email.to_string(), is_moderator: true };
+        let admin = auth_with_role(&state, &admin_email.to_string(), true).await;
         update_email(
             State(state.clone()), extension_headers.clone(), admin,
             Json(UpdateEmailPayload { new_email: "admin-nouveau@example.com".to_string(), master_password_hash: "mot_de_passe_test_123".to_string() }),
@@ -1514,7 +1553,7 @@ mod tests {
         let flagged_email = "flagged-user@example.com";
         register_test_user(&state, flagged_email, "mot_de_passe_test_123").await;
         sqlx::query("UPDATE users SET can_change_email_via_extension = 1 WHERE email = ?").bind(flagged_email).execute(&state.db).await.unwrap();
-        let flagged_user = AuthUser { email: flagged_email.to_string(), is_moderator: false };
+        let flagged_user = auth_with_role(&state, &flagged_email.to_string(), false).await;
         update_email(
             State(state.clone()), extension_headers, flagged_user,
             Json(UpdateEmailPayload { new_email: "flagged-nouveau@example.com".to_string(), master_password_hash: "mot_de_passe_test_123".to_string() }),
@@ -1534,8 +1573,8 @@ mod tests {
         request_password_reset(State(state.clone()), Json(ForgotPasswordPayload { email: known_email.to_string() }))
             .await
             .expect("la demande doit réussir pour un email connu");
-        let known_code_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE email = ?")
-            .bind(known_email)
+        let known_code_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE user_id = ?")
+            .bind(auth(&state, known_email).await.user_id)
             .fetch_one(&state.db)
             .await
             .unwrap();
@@ -1545,12 +1584,15 @@ mod tests {
         let result = request_password_reset(State(state.clone()), Json(ForgotPasswordPayload { email: unknown_email.to_string() })).await;
         assert!(result.is_ok(), "la requête doit répondre succès même pour un email inconnu (anti-énumération)");
 
-        let unknown_code_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE email = ?")
-            .bind(unknown_email)
+        // `unknown_email` n'a jamais été enregistré : aucun user_id ne peut lui correspondre, donc
+        // aucune ligne tfa_codes ne peut exister pour lui — pas de lookup possible (auth()
+        // paniquerait), la seule assertion valable est "la table est restée vide au global" (le
+        // test ne crée aucun autre code entre-temps).
+        let unknown_code_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes")
             .fetch_one(&state.db)
             .await
             .unwrap();
-        assert_eq!(unknown_code_count, 0, "aucun code ne doit être généré pour un email inconnu");
+        assert_eq!(unknown_code_count, 1, "aucun code supplémentaire ne doit être généré pour un email inconnu (seul celui de known_email doit exister)");
     }
 
     /// ANTI-EMAIL-BOMBING (trouvé à l'audit) : deux demandes de reset coup sur coup pour la MÊME
@@ -1568,15 +1610,16 @@ mod tests {
         request_password_reset(State(state.clone()), Json(ForgotPasswordPayload { email: email.to_string() }))
             .await
             .expect("la première demande doit réussir");
-        let first_code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
-            .bind(email).bind(PURPOSE_PASSWORD_RESET)
+        let user_id = auth(&state, email).await.user_id;
+        let first_code: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE user_id = ? AND purpose = ?")
+            .bind(user_id).bind(PURPOSE_PASSWORD_RESET)
             .fetch_one(&state.db).await.unwrap();
 
         let second = request_password_reset(State(state.clone()), Json(ForgotPasswordPayload { email: email.to_string() })).await;
         assert!(second.is_ok(), "la seconde demande doit répondre le même 202 (anti-énumération)");
 
-        let code_after: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE email = ? AND purpose = ?")
-            .bind(email).bind(PURPOSE_PASSWORD_RESET)
+        let code_after: String = sqlx::query_scalar("SELECT code FROM tfa_codes WHERE user_id = ? AND purpose = ?")
+            .bind(user_id).bind(PURPOSE_PASSWORD_RESET)
             .fetch_one(&state.db).await.unwrap();
         assert_eq!(
             code_after, first_code,
@@ -1597,7 +1640,7 @@ mod tests {
             .bind("admin@example.com").bind("hash_non_pertinent").bind(true)
             .execute(&state.db).await.unwrap();
 
-        let non_admin = get_me(State(state.clone()), AuthUser { email: "user@example.com".to_string(), is_moderator: false })
+        let non_admin = get_me(State(state.clone()), auth_with_role(&state, &"user@example.com".to_string(), false).await)
             .await.expect("get_me doit réussir").into_response();
         let bytes = axum::body::to_bytes(non_admin.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1606,7 +1649,7 @@ mod tests {
         assert_eq!(json["max_trusted_devices"], 15, "le plafond actuel doit refléter la valeur réellement stockée en BDD");
         assert_eq!(json["is_admin"], false, "sans ADMIN_EMAIL configuré, personne n'est le premier admin");
 
-        let admin = get_me(State(state.clone()), AuthUser { email: "admin@example.com".to_string(), is_moderator: true })
+        let admin = get_me(State(state.clone()), auth_with_role(&state, &"admin@example.com".to_string(), true).await)
             .await.expect("get_me doit réussir").into_response();
         let bytes = axum::body::to_bytes(admin.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1643,13 +1686,13 @@ mod tests {
             .bind("other-admin@example.com").bind("hash_non_pertinent").bind(true)
             .execute(&state.db).await.unwrap();
 
-        let owner = get_me(State(state.clone()), AuthUser { email: "owner@example.com".to_string(), is_moderator: true })
+        let owner = get_me(State(state.clone()), auth_with_role(&state, &"owner@example.com".to_string(), true).await)
             .await.expect("get_me doit réussir").into_response();
         let bytes = axum::body::to_bytes(owner.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["is_admin"], true, "le compte ADMIN_EMAIL doit être identifié comme le premier admin");
 
-        let other = get_me(State(state.clone()), AuthUser { email: "other-admin@example.com".to_string(), is_moderator: true })
+        let other = get_me(State(state.clone()), auth_with_role(&state, &"other-admin@example.com".to_string(), true).await)
             .await.expect("get_me doit réussir").into_response();
         let bytes = axum::body::to_bytes(other.into_body(), usize::MAX).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1669,7 +1712,7 @@ mod tests {
         state.log_audit("user@example.com", "VAULT_UPDATE", "127.0.0.1".to_string(), None).await;
         state.log_audit("other@example.com", "VAULT_ADD", "10.0.0.1".to_string(), None).await;
 
-        let response = get_my_audit_logs(State(state.clone()), AuthUser { email: "user@example.com".to_string(), is_moderator: false })
+        let response = get_my_audit_logs(State(state.clone()), auth_with_role(&state, &"user@example.com".to_string(), false).await)
             .await.expect("get_my_audit_logs doit réussir").into_response();
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let logs: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1695,10 +1738,11 @@ mod tests {
             .await
             .unwrap();
 
+        let user_id = auth(state, email).await.user_id;
         let code = "424242".to_string();
         let expires_at = (Utc::now() + chrono::Duration::minutes(15)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
-            .bind(email)
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+            .bind(user_id)
             .bind(PURPOSE_PASSWORD_RESET)
             .bind(&code)
             .bind(expires_at)
@@ -1739,8 +1783,8 @@ mod tests {
         assert!(value["attachments"].is_array(), "les pièces jointes chiffrées doivent accompagner le kit");
         assert!(value.get("access_token").is_none(), "aucune session ne doit être délivrée : inutile, donc à ne pas accorder");
 
-        let still_there: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE email = ? AND purpose = ?")
-            .bind(email)
+        let still_there: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tfa_codes WHERE user_id = ? AND purpose = ?")
+            .bind(auth(&state, email).await.user_id)
             .bind(PURPOSE_PASSWORD_RESET)
             .fetch_one(&state.db)
             .await
@@ -1758,8 +1802,8 @@ mod tests {
 
         let code = "424242".to_string();
         let expires_at = (Utc::now() + chrono::Duration::minutes(15)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        sqlx::query("INSERT OR REPLACE INTO tfa_codes (email, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
-            .bind(email).bind(PURPOSE_PASSWORD_RESET).bind(&code).bind(expires_at)
+        sqlx::query("INSERT OR REPLACE INTO tfa_codes (user_id, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+            .bind(auth(&state, email).await.user_id).bind(PURPOSE_PASSWORD_RESET).bind(&code).bind(expires_at)
             .execute(&state.db).await.unwrap();
 
         let result = get_recovery_data(
@@ -1810,12 +1854,12 @@ mod tests {
             };
             crate::handlers::vault::add_to_vault(
                 State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-                AuthUser { email: email.to_string(), is_moderator: false }, Json(entry),
+                auth_with_role(&state, &email.to_string(), false).await, Json(entry),
             ).await.expect("l'ajout doit réussir");
         }
 
-        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_all(&state.db).await.unwrap();
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_all(&state.db).await.unwrap();
 
         let reencrypted: Vec<crate::models::ReencryptedVaultEntry> = ids.iter().map(|id| crate::models::ReencryptedVaultEntry {
             id: id.clone(),
@@ -1838,8 +1882,8 @@ mod tests {
         ).await.expect("la récupération doit aboutir");
 
         // 1. Le coffre a SURVÉCU, avec le contenu re-chiffré.
-        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(remaining, 2, "le coffre ne doit PAS être vidé — c'est toute la raison d'être du kit");
         let stored: String = sqlx::query_scalar("SELECT encrypted_password FROM vault WHERE id = ?")
             .bind(&ids[0]).fetch_one(&state.db).await.unwrap();
@@ -1878,11 +1922,11 @@ mod tests {
             };
             crate::handlers::vault::add_to_vault(
                 State(state.clone()), ConnectInfo(addr()), HeaderMap::new(),
-                AuthUser { email: email.to_string(), is_moderator: false }, Json(entry),
+                auth_with_role(&state, &email.to_string(), false).await, Json(entry),
             ).await.unwrap();
         }
-        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_all(&state.db).await.unwrap();
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_all(&state.db).await.unwrap();
 
         let make = |id: &str| crate::models::ReencryptedVaultEntry {
             id: id.to_string(),
@@ -1924,23 +1968,22 @@ mod tests {
         let state = build_test_state().await;
         let email = "kit-lifecycle@example.com";
         register_test_user(&state, email, "mot_de_passe_initial_123").await;
-        let user = || AuthUser { email: email.to_string(), is_moderator: false };
 
-        let me = read_json_body(get_me(State(state.clone()), user()).await.unwrap().into_response()).await;
+        let me = read_json_body(get_me(State(state.clone()), auth(&state, email).await).await.unwrap().into_response()).await;
         assert_eq!(me["has_recovery_kit"], false, "aucun kit au départ");
 
         save_recovery_kit(
-            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), user(),
+            State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), auth(&state, email).await,
             Json(SaveRecoveryKitPayload { sealed_vault_key: "blob-scelle".to_string() }),
         ).await.expect("l'enregistrement doit réussir");
 
-        let me = read_json_body(get_me(State(state.clone()), user()).await.unwrap().into_response()).await;
+        let me = read_json_body(get_me(State(state.clone()), auth(&state, email).await).await.unwrap().into_response()).await;
         assert_eq!(me["has_recovery_kit"], true, "le kit doit être signalé comme présent");
         assert!(me.get("recovery_sealed_vault_key").is_none(), "GET /me ne doit JAMAIS exposer le blob lui-même");
 
-        delete_recovery_kit(State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), user())
+        delete_recovery_kit(State(state.clone()), ConnectInfo(addr()), HeaderMap::new(), auth(&state, email).await)
             .await.expect("la suppression doit réussir");
-        let me = read_json_body(get_me(State(state.clone()), user()).await.unwrap().into_response()).await;
+        let me = read_json_body(get_me(State(state.clone()), auth(&state, email).await).await.unwrap().into_response()).await;
         assert_eq!(me["has_recovery_kit"], false, "après suppression, plus de kit");
     }
 
@@ -1962,7 +2005,7 @@ mod tests {
 
         update_password(
             State(state.clone()),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth_with_role(&state, &email.to_string(), false).await,
             Json(ChangeMasterPasswordPayload {
                 old_master_password_hash: "ancien_mot_de_passe_123".to_string(),
                 new_master_password_hash: "nouveau_mot_de_passe_789".to_string(),

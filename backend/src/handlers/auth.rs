@@ -62,14 +62,24 @@ pub(super) async fn is_code_within_cooldown(
     purpose: &str,
     lifetime_minutes: i64,
 ) -> Result<bool, crate::error::AppError> {
+    let user_id: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+        .bind(email)
+        .fetch_optional(&state.db)
+        .await?;
+    // Aucun compte pour cet email : aucune ligne tfa_codes n'a jamais pu être écrite pour lui,
+    // donc jamais en cooldown — même comportement que l'ancienne requête filtrée par email.
+    let Some(user_id) = user_id else {
+        return Ok(false);
+    };
+
     let threshold = format!("+{} seconds", lifetime_minutes * 60 - EMAIL_RESEND_COOLDOWN_SECONDS);
 
     let recent: Option<i64> = sqlx::query_scalar(
         "SELECT 1 FROM tfa_codes
-         WHERE email = ? AND purpose = ?
+         WHERE user_id = ? AND purpose = ?
          AND expires_at > STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now', ?)",
     )
-    .bind(email)
+    .bind(user_id)
     .bind(purpose)
     .bind(&threshold)
     .fetch_optional(&state.db)

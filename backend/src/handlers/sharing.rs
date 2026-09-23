@@ -20,7 +20,7 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
-use crate::{AppState, error::AppError, mailer, middleware::AuthUser, repository::SharingRepository, models::*};
+use crate::{AppState, error::AppError, mailer, middleware::AuthUser, repository::{SharingRepository, UserRepository}, models::*};
 use validator::Validate;
 use std::net::SocketAddr;
 use axum::extract::ConnectInfo;
@@ -44,8 +44,10 @@ pub async fn share_entry(
     if shared_with_email == user.email {
         return Err(AppError::ValidationError("Impossible de partager une entrée avec soi-même.".to_string()));
     }
+    let shared_with_id = UserRepository::find_id_by_email(&state.db, &shared_with_email).await?
+        .ok_or_else(|| AppError::ValidationError("Aucun compte n'existe avec cet email.".to_string()))?;
 
-    let id = SharingRepository::share_entry(&state.db, &vault_id, &user.email, &shared_with_email, &payload.sealed_entry).await?;
+    let id = SharingRepository::share_entry(&state.db, &vault_id, user.user_id, shared_with_id, &payload.sealed_entry).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_SHARE_ENTRY", addr.to_string(), agent).await;
@@ -67,13 +69,13 @@ pub async fn list_shares_for_entry(
     user: AuthUser,
     Path(vault_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let shares = SharingRepository::list_shares_for_entry(&state.db, &vault_id, &user.email).await?;
+    let shares = SharingRepository::list_shares_for_entry(&state.db, &vault_id, user.user_id).await?;
     Ok(Json(shares))
 }
 
 /// Tout ce qui a été partagé AVEC l'utilisateur connecté, tous propriétaires confondus.
 pub async fn list_shared_with_me(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
-    let shares = SharingRepository::list_shared_with_me(&state.db, &user.email).await?;
+    let shares = SharingRepository::list_shared_with_me(&state.db, user.user_id).await?;
     Ok(Json(shares))
 }
 
@@ -86,7 +88,7 @@ pub async fn get_shared_entry(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let view = SharingRepository::get_shared_entry(&state.db, &id, &user.email).await?;
+    let view = SharingRepository::get_shared_entry(&state.db, &id, user.user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_SHARE_VIEW", addr.to_string(), agent).await;
@@ -103,7 +105,7 @@ pub async fn revoke_share(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    SharingRepository::revoke_share(&state.db, &id, &user.email).await?;
+    SharingRepository::revoke_share(&state.db, &id, user.user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_SHARE_REVOKE", addr.to_string(), agent).await;
@@ -182,8 +184,13 @@ mod tests {
         ConnectInfo("127.0.0.1:1".parse().unwrap())
     }
 
-    fn auth(email: &str) -> AuthUser {
-        AuthUser { email: email.to_string(), is_moderator: false }
+    async fn auth(state: &Arc<AppState>, email: &str) -> AuthUser {
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_one(&state.db)
+            .await
+            .expect("l'utilisateur de test doit déjà être enregistré");
+        AuthUser { user_id, email: email.to_string(), is_moderator: false }
     }
 
     async fn read_json_body(response: axum::response::Response) -> serde_json::Value {
@@ -192,9 +199,10 @@ mod tests {
     }
 
     async fn setup_keys(state: &Arc<AppState>, email: &str) {
+        let user_id = auth(state, email).await.user_id;
         EmergencyRepository::upsert_user_keys(
             &state.db,
-            email,
+            user_id,
             &UserKeysInput { public_key: format!("pubkey_{email}"), encrypted_private_key: format!("privkey_chiffre_{email}") },
         )
         .await
@@ -202,9 +210,10 @@ mod tests {
     }
 
     async fn add_test_entry(state: &Arc<AppState>, owner_email: &str) -> String {
+        let owner_id = auth(state, owner_email).await.user_id;
         VaultRepository::add(
             &state.db,
-            owner_email,
+            owner_id,
             VaultEntryInput {
                 encrypted_site_name: "chiffre_site".to_string(), encrypted_username: None, encrypted_login_email: None,
                 encrypted_folder: None, encrypted_notes: None, encrypted_url: None, password_changed: false, expected_version: None,
@@ -212,8 +221,8 @@ mod tests {
                 encrypted_password: "chiffre_mdp".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
             },
         ).await.unwrap();
-        sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(owner_email)
+        sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(owner_id)
             .fetch_one(&state.db)
             .await
             .unwrap()
@@ -230,14 +239,14 @@ mod tests {
         let vault_id = add_test_entry(&state, "owner@example.com").await;
 
         let share_result = share_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner@example.com").await,
             Path(vault_id.clone()),
             Json(ShareEntryPayload { shared_with_email: "friend@example.com".to_string(), sealed_entry: "blob_scelle".to_string() }),
         ).await.expect("le partage doit réussir");
         let id = read_json_body(share_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         // Le destinataire voit le partage dans sa liste "partagé avec moi".
-        let shared_with_me = list_shared_with_me(State(state.clone()), auth("friend@example.com")).await.unwrap();
+        let shared_with_me = list_shared_with_me(State(state.clone()), auth(&state, "friend@example.com").await).await.unwrap();
         let value = read_json_body(shared_with_me.into_response()).await;
         let rows = value.as_array().unwrap();
         assert_eq!(rows.len(), 1);
@@ -245,16 +254,16 @@ mod tests {
         assert!(rows[0].get("sealed_entry").is_none(), "le listing ne doit JAMAIS exposer le blob scellé");
 
         // Le destinataire peut récupérer le blob scellé via le fetch unique.
-        let view_result = get_shared_entry(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend@example.com"), Path(id.clone()))
+        let view_result = get_shared_entry(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend@example.com").await, Path(id.clone()))
             .await.expect("la récupération du blob scellé doit réussir pour le destinataire");
         let view_value = read_json_body(view_result.into_response()).await;
         assert_eq!(view_value["sealed_entry"].as_str(), Some("blob_scelle"));
         assert_eq!(view_value["owner_email"].as_str(), Some("owner@example.com"));
 
         // Le propriétaire révoque -> plus rien n'est accessible côté destinataire.
-        revoke_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("owner@example.com"), Path(id.clone()))
+        revoke_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner@example.com").await, Path(id.clone()))
             .await.expect("la révocation doit réussir");
-        let after_revoke = get_shared_entry(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend@example.com"), Path(id)).await;
+        let after_revoke = get_shared_entry(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend@example.com").await, Path(id)).await;
         assert!(matches!(after_revoke, Err(AppError::NotFound)), "après révocation, plus aucun accès ne doit être possible");
     }
 
@@ -271,16 +280,16 @@ mod tests {
         let vault_id = add_test_entry(&state, "owner2@example.com").await;
 
         let share_result = share_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner2@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner2@example.com").await,
             Path(vault_id),
             Json(ShareEntryPayload { shared_with_email: "friend2@example.com".to_string(), sealed_entry: "secret".to_string() }),
         ).await.unwrap();
         let id = read_json_body(share_result.into_response()).await["id"].as_str().unwrap().to_string();
 
-        let stranger_attempt = get_shared_entry(State(state.clone()), test_addr(), HeaderMap::new(), auth("stranger@example.com"), Path(id.clone())).await;
+        let stranger_attempt = get_shared_entry(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "stranger@example.com").await, Path(id.clone())).await;
         assert!(matches!(stranger_attempt, Err(AppError::NotFound)), "un tiers étranger au partage ne doit jamais pouvoir lire le blob scellé");
 
-        let owner_attempt = get_shared_entry(State(state.clone()), test_addr(), HeaderMap::new(), auth("owner2@example.com"), Path(id)).await;
+        let owner_attempt = get_shared_entry(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner2@example.com").await, Path(id)).await;
         assert!(matches!(owner_attempt, Err(AppError::NotFound)), "même le propriétaire ne doit pas pouvoir lire via CETTE route, réservée au destinataire");
     }
 
@@ -291,7 +300,7 @@ mod tests {
         let vault_id = add_test_entry(&state, "solo@example.com").await;
 
         let result = share_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("solo@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "solo@example.com").await,
             Path(vault_id),
             Json(ShareEntryPayload { shared_with_email: "solo@example.com".to_string(), sealed_entry: "x".to_string() }),
         ).await;
@@ -309,7 +318,7 @@ mod tests {
         let vault_id = add_test_entry(&state, "realowner@example.com").await;
 
         let result = share_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("attacker@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "attacker@example.com").await,
             Path(vault_id),
             Json(ShareEntryPayload { shared_with_email: "victim@example.com".to_string(), sealed_entry: "x".to_string() }),
         ).await;
@@ -327,14 +336,14 @@ mod tests {
         let vault_id = add_test_entry(&state, "owner3@example.com").await;
 
         let first = share_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner3@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner3@example.com").await,
             Path(vault_id.clone()),
             Json(ShareEntryPayload { shared_with_email: "friend3@example.com".to_string(), sealed_entry: "ancien_blob".to_string() }),
         ).await.unwrap();
         let first_id = read_json_body(first.into_response()).await["id"].as_str().unwrap().to_string();
 
         let second = share_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner3@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner3@example.com").await,
             Path(vault_id.clone()),
             Json(ShareEntryPayload { shared_with_email: "friend3@example.com".to_string(), sealed_entry: "nouveau_blob".to_string() }),
         ).await.unwrap();
@@ -342,11 +351,11 @@ mod tests {
 
         assert_eq!(first_id, second_id, "re-partager avec le même destinataire doit réutiliser le même id de partage");
 
-        let owner_shares = list_shares_for_entry(State(state.clone()), auth("owner3@example.com"), Path(vault_id)).await.unwrap();
+        let owner_shares = list_shares_for_entry(State(state.clone()), auth(&state, "owner3@example.com").await, Path(vault_id)).await.unwrap();
         let owner_value = read_json_body(owner_shares.into_response()).await;
         assert_eq!(owner_value.as_array().unwrap().len(), 1, "re-partager ne doit jamais créer une seconde ligne pour le même couple (entrée, destinataire)");
 
-        let view = get_shared_entry(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend3@example.com"), Path(second_id))
+        let view = get_shared_entry(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend3@example.com").await, Path(second_id))
             .await.unwrap();
         let value = read_json_body(view.into_response()).await;
         assert_eq!(value["sealed_entry"].as_str(), Some("nouveau_blob"), "le blob doit avoir été remplacé par le nouveau, pas dupliqué à côté");
@@ -363,15 +372,16 @@ mod tests {
         let vault_id = add_test_entry(&state, "owner4@example.com").await;
 
         share_entry(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner4@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner4@example.com").await,
             Path(vault_id.clone()),
             Json(ShareEntryPayload { shared_with_email: "friend4@example.com".to_string(), sealed_entry: "blob".to_string() }),
         ).await.unwrap();
 
-        VaultRepository::delete(&state.db, "owner4@example.com", &vault_id).await.unwrap();
-        VaultRepository::purge(&state.db, "owner4@example.com", &vault_id).await.unwrap();
+        let owner4_id = auth(&state, "owner4@example.com").await.user_id;
+        VaultRepository::delete(&state.db, owner4_id, &vault_id).await.unwrap();
+        VaultRepository::purge(&state.db, owner4_id, &vault_id).await.unwrap();
 
-        let shared_with_me = list_shared_with_me(State(state.clone()), auth("friend4@example.com")).await.unwrap();
+        let shared_with_me = list_shared_with_me(State(state.clone()), auth(&state, "friend4@example.com").await).await.unwrap();
         let value = read_json_body(shared_with_me.into_response()).await;
         assert_eq!(value.as_array().unwrap().len(), 0, "la purge de l'entrée doit faire disparaître ses partages (ON DELETE CASCADE)");
     }

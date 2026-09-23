@@ -62,6 +62,33 @@ pub async fn cleanup_expired_ws_tickets(db: &sqlx::SqlitePool) {
     }
 }
 
+/// Supprime les codes 2FA / vérification email / réinitialisation de mot de passe (table
+/// `tfa_codes`, partagée par les trois flux — voir purpose) jamais consommés une fois expirés.
+///
+/// Sans ce nettoyage, un code généré puis jamais utilisé (utilisateur qui abandonne le flux,
+/// n'ouvre jamais l'email...) restait en base indéfiniment : les seules suppressions existantes
+/// sont la consommation réussie, le verrouillage après MAX_CODE_ATTEMPTS, ou l'écrasement par un
+/// nouveau code pour le même (email, purpose) — même lacune que celle déjà corrigée pour
+/// `ws_tickets` (voir cleanup_expired_ws_tickets), qui a un cycle de vie identique.
+///
+/// Même piège de format que `cleanup_expired_tokens` : `expires_at` est toujours écrit au format
+/// ISO ('%Y-%m-%dT%H:%M:%SZ', voir handlers/auth/{account,register}.rs et handlers/auth/session.rs),
+/// donc on compare avec STRFTIME au même format — PAS avec DATETIME('now'), qui produirait un
+/// format différent ("espace" au lieu de "T"/"Z") et raterait silencieusement les codes qui
+/// expirent le jour même.
+pub async fn cleanup_expired_tfa_codes(db: &sqlx::SqlitePool) {
+    let result = sqlx::query("DELETE FROM tfa_codes WHERE expires_at < STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now')")
+        .execute(db)
+        .await;
+
+    if let Ok(res) = result {
+        let count = res.rows_affected();
+        if count > 0 {
+            info!("Nettoyage de {} code(s) 2FA/vérification/réinitialisation expiré(s).", count);
+        }
+    }
+}
+
 /// Durée de conservation du journal d'audit EN BASE DE DONNÉES, en jours.
 ///
 /// Choisie volontairement courte (demande explicite de l'utilisateur) : sans purge, `audit_logs`
@@ -133,7 +160,7 @@ pub async fn prune_account_ip_history(db: &sqlx::SqlitePool) {
     let result = sqlx::query(
         "DELETE FROM account_ip_history WHERE rowid NOT IN (
              SELECT rowid FROM account_ip_history AS keep
-              WHERE keep.user_email = account_ip_history.user_email
+              WHERE keep.user_id = account_ip_history.user_id
               ORDER BY keep.last_seen DESC, keep.rowid DESC
               LIMIT ?
          )",
@@ -252,10 +279,10 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_expired_tokens_removes_expired_even_same_day() {
         let pool = build_test_pool().await;
-        sqlx::query("INSERT INTO users (email, password_hash) VALUES (?, ?)")
+        let user_id: i64 = sqlx::query_scalar("INSERT INTO users (email, password_hash) VALUES (?, ?) RETURNING id")
             .bind("cleanup@example.com")
             .bind("hash_non_pertinent")
-            .execute(&pool)
+            .fetch_one(&pool)
             .await
             .unwrap();
 
@@ -263,9 +290,9 @@ mod tests {
         let expired_today = (chrono::Utc::now() - chrono::Duration::minutes(1))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
-        sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO refresh_tokens (token, user_id, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
             .bind("token-expire-aujourdhui")
-            .bind("cleanup@example.com")
+            .bind(user_id)
             .bind("device-expire")
             .bind(&expired_today)
             .bind(false)
@@ -277,9 +304,9 @@ mod tests {
         let valid_later = (chrono::Utc::now() + chrono::Duration::hours(1))
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
-        sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO refresh_tokens (token, user_id, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
             .bind("token-encore-valide")
-            .bind("cleanup@example.com")
+            .bind(user_id)
             .bind("device-valide")
             .bind(&valid_later)
             .bind(false)
@@ -307,51 +334,51 @@ mod tests {
     #[tokio::test]
     async fn test_purge_old_trashed_vault_entries_removes_only_entries_older_than_30_days() {
         let pool = build_test_pool().await;
-        sqlx::query("INSERT INTO users (email, password_hash) VALUES (?, ?)")
+        let user_id: i64 = sqlx::query_scalar("INSERT INTO users (email, password_hash) VALUES (?, ?) RETURNING id")
             .bind("trashowner@example.com")
             .bind("hash_non_pertinent")
-            .execute(&pool)
+            .fetch_one(&pool)
             .await
             .unwrap();
 
         // Entrée passée à la corbeille il y a 40 jours -> doit être purgée
         sqlx::query(
-            "INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_email, deleted_at)
+            "INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_id, deleted_at)
              VALUES (?, ?, ?, ?, ?, DATETIME('now', '-40 days'))"
         )
         .bind("id-vieux-dechet")
         .bind("VieuxSite")
         .bind("chiffre")
         .bind("email")
-        .bind("trashowner@example.com")
+        .bind(user_id)
         .execute(&pool)
         .await
         .unwrap();
 
         // Entrée passée à la corbeille il y a seulement 5 jours -> doit rester (encore récupérable)
         sqlx::query(
-            "INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_email, deleted_at)
+            "INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_id, deleted_at)
              VALUES (?, ?, ?, ?, ?, DATETIME('now', '-5 days'))"
         )
         .bind("id-recent-dechet")
         .bind("SiteRecent")
         .bind("chiffre")
         .bind("email")
-        .bind("trashowner@example.com")
+        .bind(user_id)
         .execute(&pool)
         .await
         .unwrap();
 
         // Entrée ACTIVE (pas dans la corbeille) -> ne doit jamais être touchée par cette purge
         sqlx::query(
-            "INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_email)
+            "INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_id)
              VALUES (?, ?, ?, ?, ?)"
         )
         .bind("id-actif")
         .bind("SiteActif")
         .bind("chiffre")
         .bind("email")
-        .bind("trashowner@example.com")
+        .bind(user_id)
         .execute(&pool)
         .await
         .unwrap();
@@ -374,26 +401,26 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_expired_ws_tickets_removes_only_expired() {
         let pool = build_test_pool().await;
-        sqlx::query("INSERT INTO users (email, password_hash) VALUES (?, ?)")
+        let user_id: i64 = sqlx::query_scalar("INSERT INTO users (email, password_hash) VALUES (?, ?) RETURNING id")
             .bind("wsticketowner@example.com")
             .bind("hash_non_pertinent")
-            .execute(&pool)
+            .fetch_one(&pool)
             .await
             .unwrap();
 
         let expired_at = (chrono::Utc::now() - chrono::Duration::minutes(1)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        sqlx::query("INSERT INTO ws_tickets (ticket_hash, user_email, expires_at) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO ws_tickets (ticket_hash, user_id, expires_at) VALUES (?, ?, ?)")
             .bind("hash-expire")
-            .bind("wsticketowner@example.com")
+            .bind(user_id)
             .bind(expired_at)
             .execute(&pool)
             .await
             .unwrap();
 
         let valid_at = (chrono::Utc::now() + chrono::Duration::minutes(1)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        sqlx::query("INSERT INTO ws_tickets (ticket_hash, user_email, expires_at) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO ws_tickets (ticket_hash, user_id, expires_at) VALUES (?, ?, ?)")
             .bind("hash-valide")
-            .bind("wsticketowner@example.com")
+            .bind(user_id)
             .bind(valid_at)
             .execute(&pool)
             .await
@@ -406,6 +433,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remaining, vec!["hash-valide".to_string()], "seul le ticket encore valide doit rester");
+    }
+
+    /// cleanup_expired_tfa_codes() doit supprimer un code expiré mais laisser un code encore
+    /// valide intact, y compris quand deux `purpose` différents coexistent pour le même email.
+    #[tokio::test]
+    async fn test_cleanup_expired_tfa_codes_removes_only_expired() {
+        let pool = build_test_pool().await;
+        let user_id: i64 = sqlx::query_scalar("INSERT INTO users (email, password_hash) VALUES (?, ?) RETURNING id")
+            .bind("tfaowner@example.com")
+            .bind("hash_non_pertinent")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let expired_at = (chrono::Utc::now() - chrono::Duration::minutes(1)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        sqlx::query("INSERT INTO tfa_codes (user_id, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+            .bind(user_id)
+            .bind("login_2fa")
+            .bind("111111")
+            .bind(expired_at)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let valid_at = (chrono::Utc::now() + chrono::Duration::minutes(5)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        sqlx::query("INSERT INTO tfa_codes (user_id, purpose, code, expires_at) VALUES (?, ?, ?, ?)")
+            .bind(user_id)
+            .bind("password_reset")
+            .bind("222222")
+            .bind(valid_at)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        cleanup_expired_tfa_codes(&pool).await;
+
+        let remaining: Vec<String> = sqlx::query_scalar("SELECT purpose FROM tfa_codes")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, vec!["password_reset".to_string()], "seul le code encore valide doit rester");
     }
 
     /// cleanup_stale_unverified_accounts() doit supprimer un compte non vérifié inscrit il y a
@@ -516,7 +584,7 @@ mod tests {
         let list_plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
             "EXPLAIN QUERY PLAN
              SELECT id, is_favorite FROM vault
-             WHERE user_email = 'a' AND deleted_at IS NULL
+             WHERE user_id = 1 AND deleted_at IS NULL
              ORDER BY is_favorite DESC LIMIT 100"
         )
         .fetch_all(&pool)
@@ -533,7 +601,7 @@ mod tests {
         let sync_plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
             "EXPLAIN QUERY PLAN
              SELECT COUNT(*), MAX(updated_at) FROM vault
-             WHERE user_email = 'a' AND deleted_at IS NULL"
+             WHERE user_id = 1 AND deleted_at IS NULL"
         )
         .fetch_all(&pool)
         .await

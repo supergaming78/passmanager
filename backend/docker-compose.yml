@@ -182,6 +182,12 @@ services:
       # backend/README.md).
       - BACKUP_KEEP_COUNT=3
       # - BACKUP_INTERVAL_SECONDS=86400 (décommenter pour changer la fréquence, en secondes)
+      # Chiffrement GPG/AES-256 des sauvegardes (voir scripts/backup.sh) : décommente et renseigne
+      # BACKUP_ENCRYPTION_PASSPHRASE dans ton .env (jamais en dur ici, ce fichier est versionné)
+      # si ./backups est synchronisé vers un stockage externe (NAS...) — sans ça, ces fichiers
+      # contiennent en clair emails/IP/noms d'appareils. Sans cette variable, comportement
+      # inchangé (sauvegarde .db en clair).
+      - BACKUP_ENCRYPTION_PASSPHRASE=${BACKUP_ENCRYPTION_PASSPHRASE:-}
     volumes:
       # :ro — ce conteneur ne doit JAMAIS pouvoir écrire dans la base vivante, seulement la lire
       # pour en tirer un instantané cohérent (voir scripts/backup.sh).

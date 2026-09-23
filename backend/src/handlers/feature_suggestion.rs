@@ -29,7 +29,7 @@ pub async fn create_feature_suggestion(
 ) -> Result<impl IntoResponse, AppError> {
     payload.validate()?;
 
-    let id = FeatureSuggestionRepository::create(&state.db, &user.email, &payload).await?;
+    let id = FeatureSuggestionRepository::create(&state.db, user.user_id, &payload).await?;
 
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
 }
@@ -127,8 +127,33 @@ mod tests {
         })
     }
 
-    fn auth(email: &str, is_moderator: bool) -> AuthUser {
-        AuthUser { email: email.to_string(), is_moderator }
+    /// -1 quand l'email n'a jamais été enregistré via seed_user() : ces tests exercent des
+    /// vérifications de permission (is_admin/is_moderator, comparaison d'email) qui ne touchent
+    /// jamais `user.user_id` — seuls les auteurs RÉELS de suggestions (voir create_feature_
+    /// suggestion, qui écrit `author_id` en base) ont besoin d'un id valide, donc déjà seedés.
+    async fn auth(state: &AppState, email: &str, is_moderator: bool) -> AuthUser {
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_optional(&state.db)
+            .await
+            .unwrap()
+            .unwrap_or(-1);
+        AuthUser { user_id, email: email.to_string(), is_moderator }
+    }
+
+    /// `feature_suggestions.author_email` référence désormais `users(email)` par clé étrangère
+    /// (voir migrations/20260916020000_enum_checks_and_missing_fks.sql) : contrairement à
+    /// `auth()` ci-dessus (qui ne fait que construire un `AuthUser` en mémoire, sans ligne en
+    /// base), tout email qui va devenir AUTEUR d'une suggestion doit correspondre à un compte
+    /// réellement existant, sans quoi l'INSERT échoue avec une violation de clé étrangère — même
+    /// principe que les tests de handlers/vault.rs pour `vault.user_email`.
+    async fn seed_user(state: &AppState, email: &str) {
+        sqlx::query("INSERT INTO users (email, password_hash) VALUES (?, ?)")
+            .bind(email)
+            .bind("hash_non_pertinent")
+            .execute(&state.db)
+            .await
+            .unwrap();
     }
 
     /// Même pattern que handlers/bug_report.rs::build_test_state_with_admin_email — nécessaire ici
@@ -167,12 +192,13 @@ mod tests {
     #[tokio::test]
     async fn test_author_email_comes_from_authenticated_user() {
         let state = build_test_state_with_admin_email("admin@example.com").await;
+        seed_user(&state, "membre@example.com").await;
 
-        create_feature_suggestion(State(state.clone()), auth("membre@example.com", false), Json(sample_payload("Un mode sombre plus profond")))
+        create_feature_suggestion(State(state.clone()), auth(&state, "membre@example.com", false).await, Json(sample_payload("Un mode sombre plus profond")))
             .await
             .expect("un compte ordinaire doit pouvoir suggérer une fonctionnalité");
 
-        let list = read_json_body(list_feature_suggestions(State(state.clone()), auth("admin@example.com", true)).await.unwrap().into_response()).await;
+        let list = read_json_body(list_feature_suggestions(State(state.clone()), auth(&state, "admin@example.com", true).await).await.unwrap().into_response()).await;
         let suggestions = list.as_array().unwrap();
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0]["author_email"], "membre@example.com");
@@ -183,15 +209,16 @@ mod tests {
     #[tokio::test]
     async fn test_only_admin_can_list_feature_suggestions() {
         let state = build_test_state_with_admin_email("admin2@example.com").await;
-        create_feature_suggestion(State(state.clone()), auth("membre2@example.com", false), Json(sample_payload("Idée visible"))).await.unwrap();
+        seed_user(&state, "membre2@example.com").await;
+        create_feature_suggestion(State(state.clone()), auth(&state, "membre2@example.com", false).await, Json(sample_payload("Idée visible"))).await.unwrap();
 
-        let stranger_attempt = list_feature_suggestions(State(state.clone()), auth("stranger@example.com", false)).await;
+        let stranger_attempt = list_feature_suggestions(State(state.clone()), auth(&state, "stranger@example.com", false).await).await;
         assert!(matches!(stranger_attempt, Err(AppError::Forbidden)), "un compte ordinaire ne doit jamais voir les suggestions");
 
-        let moderator_attempt = list_feature_suggestions(State(state.clone()), auth("mod@example.com", true)).await;
+        let moderator_attempt = list_feature_suggestions(State(state.clone()), auth(&state, "mod@example.com", true).await).await;
         assert!(matches!(moderator_attempt, Err(AppError::Forbidden)), "un modérateur (même promu, pas l'Admin) ne doit PAS voir les suggestions");
 
-        let admin_list = read_json_body(list_feature_suggestions(State(state.clone()), auth("admin2@example.com", true)).await.unwrap().into_response()).await;
+        let admin_list = read_json_body(list_feature_suggestions(State(state.clone()), auth(&state, "admin2@example.com", true).await).await.unwrap().into_response()).await;
         assert_eq!(admin_list.as_array().unwrap().len(), 1, "seul l'Admin doit voir les suggestions");
     }
 
@@ -199,31 +226,34 @@ mod tests {
     #[tokio::test]
     async fn test_only_admin_can_delete_feature_suggestion() {
         let state = build_test_state_with_admin_email("admin3@example.com").await;
-        let create_result = create_feature_suggestion(State(state.clone()), auth("membre3@example.com", false), Json(sample_payload("À examiner"))).await.unwrap();
+        seed_user(&state, "membre3@example.com").await;
+        let create_result = create_feature_suggestion(State(state.clone()), auth(&state, "membre3@example.com", false).await, Json(sample_payload("À examiner"))).await.unwrap();
         let id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
-        let stranger_attempt = delete_feature_suggestion(State(state.clone()), auth("stranger3@example.com", false), Path(id.clone())).await;
+        let stranger_attempt = delete_feature_suggestion(State(state.clone()), auth(&state, "stranger3@example.com", false).await, Path(id.clone())).await;
         assert!(matches!(stranger_attempt, Err(AppError::Forbidden)));
 
-        let moderator_attempt = delete_feature_suggestion(State(state.clone()), auth("mod3@example.com", true), Path(id.clone())).await;
+        let moderator_attempt = delete_feature_suggestion(State(state.clone()), auth(&state, "mod3@example.com", true).await, Path(id.clone())).await;
         assert!(matches!(moderator_attempt, Err(AppError::Forbidden)), "un modérateur (même promu, pas l'Admin) ne doit PAS pouvoir supprimer une suggestion");
 
-        delete_feature_suggestion(State(state.clone()), auth("admin3@example.com", true), Path(id)).await
+        delete_feature_suggestion(State(state.clone()), auth(&state, "admin3@example.com", true).await, Path(id)).await
             .expect("seul l'Admin doit pouvoir supprimer/marquer traitée une suggestion");
     }
 
     #[tokio::test]
     async fn test_flooding_feature_suggestions_is_capped_per_author() {
         let state = build_test_state().await;
+        seed_user(&state, "flooder@example.com").await;
+        seed_user(&state, "autre@example.com").await;
         for i in 0..crate::repository::MAX_FEATURE_SUGGESTIONS_PER_USER {
-            create_feature_suggestion(State(state.clone()), auth("flooder@example.com", false), Json(sample_payload(&format!("Idée {i}")))).await.unwrap();
+            create_feature_suggestion(State(state.clone()), auth(&state, "flooder@example.com", false).await, Json(sample_payload(&format!("Idée {i}")))).await.unwrap();
         }
-        let over_the_limit = create_feature_suggestion(State(state.clone()), auth("flooder@example.com", false), Json(sample_payload("Une de trop"))).await;
+        let over_the_limit = create_feature_suggestion(State(state.clone()), auth(&state, "flooder@example.com", false).await, Json(sample_payload("Une de trop"))).await;
         assert!(matches!(over_the_limit, Err(AppError::ValidationError(_))), "au-delà de la limite PAR AUTEUR, une nouvelle suggestion doit être refusée");
 
         // RÉGRESSION : le plafond est PAR AUTEUR, pas global — un autre compte doit pouvoir
         // suggérer normalement même si "flooder" a atteint sa propre limite.
-        let other_author = create_feature_suggestion(State(state.clone()), auth("autre@example.com", false), Json(sample_payload("Idée d'un autre compte"))).await;
+        let other_author = create_feature_suggestion(State(state.clone()), auth(&state, "autre@example.com", false).await, Json(sample_payload("Idée d'un autre compte"))).await;
         assert!(other_author.is_ok(), "le plafond par auteur ne doit jamais bloquer un AUTRE compte");
     }
 }

@@ -28,9 +28,9 @@ const MAX_VAULT_ENTRIES_PER_USER: i64 = 5000;
 ///
 /// Une erreur de lecture retombe sur le plafond global — refuser une écriture parce qu'on n'a pas
 /// pu lire un réglage facultatif serait pire que le problème qu'il résout.
-async fn entry_quota_for(state: &AppState, email: &str) -> i64 {
-    sqlx::query_scalar::<_, Option<i64>>("SELECT max_vault_entries FROM users WHERE email = ?")
-        .bind(email)
+async fn entry_quota_for(state: &AppState, user_id: i64) -> i64 {
+    sqlx::query_scalar::<_, Option<i64>>("SELECT max_vault_entries FROM users WHERE id = ?")
+        .bind(user_id)
         .fetch_one(&state.db)
         .await
         .ok()
@@ -39,9 +39,9 @@ async fn entry_quota_for(state: &AppState, email: &str) -> i64 {
 }
 
 /// Idem pour les pièces jointes (voir MAX_ATTACHMENTS_PER_USER).
-async fn attachment_quota_for(state: &AppState, email: &str) -> i64 {
-    sqlx::query_scalar::<_, Option<i64>>("SELECT max_attachments FROM users WHERE email = ?")
-        .bind(email)
+async fn attachment_quota_for(state: &AppState, user_id: i64) -> i64 {
+    sqlx::query_scalar::<_, Option<i64>>("SELECT max_attachments FROM users WHERE id = ?")
+        .bind(user_id)
         .fetch_one(&state.db)
         .await
         .ok()
@@ -61,8 +61,9 @@ pub async fn get_vault(
 ) -> Result<impl IntoResponse, AppError> {
     // Appel de la couche Repository pour récupérer les données en base
     let entries = VaultRepository::get_all(
-        &state.db, 
-        &user.email, 
+        &state.db,
+        user.user_id,
+        &user.email,
         p.effective_limit(), // Plafonné côté serveur, quoi que le client demande dans l'URL
         p.offset.unwrap_or(0) as i64
     ).await?;
@@ -94,7 +95,7 @@ pub async fn export_vault(
     // MAX_VAULT_ENTRIES_PER_USER couvre déjà le pire cas réel (un utilisateur ne peut jamais
     // avoir plus d'entrées actives que ce plafond, voir add_to_vault()) : pas besoin d'une vraie
     // pagination ici, une seule requête suffit à tout récupérer.
-    let entries = VaultRepository::get_all(&state.db, &user.email, MAX_VAULT_ENTRIES_PER_USER, 0).await?;
+    let entries = VaultRepository::get_all(&state.db, user.user_id, &user.email, MAX_VAULT_ENTRIES_PER_USER, 0).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_EXPORT", addr.to_string(), agent).await;
@@ -123,7 +124,7 @@ pub async fn export_vault_history(
         return Err(AppError::InvalidCredentials);
     }
 
-    let history = VaultRepository::get_all_history_for_user(&state.db, &user.email).await?;
+    let history = VaultRepository::get_all_history_for_user(&state.db, user.user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_HISTORY_EXPORT", addr.to_string(), agent).await;
@@ -155,21 +156,24 @@ pub async fn import_vault(
     }
 
     // Garde-fou anti-épuisement de stockage, même raison que add_to_vault() : voir
-    // MAX_VAULT_ENTRIES_PER_USER. Vérifié AVANT toute écriture pour que l'import reste tout-ou-rien.
-    let active_count = VaultRepository::count_active(&state.db, &user.email).await?;
+    // MAX_VAULT_ENTRIES_PER_USER. CORRECTIF (course concurrente, même raison que add_to_vault()) :
+    // le compte doit se faire DANS la même transaction que l'écriture, sinon deux imports
+    // simultanés peuvent tous les deux lire un compte encore sous le plafond avant qu'aucun
+    // n'ait écrit (voir count_active_in_tx dans repository.rs).
     let import_count = payload.entries.len() as i64;
-    let quota = entry_quota_for(&state, &user.email).await;
+    let quota = entry_quota_for(&state, user.user_id).await;
+
+    let mut tx = state.db.begin().await?;
+    let active_count = VaultRepository::count_active_in_tx(&mut tx, user.user_id).await?;
     if active_count + import_count > quota {
         return Err(AppError::ValidationError(format!(
             "Cet import dépasserait la limite de {quota} entrées du coffre ({active_count} déjà présente(s), {import_count} à importer)."
         )));
     }
-
-    let mut tx = state.db.begin().await?;
     // CORRECTIF PERF (retour utilisateur, 2026-09-02) : add_many_in_tx() groupe les entrées en
     // INSERT multi-lignes par lots, plutôt qu'une requête séparée par entrée — voir son
     // commentaire dans repository.rs pour le détail (limite de paramètres SQLite, découpage en lots).
-    VaultRepository::add_many_in_tx(&mut tx, &user.email, &payload.entries).await?;
+    VaultRepository::add_many_in_tx(&mut tx, user.user_id, &payload.entries).await?;
     tx.commit().await?;
 
     let agent = get_user_agent(&headers);
@@ -191,19 +195,24 @@ pub async fn add_to_vault(
     Json(entry): Json<VaultEntryInput> // Données de l'élément à ajouter
 ) -> Result<impl IntoResponse, AppError> {
     entry.validate()?;
+    let quota = entry_quota_for(&state, user.user_id).await;
 
     // Garde-fou anti-épuisement de stockage : voir MAX_VAULT_ENTRIES_PER_USER ci-dessus.
-    let active_count = VaultRepository::count_active(&state.db, &user.email).await?;
-    if active_count >= entry_quota_for(&state, &user.email).await {
+    // CORRECTIF (course concurrente) : le compte ET l'insertion doivent se dérouler dans LA MÊME
+    // transaction — sinon plusieurs requêtes simultanées juste sous le plafond peuvent toutes lire
+    // un compte encore valide avant qu'aucune n'ait écrit, puis toutes écrire, dépassant
+    // silencieusement MAX_VAULT_ENTRIES_PER_USER (voir count_active_in_tx dans repository.rs).
+    let mut tx = state.db.begin().await?;
+    let active_count = VaultRepository::count_active_in_tx(&mut tx, user.user_id).await?;
+    if active_count >= quota {
         return Err(AppError::ValidationError(format!(
             "Limite de {} entrées atteinte pour ce coffre.",
             MAX_VAULT_ENTRIES_PER_USER
         )));
     }
+    VaultRepository::add_many_in_tx(&mut tx, user.user_id, std::slice::from_ref(&entry)).await?;
+    tx.commit().await?;
 
-    // Persistance de l'élément via le VaultRepository
-    VaultRepository::add(&state.db, &user.email, entry).await?;
-    
     // Log d'audit de l'action
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_ADD", addr.to_string(), agent).await;
@@ -224,7 +233,7 @@ pub async fn delete_vault_entry(
     user: AuthUser, 
     Path(id): Path<String> // Extrait le paramètre d'URL dynamique :id
 ) -> Result<impl IntoResponse, AppError> {
-    VaultRepository::delete(&state.db, &user.email, &id).await?;
+    VaultRepository::delete(&state.db, user.user_id, &id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_DELETE", addr.to_string(), agent).await;
@@ -248,7 +257,7 @@ pub async fn update_vault_entry(
     Json(entry): Json<VaultEntryInput>
 ) -> Result<impl IntoResponse, AppError> {
     entry.validate()?;
-    VaultRepository::update(&state.db, &user.email, &id, entry).await?;
+    VaultRepository::update(&state.db, user.user_id, &id, entry).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_UPDATE", addr.to_string(), agent).await;
@@ -269,7 +278,7 @@ pub async fn toggle_favorite(
     user: AuthUser, 
     Path(id): Path<String>
 ) -> Result<impl IntoResponse, AppError> {
-    VaultRepository::toggle_favorite(&state.db, &user.email, &id).await?;
+    VaultRepository::toggle_favorite(&state.db, user.user_id, &id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_TOGGLE_FAVORITE", addr.to_string(), agent).await;
@@ -302,7 +311,7 @@ pub async fn record_vault_entry_use(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    VaultRepository::record_use(&state.db, &user.email, &id).await?;
+    VaultRepository::record_use(&state.db, user.user_id, &id).await?;
     Ok(StatusCode::OK)
 }
 
@@ -321,7 +330,7 @@ pub async fn get_vault_entry_history(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let history = VaultRepository::get_history(&state.db, &user.email, &id, MAX_HISTORY_RESULTS).await?;
+    let history = VaultRepository::get_history(&state.db, user.user_id, &id, MAX_HISTORY_RESULTS).await?;
     Ok(Json(history))
 }
 
@@ -350,27 +359,27 @@ pub async fn add_vault_attachment(
     Json(input): Json<VaultAttachmentInput>,
 ) -> Result<impl IntoResponse, AppError> {
     input.validate()?;
+    let quota_pieces = attachment_quota_for(&state, user.user_id).await;
 
-    // CORRECTIF PERF (retour utilisateur, 2026-09-02) : les deux COUNT() sont indépendants (l'un
-    // filtré par entrée+email, l'autre par email seul) — lancés en parallèle plutôt qu'enchaînés,
-    // même raisonnement que update_password() dans handlers/auth/account.rs.
-    let (per_entry_count, total_count) = tokio::try_join!(
-        VaultRepository::count_attachments_for_entry(&state.db, &user.email, &vault_id),
-        VaultRepository::count_attachments_for_user(&state.db, &user.email),
-    )?;
+    // CORRECTIF (course concurrente, même raison que add_to_vault() dans ce fichier) : les deux
+    // COUNT() de quota ET l'insertion qui en dépend doivent se dérouler dans LA MÊME transaction —
+    // sinon plusieurs ajouts simultanés juste sous le plafond peuvent tous lire un compte encore
+    // valide avant qu'aucun n'ait écrit, dépassant silencieusement MAX_ATTACHMENTS_PER_ENTRY/USER.
+    let mut tx = state.db.begin().await?;
+    let per_entry_count = VaultRepository::count_attachments_for_entry_in_tx(&mut tx, user.user_id, &vault_id).await?;
     if per_entry_count >= MAX_ATTACHMENTS_PER_ENTRY {
         return Err(AppError::ValidationError(format!(
             "Limite de {MAX_ATTACHMENTS_PER_ENTRY} pièce(s) jointe(s) par entrée atteinte."
         )));
     }
-    let quota_pieces = attachment_quota_for(&state, &user.email).await;
+    let total_count = VaultRepository::count_attachments_for_user_in_tx(&mut tx, user.user_id).await?;
     if total_count >= quota_pieces {
         return Err(AppError::ValidationError(format!(
             "Limite de {quota_pieces} pièces jointes atteinte pour ce coffre."
         )));
     }
-
-    let id = VaultRepository::add_attachment(&state.db, &user.email, &vault_id, &input).await?;
+    let id = VaultRepository::add_attachment_in_tx(&mut tx, user.user_id, &vault_id, &input).await?;
+    tx.commit().await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_ATTACHMENT_ADD", addr.to_string(), agent).await;
@@ -386,7 +395,7 @@ pub async fn get_vault_attachments(
     user: AuthUser,
     Path(vault_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let attachments = VaultRepository::list_attachments(&state.db, &user.email, &vault_id).await?;
+    let attachments = VaultRepository::list_attachments(&state.db, user.user_id, &vault_id).await?;
     Ok(Json(attachments))
 }
 
@@ -396,7 +405,7 @@ pub async fn get_vault_attachment(
     user: AuthUser,
     Path((vault_id, attachment_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    let attachment = VaultRepository::get_attachment(&state.db, &user.email, &vault_id, &attachment_id).await?;
+    let attachment = VaultRepository::get_attachment(&state.db, user.user_id, &vault_id, &attachment_id).await?;
     Ok(Json(attachment))
 }
 
@@ -408,7 +417,7 @@ pub async fn delete_vault_attachment(
     user: AuthUser,
     Path((vault_id, attachment_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, AppError> {
-    VaultRepository::delete_attachment(&state.db, &user.email, &vault_id, &attachment_id).await?;
+    VaultRepository::delete_attachment(&state.db, user.user_id, &vault_id, &attachment_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_ATTACHMENT_DELETE", addr.to_string(), agent).await;
@@ -427,7 +436,7 @@ pub async fn get_trash(
     State(state): State<Arc<AppState>>,
     user: AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
-    let entries = VaultRepository::get_trash(&state.db, &user.email).await?;
+    let entries = VaultRepository::get_trash(&state.db, user.user_id).await?;
     Ok(Json(entries))
 }
 
@@ -439,7 +448,7 @@ pub async fn restore_vault_entry(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    VaultRepository::restore(&state.db, &user.email, &id).await?;
+    VaultRepository::restore(&state.db, user.user_id, &id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_RESTORE", addr.to_string(), agent).await;
@@ -461,7 +470,7 @@ pub async fn permanently_delete_vault_entry(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    VaultRepository::purge(&state.db, &user.email, &id).await?;
+    VaultRepository::purge(&state.db, user.user_id, &id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_PURGE", addr.to_string(), agent).await;
@@ -494,13 +503,13 @@ pub async fn check_sync(
     // `last_modified` renvoyé au client aurait un format différent selon que le coffre est vide
     // ou non, ce qui pourrait faire échouer un parseur de date strict côté client.
     let row = sqlx::query(
-        "SELECT 
-            COUNT(*) as total, 
-            COALESCE(MAX(updated_at), '1970-01-01 00:00:00') as last_update 
-         FROM vault 
-         WHERE user_email = ? AND deleted_at IS NULL"
+        "SELECT
+            COUNT(*) as total,
+            COALESCE(MAX(updated_at), '1970-01-01 00:00:00') as last_update
+         FROM vault
+         WHERE user_id = ? AND deleted_at IS NULL"
     )
-    .bind(&user.email)
+    .bind(user.user_id)
     .fetch_one(&state.db)
     .await?;
 
@@ -585,6 +594,21 @@ mod tests {
             .expect("l'insertion de l'utilisateur de test doit réussir");
     }
 
+    /// Construit un `AuthUser` en résolvant SON VRAI `user_id` depuis la BDD (désormais requis sur
+    /// `AuthUser`, voir middleware.rs) — panique si l'email n'a pas été enregistré au préalable via
+    /// register_test_user()/register_user_with_real_password(), ce qui est toujours le cas ici :
+    /// contrairement à un placeholder, une panique immédiate révèle un test qui aurait oublié
+    /// d'enregistrer son utilisateur, plutôt que de laisser silencieusement passer un id erroné sur
+    /// des opérations qui écrivent réellement dans `vault`/`vault_attachments`.
+    async fn auth(state: &Arc<AppState>, email: &str) -> AuthUser {
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_one(&state.db)
+            .await
+            .expect("l'utilisateur de test doit déjà être enregistré");
+        AuthUser { user_id, email: email.to_string(), is_moderator: false }
+    }
+
     /// Variante avec un VRAI hash Argon2, nécessaire pour tester export_vault() qui vérifie
     /// réellement le mot de passe fourni (contrairement à register_test_user() ci-dessus).
     async fn register_user_with_real_password(state: &Arc<AppState>, email: &str, password: &str) {
@@ -620,12 +644,12 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Json(entry),
         ).await.expect("l'ajout doit réussir");
 
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email)
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id)
             .fetch_one(&state.db)
             .await
             .expect("l'entrée doit exister en BDD après l'ajout");
@@ -635,7 +659,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path(id.clone()),
         ).await.expect("la bascule favori doit réussir");
 
@@ -660,7 +684,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path(id.clone()),
             Json(updated_entry),
         ).await.expect("la modification doit réussir");
@@ -679,7 +703,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path(id.clone()),
         ).await.expect("la suppression doit réussir");
 
@@ -692,7 +716,7 @@ mod tests {
         assert!(deleted_at.is_some(), "l'entrée doit être passée à la corbeille (deleted_at renseigné)");
 
         // Et elle ne doit plus apparaître dans le listage actif
-        let active_entries = VaultRepository::get_all(&state.db, email, 50, 0).await.unwrap();
+        let active_entries = VaultRepository::get_all(&state.db, auth(&state, email).await.user_id, email, 50, 0).await.unwrap();
         assert!(active_entries.is_empty(), "une entrée supprimée ne doit plus apparaître dans le listage actif");
     }
 
@@ -721,19 +745,19 @@ mod tests {
         };
         add_to_vault(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: owner.to_string(), is_moderator: false },
+            auth(&state, &owner.to_string()).await,
             Json(entry),
         ).await.expect("l'ajout doit réussir");
 
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(owner).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, owner).await.user_id).fetch_one(&state.db).await.unwrap();
         let (version_before, updated_at_before): (i64, String) = sqlx::query_as("SELECT version, updated_at FROM vault WHERE id = ?")
             .bind(&id).fetch_one(&state.db).await.unwrap();
 
         // Un autre utilisateur ne doit jamais pouvoir incrémenter le compteur de quelqu'un d'autre.
         let denied = record_vault_entry_use(
             State(state.clone()),
-            AuthUser { email: other.to_string(), is_moderator: false },
+            auth(&state, &other.to_string()).await,
             Path(id.clone()),
         ).await;
         assert!(denied.is_err(), "un utilisateur ne doit pas pouvoir marquer une entrée qui ne lui appartient pas comme utilisée");
@@ -742,7 +766,7 @@ mod tests {
         for _ in 0..2 {
             record_vault_entry_use(
                 State(state.clone()),
-                AuthUser { email: owner.to_string(), is_moderator: false },
+                auth(&state, &owner.to_string()).await,
                 Path(id.clone()),
             ).await.expect("l'enregistrement d'usage doit réussir pour le propriétaire");
         }
@@ -779,12 +803,12 @@ mod tests {
             is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
 
         let result = get_vault(
             State(state.clone()),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Query(PaginationParams { limit: None, offset: None }),
         ).await.expect("la lecture doit réussir");
         let value = read_json_body(result.into_response()).await;
@@ -808,10 +832,10 @@ mod tests {
             is_favorite: false,
         };
         update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id), Json(updated))
+            auth(&state, &email.to_string()).await, Path(id), Json(updated))
             .await.expect("la modification doit réussir");
 
-        let after_update = VaultRepository::get_all(&state.db, email, 50, 0).await.unwrap();
+        let after_update = VaultRepository::get_all(&state.db, auth(&state, email).await.user_id, email, 50, 0).await.unwrap();
         assert_eq!(after_update.len(), 1);
         assert_eq!(after_update[0].encrypted_folder, None, "le dossier doit avoir été retiré après la modification");
     }
@@ -833,11 +857,11 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
 
-        let (id, version): (String, i64) = sqlx::query_as("SELECT id, version FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let (id, version): (String, i64) = sqlx::query_as("SELECT id, version FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(version, 1, "une entrée fraîchement créée doit démarrer à la version 1");
 
         let update = VaultEntryInput {
@@ -848,7 +872,7 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         let result = update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()), Json(update)).await;
+            auth(&state, &email.to_string()).await, Path(id.clone()), Json(update)).await;
         assert!(result.is_ok(), "un expected_version qui correspond bien à l'état actuel ne doit jamais être bloqué");
 
         let new_version: i64 = sqlx::query_scalar("SELECT version FROM vault WHERE id = ?")
@@ -878,11 +902,11 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
 
-        let (id, original_version): (String, i64) = sqlx::query_as("SELECT id, version FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let (id, original_version): (String, i64) = sqlx::query_as("SELECT id, version FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         // "Appareil A" modifie l'entrée en premier (sans condition, comme un client à jour qui
         // vient de charger l'entrée) — la version passe à 2 en base.
@@ -894,7 +918,7 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()), Json(first_update))
+            auth(&state, &email.to_string()).await, Path(id.clone()), Json(first_update))
             .await.expect("la première modification doit réussir");
 
         // "Appareil B" avait chargé l'entrée AVANT la modification de A — son expected_version
@@ -907,7 +931,7 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         let result = update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()), Json(second_update)).await;
+            auth(&state, &email.to_string()).await, Path(id.clone()), Json(second_update)).await;
         assert!(matches!(result, Err(AppError::Conflict(_))), "une modification basée sur un expected_version périmé doit être refusée en conflit");
 
         // La modification de A doit être celle qui a survécu, pas écrasée silencieusement par B.
@@ -932,10 +956,10 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         // Deux modifications successives, toutes deux sans expected_version : aucune ne doit
         // jamais être bloquée, peu importe combien de fois l'entrée a changé entre-temps.
@@ -947,7 +971,7 @@ mod tests {
                 encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
             };
             update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-                AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()), Json(update))
+                auth(&state, &email.to_string()).await, Path(id.clone()), Json(update))
                 .await.expect("sans expected_version, la modification ne doit jamais être bloquée");
         }
     }
@@ -968,10 +992,10 @@ mod tests {
             encrypted_password: "ancien_chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         let updated = VaultEntryInput {
             encrypted_site_name: "Site".to_string(), encrypted_username: None, encrypted_login_email: None,
@@ -980,12 +1004,12 @@ mod tests {
             encrypted_password: "nouveau_chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()), Json(updated))
+            auth(&state, &email.to_string()).await, Path(id.clone()), Json(updated))
             .await.expect("la modification doit réussir");
 
         let history_result = get_vault_entry_history(
             State(state.clone()),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path(id),
         ).await.expect("la lecture de l'historique doit réussir");
         let value = read_json_body(history_result.into_response()).await;
@@ -1015,10 +1039,10 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         // Renomme le site, mais password_changed reste false — même si un blob "encrypted_password"
         // est bien resoumis à chaque appel (comme le fait un vrai client), il ne doit PAS être
@@ -1030,12 +1054,12 @@ mod tests {
             encrypted_password: "chiffre_reencode_differemment".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()), Json(updated))
+            auth(&state, &email.to_string()).await, Path(id.clone()), Json(updated))
             .await.expect("la modification doit réussir");
 
         let history_result = get_vault_entry_history(
             State(state.clone()),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path(id),
         ).await.expect("la lecture de l'historique doit réussir");
         let value = read_json_body(history_result.into_response()).await;
@@ -1062,10 +1086,10 @@ mod tests {
             encrypted_password: "version_0".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         // MAX_HISTORY_PER_ENTRY + 5 changements réels -> seules les MAX_HISTORY_PER_ENTRY plus
         // récentes versions archivées doivent survivre.
@@ -1077,11 +1101,11 @@ mod tests {
                 encrypted_password: format!("version_{i}"), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
             };
             update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-                AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()), Json(updated))
+                auth(&state, &email.to_string()).await, Path(id.clone()), Json(updated))
                 .await.expect("la modification doit réussir");
         }
 
-        let history = VaultRepository::get_history(&state.db, email, &id, 100).await.unwrap();
+        let history = VaultRepository::get_history(&state.db, auth(&state, email).await.user_id, &id, 100).await.unwrap();
         assert_eq!(history.len(), MAX_HISTORY_PER_ENTRY, "l'historique ne doit pas dépasser le plafond de rétention");
         // La version la plus récemment archivée est "version_24" (l'ancien mot de passe juste
         // avant le tout dernier "version_25", jamais lui-même archivé puisqu'il est toujours actif).
@@ -1117,12 +1141,12 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: owner_email.to_string(), is_moderator: false },
+            auth(&state, &owner_email.to_string()).await,
             Json(entry),
         ).await.expect("l'ajout par le propriétaire doit réussir");
 
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(owner_email)
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, owner_email).await.user_id)
             .fetch_one(&state.db)
             .await
             .unwrap();
@@ -1141,7 +1165,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: attacker_email.to_string(), is_moderator: false },
+            auth(&state, &attacker_email.to_string()).await,
             Path(id.clone()),
             Json(malicious_update),
         ).await;
@@ -1155,7 +1179,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: attacker_email.to_string(), is_moderator: false },
+            auth(&state, &attacker_email.to_string()).await,
             Path(id.clone()),
         ).await;
         assert!(
@@ -1168,7 +1192,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: attacker_email.to_string(), is_moderator: false },
+            auth(&state, &attacker_email.to_string()).await,
             Path(id.clone()),
         ).await;
         assert!(
@@ -1177,24 +1201,24 @@ mod tests {
         );
 
         // L'entrée doit être INTACTE : toujours présente, jamais modifiée, appartenant au propriétaire
-        let (site_name, user_email): (String, String) = sqlx::query_as(
-            "SELECT encrypted_site_name, user_email FROM vault WHERE id = ?"
+        let (site_name, owning_user_id): (String, i64) = sqlx::query_as(
+            "SELECT encrypted_site_name, user_id FROM vault WHERE id = ?"
         )
         .bind(&id)
         .fetch_one(&state.db)
         .await
         .expect("l'entrée doit toujours exister, intacte");
         assert_eq!(site_name, "Compte bancaire", "le contenu ne doit pas avoir été altéré");
-        assert_eq!(user_email, owner_email, "l'entrée doit toujours appartenir au propriétaire");
+        assert_eq!(owning_user_id, auth(&state, owner_email).await.user_id, "l'entrée doit toujours appartenir au propriétaire");
 
         // L'attaquant ne doit rien voir dans SON PROPRE listage du coffre
-        let attacker_entries = VaultRepository::get_all(&state.db, attacker_email, 50, 0)
+        let attacker_entries = VaultRepository::get_all(&state.db, auth(&state, attacker_email).await.user_id, attacker_email, 50, 0)
             .await
             .unwrap();
         assert!(attacker_entries.is_empty(), "l'attaquant ne doit voir aucune entrée du propriétaire");
 
         // Le propriétaire, lui, voit toujours sa seule entrée
-        let owner_entries = VaultRepository::get_all(&state.db, owner_email, 50, 0)
+        let owner_entries = VaultRepository::get_all(&state.db, auth(&state, owner_email).await.user_id, owner_email, 50, 0)
             .await
             .unwrap();
         assert_eq!(owner_entries.len(), 1, "le propriétaire doit toujours voir son entrée");
@@ -1233,7 +1257,7 @@ mod tests {
                 encrypted_password: "x".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
             };
             add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-                AuthUser { email: "reader@example.com".to_string(), is_moderator: false }, Json(entry))
+                auth(&state, &"reader@example.com".to_string()).await, Json(entry))
                 .await.expect("l'ajout doit réussir");
         }
         let other_entry = VaultEntryInput {
@@ -1242,12 +1266,12 @@ mod tests {
             encrypted_password: "y".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: "other@example.com".to_string(), is_moderator: false }, Json(other_entry))
+            auth(&state, &"other@example.com".to_string()).await, Json(other_entry))
             .await.expect("l'ajout doit réussir");
 
         let result = get_vault(
             State(state.clone()),
-            AuthUser { email: "reader@example.com".to_string(), is_moderator: false },
+            auth(&state, &"reader@example.com".to_string()).await,
             Query(PaginationParams { limit: None, offset: None }),
         ).await.expect("la lecture doit réussir");
 
@@ -1272,13 +1296,13 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
 
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
-        let sync_before = check_sync(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false })
+        let sync_before = check_sync(State(state.clone()), auth(&state, &email.to_string()).await)
             .await.expect("check_sync doit réussir");
         let token_before = read_json_body(sync_before.into_response()).await["sync_token"].clone();
 
@@ -1295,10 +1319,10 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id), Json(updated_entry))
+            auth(&state, &email.to_string()).await, Path(id), Json(updated_entry))
             .await.expect("la modification doit réussir");
 
-        let sync_after = check_sync(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false })
+        let sync_after = check_sync(State(state.clone()), auth(&state, &email.to_string()).await)
             .await.expect("check_sync doit réussir");
         let token_after = read_json_body(sync_after.into_response()).await["sync_token"].clone();
 
@@ -1319,7 +1343,7 @@ mod tests {
         // Coffre vide
         let empty_email = "emptyvault@example.com";
         register_test_user(&state, empty_email).await;
-        let empty_result = check_sync(State(state.clone()), AuthUser { email: empty_email.to_string(), is_moderator: false })
+        let empty_result = check_sync(State(state.clone()), auth(&state, &empty_email.to_string()).await)
             .await.expect("check_sync doit réussir sur un coffre vide");
         let empty_value = read_json_body(empty_result.into_response()).await;
         let empty_last_modified = empty_value["last_modified"].as_str().unwrap().to_string();
@@ -1334,9 +1358,9 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: filled_email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &filled_email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let filled_result = check_sync(State(state.clone()), AuthUser { email: filled_email.to_string(), is_moderator: false })
+        let filled_result = check_sync(State(state.clone()), auth(&state, &filled_email.to_string()).await)
             .await.expect("check_sync doit réussir sur un coffre rempli");
         let filled_value = read_json_body(filled_result.into_response()).await;
         let filled_last_modified = filled_value["last_modified"].as_str().unwrap().to_string();
@@ -1366,15 +1390,15 @@ mod tests {
             is_favorite: false,
         };
         let result = add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(invalid_entry)).await;
+            auth(&state, &email.to_string()).await, Json(invalid_entry)).await;
 
         assert!(
             matches!(result, Err(AppError::ValidationError(_))),
             "un site_name vide doit être rejeté par la validation"
         );
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(count, 0, "aucune entrée invalide ne doit avoir été insérée");
     }
 
@@ -1393,14 +1417,14 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
 
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         delete_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()))
+            auth(&state, &email.to_string()).await, Path(id.clone()))
             .await.expect("la suppression doit réussir");
 
         // La ligne existe TOUJOURS en BDD (pas de DELETE définitif)
@@ -1414,7 +1438,7 @@ mod tests {
         assert!(deleted_at.is_some(), "deleted_at doit être renseigné après une suppression douce");
 
         // Mais elle ne doit plus apparaître dans le listage normal
-        let active_entries = VaultRepository::get_all(&state.db, email, 50, 0).await.unwrap();
+        let active_entries = VaultRepository::get_all(&state.db, auth(&state, email).await.user_id, email, 50, 0).await.unwrap();
         assert!(active_entries.is_empty(), "une entrée supprimée en douceur ne doit plus apparaître dans le listage normal");
     }
 
@@ -1432,23 +1456,23 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         delete_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()))
+            auth(&state, &email.to_string()).await, Path(id.clone()))
             .await.expect("la suppression doit réussir");
 
         restore_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()))
+            auth(&state, &email.to_string()).await, Path(id.clone()))
             .await.expect("la restauration doit réussir");
 
-        let active_entries = VaultRepository::get_all(&state.db, email, 50, 0).await.unwrap();
+        let active_entries = VaultRepository::get_all(&state.db, auth(&state, email).await.user_id, email, 50, 0).await.unwrap();
         assert_eq!(active_entries.len(), 1, "l'entrée restaurée doit réapparaître dans le listage normal");
 
-        let trash = VaultRepository::get_trash(&state.db, email).await.unwrap();
+        let trash = VaultRepository::get_trash(&state.db, auth(&state, email).await.user_id).await.unwrap();
         assert!(trash.is_empty(), "l'entrée restaurée ne doit plus être dans la corbeille");
     }
 
@@ -1467,17 +1491,17 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         delete_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()))
+            auth(&state, &email.to_string()).await, Path(id.clone()))
             .await.expect("la suppression doit réussir");
 
         permanently_delete_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()))
+            auth(&state, &email.to_string()).await, Path(id.clone()))
             .await.expect("la purge définitive doit réussir");
 
         let still_in_db: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE id = ?")
@@ -1500,14 +1524,14 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         // Pas de delete_vault_entry() avant : l'entrée est toujours ACTIVE
         let result = permanently_delete_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone())).await;
+            auth(&state, &email.to_string()).await, Path(id.clone())).await;
 
         assert!(
             matches!(result, Err(AppError::NotFound)),
@@ -1534,13 +1558,13 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         delete_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()))
+            auth(&state, &email.to_string()).await, Path(id.clone()))
             .await.expect("la suppression doit réussir");
 
         let update_attempt = VaultEntryInput {
@@ -1549,11 +1573,11 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         let update_result = update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone()), Json(update_attempt)).await;
+            auth(&state, &email.to_string()).await, Path(id.clone()), Json(update_attempt)).await;
         assert!(matches!(update_result, Err(AppError::NotFound)), "modifier une entrée en corbeille doit échouer");
 
         let favorite_result = toggle_favorite(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id.clone())).await;
+            auth(&state, &email.to_string()).await, Path(id.clone())).await;
         assert!(matches!(favorite_result, Err(AppError::NotFound)), "mettre en favori une entrée en corbeille doit échouer");
     }
 
@@ -1573,16 +1597,16 @@ mod tests {
                 encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
             };
             add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-                AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+                auth(&state, &email.to_string()).await, Json(entry))
                 .await.expect("l'ajout doit réussir");
-            let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-                .bind(email).fetch_one(&state.db).await.unwrap();
+            let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+                .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
             delete_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-                AuthUser { email: email.to_string(), is_moderator: false }, Path(id))
+                auth(&state, &email.to_string()).await, Path(id))
                 .await.expect("la suppression doit réussir");
         }
 
-        let owner_trash = VaultRepository::get_trash(&state.db, "trashowner@example.com").await.unwrap();
+        let owner_trash = VaultRepository::get_trash(&state.db, auth(&state, "trashowner@example.com").await.user_id).await.unwrap();
         assert_eq!(owner_trash.len(), 1, "chaque utilisateur ne doit voir que sa propre corbeille");
         assert_eq!(owner_trash[0].encrypted_site_name, "SiteA");
     }
@@ -1601,16 +1625,16 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
-        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         delete_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(id))
+            auth(&state, &email.to_string()).await, Path(id))
             .await.expect("la suppression doit réussir");
 
-        let sync_result = check_sync(State(state.clone()), AuthUser { email: email.to_string(), is_moderator: false })
+        let sync_result = check_sync(State(state.clone()), auth(&state, &email.to_string()).await)
             .await.expect("check_sync doit réussir");
         let value = read_json_body(sync_result.into_response()).await;
         assert_eq!(value["total_entries"], 0, "une entrée dans la corbeille ne doit pas compter dans total_entries");
@@ -1625,14 +1649,15 @@ mod tests {
         let state = build_test_state().await;
         let email = "quotatest@example.com";
         register_test_user(&state, email).await;
+        let user_id = auth(&state, email).await.user_id;
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
         // Pré-remplissage direct en BDD jusqu'à la limite (MAX_VAULT_ENTRIES_PER_USER = 5000)
         let mut query = String::from(
-            "INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_email) VALUES "
+            "INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_id) VALUES "
         );
         let placeholders: Vec<String> = (0..MAX_VAULT_ENTRIES_PER_USER)
-            .map(|i| format!("('id-{i}', 'site', 'chiffre', 'email', '{email}')"))
+            .map(|i| format!("('id-{i}', 'site', 'chiffre', 'email', {user_id})"))
             .collect();
         query.push_str(&placeholders.join(","));
         // sqlx 0.9 exige une confirmation explicite pour une requête SQL construite dynamiquement
@@ -1653,7 +1678,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Json(entry),
         ).await;
 
@@ -1662,8 +1687,8 @@ mod tests {
             "l'ajout doit être refusé une fois la limite d'entrées atteinte"
         );
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(count, MAX_VAULT_ENTRIES_PER_USER, "aucune entrée supplémentaire ne doit avoir été insérée au-delà de la limite");
     }
 
@@ -1687,7 +1712,7 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &email.to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
 
         let event = rx.try_recv().expect("un SyncEvent doit avoir été diffusé");
@@ -1713,7 +1738,7 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: "userA@example.com".to_string(), is_moderator: false }, Json(entry))
+            auth(&state, &"userA@example.com".to_string()).await, Json(entry))
             .await.expect("l'ajout doit réussir");
 
         let event = rx.try_recv().expect("un événement doit avoir été diffusé");
@@ -1735,7 +1760,7 @@ mod tests {
 
         let result = export_vault(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Json(ExportVaultPayload { master_password_hash: "mauvais_mot_de_passe".to_string() }),
         ).await;
         assert!(matches!(result, Err(AppError::InvalidCredentials)), "un mauvais mot de passe doit être rejeté");
@@ -1758,7 +1783,7 @@ mod tests {
                 encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
             };
             add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-                AuthUser { email: email.to_string(), is_moderator: false }, Json(entry))
+                auth(&state, &email.to_string()).await, Json(entry))
                 .await.expect("l'ajout doit réussir");
         }
         let other_entry = VaultEntryInput {
@@ -1767,12 +1792,12 @@ mod tests {
             encrypted_password: "chiffre".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
         };
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: "exportother@example.com".to_string(), is_moderator: false }, Json(other_entry))
+            auth(&state, &"exportother@example.com".to_string()).await, Json(other_entry))
             .await.expect("l'ajout doit réussir");
 
         let result = export_vault(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Json(ExportVaultPayload { master_password_hash: "mot_de_passe_test_123".to_string() }),
         ).await.expect("l'export avec le bon mot de passe doit réussir");
 
@@ -1803,19 +1828,19 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(sample_entry("DejaLa")))
+            auth(&state, &email.to_string()).await, Json(sample_entry("DejaLa")))
             .await.expect("l'ajout doit réussir");
 
         let result = import_vault(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Json(ImportVaultPayload { entries: vec![sample_entry("Importee1"), sample_entry("Importee2")] }),
         ).await.expect("l'import doit réussir");
 
         let value = read_json_body(result.into_response()).await;
         assert_eq!(value["imported"], 2, "la réponse doit indiquer le nombre d'entrées importées");
 
-        let active_entries = VaultRepository::get_all(&state.db, email, 50, 0).await.unwrap();
+        let active_entries = VaultRepository::get_all(&state.db, auth(&state, email).await.user_id, email, 50, 0).await.unwrap();
         assert_eq!(active_entries.len(), 3, "l'entrée déjà présente doit rester, plus les 2 importées");
 
         let audit_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE user_email = ? AND action = 'VAULT_IMPORT'")
@@ -1839,14 +1864,14 @@ mod tests {
 
         let result = import_vault(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Json(ImportVaultPayload { entries }),
         ).await.expect("l'import de plusieurs lots doit réussir");
 
         let value = read_json_body(result.into_response()).await;
         assert_eq!(value["imported"], 650, "les 650 entrées doivent être comptées comme importées");
 
-        let active_entries = VaultRepository::get_all(&state.db, email, 1000, 0).await.unwrap();
+        let active_entries = VaultRepository::get_all(&state.db, auth(&state, email).await.user_id, email, 1000, 0).await.unwrap();
         assert_eq!(active_entries.len(), 650, "les 650 entrées doivent bien être présentes en base, réparties sur plusieurs lots");
 
         let distinct_ids: std::collections::HashSet<_> = active_entries.iter().map(|e| e.id.clone()).collect();
@@ -1867,13 +1892,13 @@ mod tests {
 
         let result = import_vault(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Json(ImportVaultPayload { entries: vec![sample_entry("Valide"), invalid_entry] }),
         ).await;
         assert!(matches!(result, Err(AppError::ValidationError(_))), "un lot contenant une entrée invalide doit être refusé");
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(count, 0, "aucune entrée ne doit être importée si le lot contient un élément invalide (tout ou rien)");
     }
 
@@ -1884,15 +1909,16 @@ mod tests {
         let state = build_test_state().await;
         let email = "importquota@example.com";
         register_test_user(&state, email).await;
+        let user_id = auth(&state, email).await.user_id;
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
         // Pré-remplissage direct en BDD jusqu'à MAX_VAULT_ENTRIES_PER_USER - 1 (même technique
         // que test_add_to_vault_rejects_when_entry_limit_reached).
         let mut query = String::from(
-            "INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_email) VALUES "
+            "INSERT INTO vault (id, encrypted_site_name, encrypted_password, encrypted_preferred_login_type, user_id) VALUES "
         );
         let placeholders: Vec<String> = (0..MAX_VAULT_ENTRIES_PER_USER - 1)
-            .map(|i| format!("('id-{i}', 'site', 'chiffre', 'email', '{email}')"))
+            .map(|i| format!("('id-{i}', 'site', 'chiffre', 'email', {user_id})"))
             .collect();
         query.push_str(&placeholders.join(","));
         sqlx::query(sqlx::AssertSqlSafe(query)).execute(&state.db).await.expect("le pré-remplissage doit réussir");
@@ -1900,13 +1926,13 @@ mod tests {
         // Importer 2 entrées alors qu'il ne reste qu'1 place de libre -> doit être refusé
         let result = import_vault(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Json(ImportVaultPayload { entries: vec![sample_entry("Trop1"), sample_entry("Trop2")] }),
         ).await;
         assert!(matches!(result, Err(AppError::ValidationError(_))), "un import qui dépasserait la limite doit être refusé");
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(count, MAX_VAULT_ENTRIES_PER_USER - 1, "aucune entrée supplémentaire ne doit avoir été importée au-delà de la limite");
     }
 
@@ -1928,14 +1954,14 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(sample_entry("AvecFichier")))
+            auth(&state, &email.to_string()).await, Json(sample_entry("AvecFichier")))
             .await.expect("l'ajout de l'entrée doit réussir");
-        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         let add_result = add_vault_attachment(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path(vault_id.clone()), Json(sample_attachment("codes_secours.txt")),
         ).await.expect("l'ajout de la pièce jointe doit réussir");
         let add_value = read_json_body(add_result.into_response()).await;
@@ -1943,7 +1969,7 @@ mod tests {
 
         let list_result = get_vault_attachments(
             State(state.clone()),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path(vault_id.clone()),
         ).await.expect("le listing doit réussir");
         let list_value = read_json_body(list_result.into_response()).await;
@@ -1955,7 +1981,7 @@ mod tests {
 
         let get_result = get_vault_attachment(
             State(state.clone()),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path((vault_id.clone(), attachment_id.clone())),
         ).await.expect("la récupération d'une pièce jointe précise doit réussir");
         let get_value = read_json_body(get_result.into_response()).await;
@@ -1963,13 +1989,13 @@ mod tests {
 
         delete_vault_attachment(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path((vault_id.clone(), attachment_id.clone())),
         ).await.expect("la suppression doit réussir");
 
         let after_delete = get_vault_attachment(
             State(state.clone()),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path((vault_id, attachment_id)),
         ).await;
         assert!(matches!(after_delete, Err(AppError::NotFound)), "une pièce jointe supprimée ne doit plus être accessible");
@@ -1986,24 +2012,24 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(sample_entry("AvecFichier")))
+            auth(&state, &email.to_string()).await, Json(sample_entry("AvecFichier")))
             .await.expect("l'ajout doit réussir");
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(sample_entry("SansFichier")))
+            auth(&state, &email.to_string()).await, Json(sample_entry("SansFichier")))
             .await.expect("l'ajout doit réussir");
 
-        let with_attachment_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ? AND encrypted_site_name = ?")
-            .bind(email).bind("AvecFichier").fetch_one(&state.db).await.unwrap();
+        let with_attachment_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ? AND encrypted_site_name = ?")
+            .bind(auth(&state, email).await.user_id).bind("AvecFichier").fetch_one(&state.db).await.unwrap();
 
         add_vault_attachment(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path(with_attachment_id.clone()), Json(sample_attachment("fichier.txt")),
         ).await.expect("l'ajout de la pièce jointe doit réussir");
 
         let result = get_vault(
             State(state.clone()),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Query(PaginationParams { limit: None, offset: None }),
         ).await.expect("la lecture doit réussir");
         let value = read_json_body(result.into_response()).await;
@@ -2036,18 +2062,18 @@ mod tests {
         card_entry.entry_type = "card".to_string();
         card_entry.encrypted_extra_fields = Some("chiffre_cvv_expiration".to_string());
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(card_entry))
+            auth(&state, &email.to_string()).await, Json(card_entry))
             .await.expect("l'ajout doit réussir");
 
         // Une entrée "login" ordinaire, sans champs additionnels — ne doit jamais hériter de ceux
         // de l'entrée précédente.
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(sample_entry("MonLogin")))
+            auth(&state, &email.to_string()).await, Json(sample_entry("MonLogin")))
             .await.expect("l'ajout doit réussir");
 
         let result = get_vault(
             State(state.clone()),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Query(PaginationParams { limit: None, offset: None }),
         ).await.expect("la lecture doit réussir");
         let value = read_json_body(result.into_response()).await;
@@ -2068,12 +2094,12 @@ mod tests {
         updated.entry_type = "identity".to_string();
         updated.encrypted_extra_fields = Some("chiffre_date_naissance".to_string());
         update_vault_entry(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Path(card_id.clone()), Json(updated))
+            auth(&state, &email.to_string()).await, Path(card_id.clone()), Json(updated))
             .await.expect("la modification doit réussir");
 
         let result = get_vault(
             State(state.clone()),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Query(PaginationParams { limit: None, offset: None }),
         ).await.expect("la relecture doit réussir");
         let value = read_json_body(result.into_response()).await;
@@ -2093,14 +2119,14 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: "owner@example.com".to_string(), is_moderator: false }, Json(sample_entry("PasATa")))
+            auth(&state, &"owner@example.com".to_string()).await, Json(sample_entry("PasATa")))
             .await.expect("l'ajout doit réussir");
-        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind("owner@example.com").fetch_one(&state.db).await.unwrap();
+        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, "owner@example.com").await.user_id).fetch_one(&state.db).await.unwrap();
 
         let result = add_vault_attachment(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: "attacker@example.com".to_string(), is_moderator: false },
+            auth(&state, &"attacker@example.com".to_string()).await,
             Path(vault_id), Json(sample_attachment("intrus.txt")),
         ).await;
         assert!(matches!(result, Err(AppError::NotFound)), "attacher un fichier à l'entrée d'un AUTRE utilisateur doit échouer en 404, jamais réussir");
@@ -2116,22 +2142,22 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(sample_entry("Quota")))
+            auth(&state, &email.to_string()).await, Json(sample_entry("Quota")))
             .await.expect("l'ajout doit réussir");
-        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         for i in 0..MAX_ATTACHMENTS_PER_ENTRY {
             add_vault_attachment(
                 State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-                AuthUser { email: email.to_string(), is_moderator: false },
+                auth(&state, &email.to_string()).await,
                 Path(vault_id.clone()), Json(sample_attachment(&format!("fichier_{i}.txt"))),
             ).await.expect("chaque ajout jusqu'à la limite doit réussir");
         }
 
         let result = add_vault_attachment(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path(vault_id), Json(sample_attachment("en_trop.txt")),
         ).await;
         assert!(matches!(result, Err(AppError::ValidationError(_))), "une pièce jointe au-delà de MAX_ATTACHMENTS_PER_ENTRY doit être refusée");
@@ -2147,31 +2173,30 @@ mod tests {
         let email = "quotaperso@example.com";
         register_test_user(&state, email).await;
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
-        let appelant = || AuthUser { email: email.to_string(), is_moderator: false };
 
         // Deux entrées autorisées, très en dessous du plafond global de 5000.
         sqlx::query("UPDATE users SET max_vault_entries = 2 WHERE email = ?")
             .bind(email).execute(&state.db).await.unwrap();
 
         for i in 0..2 {
-            add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(), appelant(),
+            add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(), auth(&state, email).await,
                 Json(sample_entry(&format!("Entree{i}")))).await
                 .expect("les entrées sous le quota doivent passer");
         }
 
-        let refus = add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(), appelant(),
+        let refus = add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(), auth(&state, email).await,
             Json(sample_entry("DeTrop"))).await;
         assert!(matches!(refus, Err(AppError::ValidationError(_))), "la 3e entrée doit être refusée par le quota du compte");
 
         // Remettre NULL doit rendre le compte au plafond global, sans rien supprimer.
         sqlx::query("UPDATE users SET max_vault_entries = NULL WHERE email = ?")
             .bind(email).execute(&state.db).await.unwrap();
-        add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(), appelant(),
+        add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(), auth(&state, email).await,
             Json(sample_entry("ApresLiberation"))).await
             .expect("sans surcharge, le plafond global s'applique de nouveau");
 
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(total, 3, "abaisser puis relever un quota ne doit jamais supprimer d'entrée");
     }
 
@@ -2189,11 +2214,11 @@ mod tests {
         let entries_needed = (MAX_ATTACHMENTS_PER_USER + MAX_ATTACHMENTS_PER_ENTRY - 1) / MAX_ATTACHMENTS_PER_ENTRY;
         for i in 0..entries_needed {
             add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-                AuthUser { email: email.to_string(), is_moderator: false }, Json(sample_entry(&format!("Entree{i}"))))
+                auth(&state, &email.to_string()).await, Json(sample_entry(&format!("Entree{i}"))))
                 .await.expect("l'ajout doit réussir");
         }
-        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_all(&state.db).await.unwrap();
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_all(&state.db).await.unwrap();
         vault_ids.extend(ids);
 
         let mut remaining = MAX_ATTACHMENTS_PER_USER;
@@ -2202,7 +2227,7 @@ mod tests {
             for i in 0..for_this_entry {
                 add_vault_attachment(
                     State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-                    AuthUser { email: email.to_string(), is_moderator: false },
+                    auth(&state, &email.to_string()).await,
                     Path(vault_id.clone()), Json(sample_attachment(&format!("fichier_{i}.txt"))),
                 ).await.expect("chaque ajout jusqu'au quota global doit réussir");
             }
@@ -2213,14 +2238,14 @@ mod tests {
         // Une entrée TOUTE NEUVE, sans aucune pièce jointe -> refusée quand même, le quota est
         // bien GLOBAL et pas seulement par entrée.
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(sample_entry("EntreeNeuve")))
+            auth(&state, &email.to_string()).await, Json(sample_entry("EntreeNeuve")))
             .await.expect("l'ajout doit réussir");
-        let fresh_vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ? AND encrypted_site_name = 'EntreeNeuve'")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let fresh_vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ? AND encrypted_site_name = 'EntreeNeuve'")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         let result = add_vault_attachment(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path(fresh_vault_id), Json(sample_attachment("en_trop.txt")),
         ).await;
         assert!(matches!(result, Err(AppError::ValidationError(_))), "au-delà de MAX_ATTACHMENTS_PER_USER, même une entrée neuve doit être refusée");
@@ -2237,17 +2262,17 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
         add_to_vault(State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false }, Json(sample_entry("Validation")))
+            auth(&state, &email.to_string()).await, Json(sample_entry("Validation")))
             .await.expect("l'ajout doit réussir");
-        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let vault_id: String = sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(auth(&state, email).await.user_id).fetch_one(&state.db).await.unwrap();
 
         let mut too_big = sample_attachment("trop_gros.bin");
         too_big.content_size = 5_242_881; // 1 octet au-delà de la limite (5 Mo)
 
         let result = add_vault_attachment(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            auth(&state, &email.to_string()).await,
             Path(vault_id), Json(too_big),
         ).await;
         assert!(result.is_err(), "un content_size déclaré au-delà de 5 Mo doit être rejeté par la validation");

@@ -234,6 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             maintenance::cleanup_expired_tokens(&db_for_cleanup).await;
             maintenance::purge_old_trashed_vault_entries(&db_for_cleanup).await;
             maintenance::cleanup_expired_ws_tickets(&db_for_cleanup).await;
+            maintenance::cleanup_expired_tfa_codes(&db_for_cleanup).await;
             maintenance::cleanup_stale_unverified_accounts(&db_for_cleanup).await;
             maintenance::purge_old_audit_logs(&db_for_cleanup).await;
             maintenance::prune_account_ip_history(&db_for_cleanup).await;

@@ -26,13 +26,13 @@ pub async fn list_devices(
     let devices = sqlx::query_as::<_, TrustedDevice>(
         "SELECT d.device_id, d.device_name, d.created_at, d.last_used_at,
             (SELECT ip.ip_address FROM trusted_device_ips ip
-             WHERE ip.device_id = d.device_id AND ip.user_email = d.user_email
+             WHERE ip.device_id = d.device_id AND ip.user_id = d.user_id
              ORDER BY ip.last_seen_at DESC, ip.id DESC LIMIT 1) AS last_ip
          FROM trusted_devices d
-         WHERE d.user_email = ?
+         WHERE d.user_id = ?
          ORDER BY d.last_used_at DESC"
     )
-    .bind(&user.email)
+    .bind(user.user_id)
     .fetch_all(&state.db)
     .await?;
 
@@ -51,10 +51,10 @@ pub async fn revoke_device(
 ) -> Result<impl IntoResponse, AppError> {
     let mut tx = state.db.begin().await?;
 
-    // Sécurité : la clause "AND user_email = ?" empêche de révoquer l'appareil d'un AUTRE utilisateur
-    let res = sqlx::query("DELETE FROM trusted_devices WHERE device_id = ? AND user_email = ?")
+    // Sécurité : la clause "AND user_id = ?" empêche de révoquer l'appareil d'un AUTRE utilisateur
+    let res = sqlx::query("DELETE FROM trusted_devices WHERE device_id = ? AND user_id = ?")
         .bind(&device_id)
-        .bind(&user.email)
+        .bind(user.user_id)
         .execute(&mut *tx)
         .await?;
 
@@ -63,9 +63,9 @@ pub async fn revoke_device(
     }
 
     // Coupe aussi la session active de cet appareil, s'il en existe une
-    sqlx::query("DELETE FROM refresh_tokens WHERE device_id = ? AND user_email = ?")
+    sqlx::query("DELETE FROM refresh_tokens WHERE device_id = ? AND user_id = ?")
         .bind(&device_id)
-        .bind(&user.email)
+        .bind(user.user_id)
         .execute(&mut *tx)
         .await?;
 
@@ -102,17 +102,17 @@ pub async fn update_device_limit(
 ) -> Result<impl IntoResponse, AppError> {
     payload.validate()?; // borne déjà 1-50, voir models.rs
 
-    let current_user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE email = ?")
-        .bind(&user.email)
+    let current_user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
+        .bind(user.user_id)
         .fetch_one(&state.db)
         .await?;
     if !crypto::verify_password(&payload.master_password_hash, &current_user.password_hash, &state.config.password_pepper).await {
         return Err(AppError::InvalidCredentials);
     }
 
-    sqlx::query("UPDATE users SET max_trusted_devices = ? WHERE email = ?")
+    sqlx::query("UPDATE users SET max_trusted_devices = ? WHERE id = ?")
         .bind(payload.new_limit as i64)
-        .bind(&user.email)
+        .bind(user.user_id)
         .execute(&state.db)
         .await?;
 
@@ -140,13 +140,13 @@ pub async fn logout_all_devices(
 ) -> Result<impl IntoResponse, AppError> {
     let mut tx = state.db.begin().await?;
 
-    sqlx::query("DELETE FROM refresh_tokens WHERE user_email = ?")
-        .bind(&user.email)
+    sqlx::query("DELETE FROM refresh_tokens WHERE user_id = ?")
+        .bind(user.user_id)
         .execute(&mut *tx)
         .await?;
 
-    sqlx::query("UPDATE users SET sessions_revoked_at = CURRENT_TIMESTAMP WHERE email = ?")
-        .bind(&user.email)
+    sqlx::query("UPDATE users SET sessions_revoked_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(user.user_id)
         .execute(&mut *tx)
         .await?;
 
@@ -220,19 +220,19 @@ mod tests {
         })
     }
 
-    async fn register_test_user(state: &Arc<AppState>, email: &str) {
-        sqlx::query("INSERT INTO users (email, password_hash) VALUES (?, ?)")
+    async fn register_test_user(state: &Arc<AppState>, email: &str) -> i64 {
+        sqlx::query_scalar("INSERT INTO users (email, password_hash) VALUES (?, ?) RETURNING id")
             .bind(email)
             .bind("hash_non_pertinent_pour_ce_test")
-            .execute(&state.db)
+            .fetch_one(&state.db)
             .await
-            .expect("l'insertion de l'utilisateur de test doit réussir");
+            .expect("l'insertion de l'utilisateur de test doit réussir")
     }
 
-    async fn trust_device(state: &Arc<AppState>, email: &str, device_id: &str, device_name: &str) {
-        sqlx::query("INSERT OR REPLACE INTO trusted_devices (device_id, user_email, device_name) VALUES (?, ?, ?)")
+    async fn trust_device(state: &Arc<AppState>, user_id: i64, device_id: &str, device_name: &str) {
+        sqlx::query("INSERT OR REPLACE INTO trusted_devices (device_id, user_id, device_name) VALUES (?, ?, ?)")
             .bind(device_id)
-            .bind(email)
+            .bind(user_id)
             .bind(device_name)
             .execute(&state.db)
             .await
@@ -244,23 +244,23 @@ mod tests {
     #[tokio::test]
     async fn test_list_devices_returns_only_own_devices() {
         let state = build_test_state().await;
-        register_test_user(&state, "devowner@example.com").await;
-        register_test_user(&state, "devother@example.com").await;
-        trust_device(&state, "devowner@example.com", "device-1", "Téléphone").await;
-        trust_device(&state, "devowner@example.com", "device-2", "Extension Chrome").await;
-        trust_device(&state, "devother@example.com", "device-3", "Ordinateur d'un autre").await;
+        let owner_id = register_test_user(&state, "devowner@example.com").await;
+        let other_id = register_test_user(&state, "devother@example.com").await;
+        trust_device(&state, owner_id, "device-1", "Téléphone").await;
+        trust_device(&state, owner_id, "device-2", "Extension Chrome").await;
+        trust_device(&state, other_id, "device-3", "Ordinateur d'un autre").await;
 
         let owner_devices = list_devices(
             State(state.clone()),
-            AuthUser { email: "devowner@example.com".to_string(), is_moderator: false },
+            AuthUser { user_id: owner_id, email: "devowner@example.com".to_string(), is_moderator: false },
         ).await.expect("le listage doit réussir");
 
         // list_devices() renvoie Json<Vec<TrustedDevice>> -> on vérifie via la BDD directement
         // le nombre d'appareils réellement associés à chaque utilisateur, cohérent avec ce que
-        // la requête SQL du handler filtre (WHERE user_email = ?).
+        // la requête SQL du handler filtre (WHERE user_id = ?).
         let _ = owner_devices; // le handler a réussi, on vérifie l'effet en BDD ci-dessous
-        let owner_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_devices WHERE user_email = ?")
-            .bind("devowner@example.com")
+        let owner_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM trusted_devices WHERE user_id = ?")
+            .bind(owner_id)
             .fetch_one(&state.db)
             .await
             .unwrap();
@@ -274,23 +274,23 @@ mod tests {
     #[tokio::test]
     async fn test_list_devices_exposes_most_recent_ip() {
         let state = build_test_state().await;
-        register_test_user(&state, "iplist@example.com").await;
-        trust_device(&state, "iplist@example.com", "device-with-ip", "Téléphone").await;
-        trust_device(&state, "iplist@example.com", "device-without-ip", "Vieux appareil").await;
+        let user_id = register_test_user(&state, "iplist@example.com").await;
+        trust_device(&state, user_id, "device-with-ip", "Téléphone").await;
+        trust_device(&state, user_id, "device-without-ip", "Vieux appareil").await;
 
         // Deux IP pour device-with-ip, insérées à quelques secondes d'écart (via `id` croissant,
         // départage fiable même à précision-seconde égale, voir le commentaire du handler) — seule
         // la PLUS RÉCENTE (10.0.0.2) doit ressortir.
-        sqlx::query("INSERT INTO trusted_device_ips (device_id, user_email, ip_address) VALUES (?, ?, ?)")
-            .bind("device-with-ip").bind("iplist@example.com").bind("10.0.0.1")
+        sqlx::query("INSERT INTO trusted_device_ips (device_id, user_id, ip_address) VALUES (?, ?, ?)")
+            .bind("device-with-ip").bind(user_id).bind("10.0.0.1")
             .execute(&state.db).await.unwrap();
-        sqlx::query("INSERT INTO trusted_device_ips (device_id, user_email, ip_address) VALUES (?, ?, ?)")
-            .bind("device-with-ip").bind("iplist@example.com").bind("10.0.0.2")
+        sqlx::query("INSERT INTO trusted_device_ips (device_id, user_id, ip_address) VALUES (?, ?, ?)")
+            .bind("device-with-ip").bind(user_id).bind("10.0.0.2")
             .execute(&state.db).await.unwrap();
 
         let response = list_devices(
             State(state.clone()),
-            AuthUser { email: "iplist@example.com".to_string(), is_moderator: false },
+            AuthUser { user_id, email: "iplist@example.com".to_string(), is_moderator: false },
         ).await.expect("le listage doit réussir").into_response();
 
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -309,13 +309,13 @@ mod tests {
     async fn test_revoke_device_removes_trust_and_session() {
         let state = build_test_state().await;
         let email = "revoketest@example.com";
-        register_test_user(&state, email).await;
-        trust_device(&state, email, "device-to-revoke", "Appareil à révoquer").await;
+        let user_id = register_test_user(&state, email).await;
+        trust_device(&state, user_id, "device-to-revoke", "Appareil à révoquer").await;
 
         // Simule une session active sur cet appareil
-        sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO refresh_tokens (token, user_id, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
             .bind("token-de-test")
-            .bind(email)
+            .bind(user_id)
             .bind("device-to-revoke")
             .bind((Utc::now() + chrono::Duration::hours(1)).format("%Y-%m-%dT%H:%M:%SZ").to_string())
             .bind(true)
@@ -328,7 +328,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            AuthUser { user_id, email: email.to_string(), is_moderator: false },
             Path("device-to-revoke".to_string()),
         ).await.expect("la révocation doit réussir");
 
@@ -354,8 +354,8 @@ mod tests {
     async fn test_revoke_device_broadcasts_session_revoked_event() {
         let state = build_test_state().await;
         let email = "revokebroadcast@example.com";
-        register_test_user(&state, email).await;
-        trust_device(&state, email, "device-to-revoke", "Appareil à révoquer").await;
+        let user_id = register_test_user(&state, email).await;
+        trust_device(&state, user_id, "device-to-revoke", "Appareil à révoquer").await;
 
         let mut rx = state.sync_tx.subscribe();
 
@@ -364,7 +364,7 @@ mod tests {
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            AuthUser { user_id, email: email.to_string(), is_moderator: false },
             Path("device-to-revoke".to_string()),
         ).await.expect("la révocation doit réussir");
 
@@ -378,16 +378,16 @@ mod tests {
     #[tokio::test]
     async fn test_revoke_device_cannot_revoke_another_users_device() {
         let state = build_test_state().await;
-        register_test_user(&state, "victim@example.com").await;
-        register_test_user(&state, "attacker@example.com").await;
-        trust_device(&state, "victim@example.com", "victim-device", "Appareil de la victime").await;
+        let victim_id = register_test_user(&state, "victim@example.com").await;
+        let attacker_id = register_test_user(&state, "attacker@example.com").await;
+        trust_device(&state, victim_id, "victim-device", "Appareil de la victime").await;
 
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
         let result = revoke_device(
             State(state.clone()),
             ConnectInfo(addr),
             HeaderMap::new(),
-            AuthUser { email: "attacker@example.com".to_string(), is_moderator: false },
+            AuthUser { user_id: attacker_id, email: "attacker@example.com".to_string(), is_moderator: false },
             Path("victim-device".to_string()),
         ).await;
 
@@ -407,14 +407,14 @@ mod tests {
     /// Insère un utilisateur avec un VRAI hash Argon2 (pas le hash factice de
     /// register_test_user() ci-dessus), nécessaire pour tester update_device_limit() qui
     /// vérifie réellement le mot de passe fourni.
-    async fn register_user_with_real_password(state: &Arc<AppState>, email: &str, password: &str) {
+    async fn register_user_with_real_password(state: &Arc<AppState>, email: &str, password: &str) -> i64 {
         let hash = crate::crypto::hash_password(password, &state.config.password_pepper).await.unwrap();
-        sqlx::query("INSERT INTO users (email, password_hash) VALUES (?, ?)")
+        sqlx::query_scalar("INSERT INTO users (email, password_hash) VALUES (?, ?) RETURNING id")
             .bind(email)
             .bind(hash)
-            .execute(&state.db)
+            .fetch_one(&state.db)
             .await
-            .expect("l'insertion de l'utilisateur de test doit réussir");
+            .expect("l'insertion de l'utilisateur de test doit réussir")
     }
 
     /// update_device_limit() doit refuser un mauvais mot de passe, et appliquer le nouveau
@@ -423,25 +423,25 @@ mod tests {
     async fn test_update_device_limit_validates_password_and_applies_new_limit() {
         let state = build_test_state().await;
         let email = "devicelimit@example.com";
-        register_user_with_real_password(&state, email, "mot_de_passe_test_123").await;
+        let user_id = register_user_with_real_password(&state, email, "mot_de_passe_test_123").await;
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
-        let user = AuthUser { email: email.to_string(), is_moderator: false };
+        let user = AuthUser { user_id, email: email.to_string(), is_moderator: false };
 
         let bad_result = update_device_limit(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: user.email.clone(), is_moderator: false },
+            AuthUser { user_id, email: user.email.clone(), is_moderator: false },
             Json(UpdateDeviceLimitPayload { new_limit: 5, master_password_hash: "mauvais_mdp".to_string() }),
         ).await;
         assert!(matches!(bad_result, Err(AppError::InvalidCredentials)), "un mauvais mot de passe doit être rejeté");
 
         update_device_limit(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: user.email.clone(), is_moderator: false },
+            AuthUser { user_id, email: user.email.clone(), is_moderator: false },
             Json(UpdateDeviceLimitPayload { new_limit: 5, master_password_hash: "mot_de_passe_test_123".to_string() }),
         ).await.expect("le bon mot de passe doit permettre la modification");
 
-        let new_limit: i64 = sqlx::query_scalar("SELECT max_trusted_devices FROM users WHERE email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let new_limit: i64 = sqlx::query_scalar("SELECT max_trusted_devices FROM users WHERE id = ?")
+            .bind(user_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(new_limit, 5, "le nouveau plafond doit être appliqué en BDD");
 
         let audit_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE user_email = ? AND action = 'DEVICE_LIMIT_CHANGED'")
@@ -455,13 +455,13 @@ mod tests {
     async fn test_logout_all_devices_revokes_every_session() {
         let state = build_test_state().await;
         let email = "logoutall@example.com";
-        register_test_user(&state, email).await;
-        register_test_user(&state, "other@example.com").await;
+        let user_id = register_test_user(&state, email).await;
+        let other_id = register_test_user(&state, "other@example.com").await;
 
-        for (owner, device) in [(email, "device-a"), (email, "device-b"), ("other@example.com", "device-c")] {
-            sqlx::query("INSERT INTO refresh_tokens (token, user_email, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
+        for (owner_id, device) in [(user_id, "device-a"), (user_id, "device-b"), (other_id, "device-c")] {
+            sqlx::query("INSERT INTO refresh_tokens (token, user_id, device_id, expires_at, is_persistent) VALUES (?, ?, ?, ?, ?)")
                 .bind(format!("token-{device}"))
-                .bind(owner)
+                .bind(owner_id)
                 .bind(device)
                 .bind((Utc::now() + chrono::Duration::hours(1)).format("%Y-%m-%dT%H:%M:%SZ").to_string())
                 .bind(false)
@@ -473,15 +473,15 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
         logout_all_devices(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            AuthUser { user_id, email: email.to_string(), is_moderator: false },
         ).await.expect("la déconnexion globale doit réussir");
 
-        let remaining_own: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_email = ?")
-            .bind(email).fetch_one(&state.db).await.unwrap();
+        let remaining_own: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = ?")
+            .bind(user_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(remaining_own, 0, "toutes les sessions de l'utilisateur doivent être révoquées");
 
-        let remaining_other: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_email = ?")
-            .bind("other@example.com").fetch_one(&state.db).await.unwrap();
+        let remaining_other: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refresh_tokens WHERE user_id = ?")
+            .bind(other_id).fetch_one(&state.db).await.unwrap();
         assert_eq!(remaining_other, 1, "les sessions d'un AUTRE utilisateur ne doivent jamais être touchées");
     }
 
@@ -494,14 +494,14 @@ mod tests {
 
         let state = build_test_state().await;
         let email = "logoutalltoken@example.com";
-        register_test_user(&state, email).await;
+        let user_id = register_test_user(&state, email).await;
 
         let old_token = crate::crypto::create_jwt(email, &state.encoding_key, 600).unwrap();
 
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
         logout_all_devices(
             State(state.clone()), ConnectInfo(addr), HeaderMap::new(),
-            AuthUser { email: email.to_string(), is_moderator: false },
+            AuthUser { user_id, email: email.to_string(), is_moderator: false },
         ).await.expect("la déconnexion globale doit réussir");
 
         let mut parts = axum::http::Request::builder()

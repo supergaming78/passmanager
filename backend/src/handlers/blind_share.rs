@@ -29,7 +29,7 @@ use axum::{
 use std::sync::Arc;
 use std::net::SocketAddr;
 use axum::extract::ConnectInfo;
-use crate::{AppState, error::AppError, mailer, middleware::AuthUser, repository::BlindShareRepository, models::*};
+use crate::{AppState, error::AppError, mailer, middleware::AuthUser, repository::{BlindShareRepository, UserRepository}, models::*};
 use validator::Validate;
 use super::common::get_user_agent;
 
@@ -50,9 +50,11 @@ pub async fn create_blind_share(
     if shared_with_email == user.email {
         return Err(AppError::ValidationError("Impossible de partager une entrée avec soi-même.".to_string()));
     }
+    let shared_with_id = UserRepository::find_id_by_email(&state.db, &shared_with_email).await?
+        .ok_or_else(|| AppError::ValidationError("Aucun compte n'existe avec cet email.".to_string()))?;
 
     let id = BlindShareRepository::create(
-        &state.db, &vault_id, &user.email, &shared_with_email,
+        &state.db, &vault_id, user.user_id, shared_with_id,
         &payload.sealed_site_name, &payload.sealed_credentials, payload.max_uses,
     ).await?;
 
@@ -74,14 +76,14 @@ pub async fn list_blind_shares_for_entry(
     user: AuthUser,
     Path(vault_id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let shares = BlindShareRepository::list_for_entry(&state.db, &vault_id, &user.email).await?;
+    let shares = BlindShareRepository::list_for_entry(&state.db, &vault_id, user.user_id).await?;
     Ok(Json(shares))
 }
 
 /// Tout ce qui a été partagé EN USAGE LIMITÉ avec l'utilisateur connecté — inclut le nom du site
 /// scellé (librement consultable), jamais les identifiants.
 pub async fn list_blind_shares_received(State(state): State<Arc<AppState>>, user: AuthUser) -> Result<impl IntoResponse, AppError> {
-    let shares = BlindShareRepository::list_received(&state.db, &user.email).await?;
+    let shares = BlindShareRepository::list_received(&state.db, user.user_id).await?;
     Ok(Json(shares))
 }
 
@@ -96,7 +98,7 @@ pub async fn use_blind_share(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let view = BlindShareRepository::consume_use(&state.db, &id, &user.email).await?;
+    let view = BlindShareRepository::consume_use(&state.db, &id, user.user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_BLIND_SHARE_USE", addr.to_string(), agent).await;
@@ -113,7 +115,7 @@ pub async fn revoke_blind_share(
     user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    BlindShareRepository::revoke(&state.db, &id, &user.email).await?;
+    BlindShareRepository::revoke(&state.db, &id, user.user_id).await?;
 
     let agent = get_user_agent(&headers);
     state.log_audit(&user.email, "VAULT_BLIND_SHARE_REVOKE", addr.to_string(), agent).await;
@@ -192,8 +194,13 @@ mod tests {
         ConnectInfo("127.0.0.1:1".parse().unwrap())
     }
 
-    fn auth(email: &str) -> AuthUser {
-        AuthUser { email: email.to_string(), is_moderator: false }
+    async fn auth(state: &Arc<AppState>, email: &str) -> AuthUser {
+        let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+            .bind(email)
+            .fetch_one(&state.db)
+            .await
+            .expect("l'utilisateur de test doit déjà être enregistré");
+        AuthUser { user_id, email: email.to_string(), is_moderator: false }
     }
 
     async fn read_json_body(response: axum::response::Response) -> serde_json::Value {
@@ -202,9 +209,10 @@ mod tests {
     }
 
     async fn setup_keys(state: &Arc<AppState>, email: &str) {
+        let user_id = auth(state, email).await.user_id;
         EmergencyRepository::upsert_user_keys(
             &state.db,
-            email,
+            user_id,
             &UserKeysInput { public_key: format!("pubkey_{email}"), encrypted_private_key: format!("privkey_chiffre_{email}") },
         )
         .await
@@ -212,9 +220,10 @@ mod tests {
     }
 
     async fn add_test_entry(state: &Arc<AppState>, owner_email: &str) -> String {
+        let owner_id = auth(state, owner_email).await.user_id;
         VaultRepository::add(
             &state.db,
-            owner_email,
+            owner_id,
             VaultEntryInput {
                 encrypted_site_name: "chiffre_site".to_string(), encrypted_username: None, encrypted_login_email: None,
                 encrypted_folder: None, encrypted_notes: None, encrypted_url: None, password_changed: false, expected_version: None,
@@ -222,8 +231,8 @@ mod tests {
                 encrypted_password: "chiffre_mdp".to_string(), encrypted_preferred_login_type: "email".to_string(), is_favorite: false,
             },
         ).await.unwrap();
-        sqlx::query_scalar("SELECT id FROM vault WHERE user_email = ?")
-            .bind(owner_email)
+        sqlx::query_scalar("SELECT id FROM vault WHERE user_id = ?")
+            .bind(owner_id)
             .fetch_one(&state.db)
             .await
             .unwrap()
@@ -250,13 +259,13 @@ mod tests {
         let vault_id = add_test_entry(&state, "owner@example.com").await;
 
         let create_result = create_blind_share(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner@example.com").await,
             Path(vault_id.clone()), Json(payload("friend@example.com", 2)),
         ).await.expect("la création doit réussir");
         let id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         // Le propriétaire voit le compteur, jamais les blobs scellés.
-        let owner_view = read_json_body(list_blind_shares_for_entry(State(state.clone()), auth("owner@example.com"), Path(vault_id)).await.unwrap().into_response()).await;
+        let owner_view = read_json_body(list_blind_shares_for_entry(State(state.clone()), auth(&state, "owner@example.com").await, Path(vault_id)).await.unwrap().into_response()).await;
         let owner_rows = owner_view.as_array().unwrap();
         assert_eq!(owner_rows.len(), 1);
         assert_eq!(owner_rows[0]["max_uses"].as_i64(), Some(2));
@@ -264,27 +273,27 @@ mod tests {
         assert!(owner_rows[0].get("sealed_credentials").is_none(), "le propriétaire ne doit jamais voir les identifiants scellés dans ce listing");
 
         // Le destinataire voit le nom du site SANS consommer d'usage.
-        let received = read_json_body(list_blind_shares_received(State(state.clone()), auth("friend@example.com")).await.unwrap().into_response()).await;
+        let received = read_json_body(list_blind_shares_received(State(state.clone()), auth(&state, "friend@example.com").await).await.unwrap().into_response()).await;
         let received_rows = received.as_array().unwrap();
         assert_eq!(received_rows[0]["sealed_site_name"].as_str(), Some("site_scelle"));
         assert_eq!(received_rows[0]["remaining_uses"].as_i64(), Some(2), "consulter la liste ne doit jamais consommer d'usage");
         assert!(received_rows[0].get("sealed_credentials").is_none(), "les identifiants ne doivent JAMAIS apparaître dans le listing, seulement via /use");
 
         // Première utilisation : réussit, décrémente à 1.
-        let use1 = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend@example.com"), Path(id.clone()))
+        let use1 = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend@example.com").await, Path(id.clone()))
             .await.expect("la première utilisation doit réussir");
         let use1_value = read_json_body(use1.into_response()).await;
         assert_eq!(use1_value["sealed_credentials"].as_str(), Some("identifiants_scelles"));
         assert_eq!(use1_value["remaining_uses"].as_i64(), Some(1));
 
         // Deuxième utilisation : réussit, décrémente à 0.
-        let use2 = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend@example.com"), Path(id.clone()))
+        let use2 = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend@example.com").await, Path(id.clone()))
             .await.expect("la deuxième utilisation doit réussir");
         let use2_value = read_json_body(use2.into_response()).await;
         assert_eq!(use2_value["remaining_uses"].as_i64(), Some(0));
 
         // Troisième utilisation : plus aucun usage disponible.
-        let use3 = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend@example.com"), Path(id)).await;
+        let use3 = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend@example.com").await, Path(id)).await;
         match use3 {
             Err(AppError::ValidationError(msg)) => assert!(msg.contains("Plus aucun usage"), "message reçu: {msg}"),
             other => panic!("la 3e utilisation devrait être refusée, résultat: {}", if other.is_ok() { "succès" } else { "mauvaise erreur" }),
@@ -300,15 +309,15 @@ mod tests {
         let vault_id = add_test_entry(&state, "owner2@example.com").await;
 
         let create_result = create_blind_share(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner2@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner2@example.com").await,
             Path(vault_id), Json(payload("friend2@example.com", 1)),
         ).await.unwrap();
         let id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
-        use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend2@example.com"), Path(id.clone()))
+        use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend2@example.com").await, Path(id.clone()))
             .await.expect("le seul usage disponible doit réussir");
 
-        let second = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend2@example.com"), Path(id)).await;
+        let second = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend2@example.com").await, Path(id)).await;
         assert!(matches!(second, Err(AppError::ValidationError(_))), "avec max_uses=1, une deuxième utilisation doit être refusée");
     }
 
@@ -324,15 +333,15 @@ mod tests {
         let vault_id = add_test_entry(&state, "owner3@example.com").await;
 
         let create_result = create_blind_share(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner3@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner3@example.com").await,
             Path(vault_id), Json(payload("friend3@example.com", 5)),
         ).await.unwrap();
         let id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
-        let stranger_attempt = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("stranger3@example.com"), Path(id.clone())).await;
+        let stranger_attempt = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "stranger3@example.com").await, Path(id.clone())).await;
         assert!(matches!(stranger_attempt, Err(AppError::NotFound)));
 
-        let owner_attempt = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("owner3@example.com"), Path(id)).await;
+        let owner_attempt = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner3@example.com").await, Path(id)).await;
         assert!(matches!(owner_attempt, Err(AppError::NotFound)), "même le propriétaire ne doit pas pouvoir consommer un usage via cette route");
     }
 
@@ -343,7 +352,7 @@ mod tests {
         let vault_id = add_test_entry(&state, "solo@example.com").await;
 
         let result = create_blind_share(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("solo@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "solo@example.com").await,
             Path(vault_id), Json(payload("solo@example.com", 1)),
         ).await;
         assert!(matches!(result, Err(AppError::ValidationError(_))));
@@ -359,15 +368,15 @@ mod tests {
         let vault_id = add_test_entry(&state, "owner4@example.com").await;
 
         let create_result = create_blind_share(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner4@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner4@example.com").await,
             Path(vault_id), Json(payload("friend4@example.com", 3)),
         ).await.unwrap();
         let id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
-        revoke_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend4@example.com"), Path(id.clone()))
+        revoke_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend4@example.com").await, Path(id.clone()))
             .await.expect("le destinataire doit pouvoir révoquer/renoncer au partage");
 
-        let after = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend4@example.com"), Path(id)).await;
+        let after = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend4@example.com").await, Path(id)).await;
         assert!(matches!(after, Err(AppError::NotFound)), "un partage révoqué ne doit plus être utilisable");
     }
 
@@ -383,15 +392,16 @@ mod tests {
         let vault_id = add_test_entry(&state, "owner5@example.com").await;
 
         let create_result = create_blind_share(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner5@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner5@example.com").await,
             Path(vault_id.clone()), Json(payload("friend5@example.com", 5)),
         ).await.unwrap();
         let id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
-        VaultRepository::delete(&state.db, "owner5@example.com", &vault_id).await.unwrap();
-        VaultRepository::purge(&state.db, "owner5@example.com", &vault_id).await.unwrap();
+        let owner5_id = auth(&state, "owner5@example.com").await.user_id;
+        VaultRepository::delete(&state.db, owner5_id, &vault_id).await.unwrap();
+        VaultRepository::purge(&state.db, owner5_id, &vault_id).await.unwrap();
 
-        let attempt = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend5@example.com"), Path(id)).await;
+        let attempt = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend5@example.com").await, Path(id)).await;
         assert!(matches!(attempt, Err(AppError::NotFound)));
     }
 
@@ -409,18 +419,19 @@ mod tests {
         let vault_id = add_test_entry(&state, "owner6@example.com").await;
 
         let create_result = create_blind_share(
-            State(state.clone()), test_addr(), HeaderMap::new(), auth("owner6@example.com"),
+            State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "owner6@example.com").await,
             Path(vault_id.clone()), Json(payload("friend6@example.com", 5)),
         ).await.unwrap();
         let id = read_json_body(create_result.into_response()).await["id"].as_str().unwrap().to_string();
 
         // Corbeille SEULEMENT (pas de purge) — l'entrée existe encore en base, juste marquée supprimée.
-        VaultRepository::delete(&state.db, "owner6@example.com", &vault_id).await.unwrap();
+        let owner6_id = auth(&state, "owner6@example.com").await.user_id;
+        VaultRepository::delete(&state.db, owner6_id, &vault_id).await.unwrap();
 
-        let listing = read_json_body(list_blind_shares_received(State(state.clone()), auth("friend6@example.com")).await.unwrap().into_response()).await;
+        let listing = read_json_body(list_blind_shares_received(State(state.clone()), auth(&state, "friend6@example.com").await).await.unwrap().into_response()).await;
         assert_eq!(listing.as_array().unwrap().len(), 1, "la ligne de partage doit rester visible même si l'entrée source est à la corbeille");
 
-        let attempt = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth("friend6@example.com"), Path(id)).await;
+        let attempt = use_blind_share(State(state.clone()), test_addr(), HeaderMap::new(), auth(&state, "friend6@example.com").await, Path(id)).await;
         assert!(matches!(attempt, Err(AppError::NotFound)), "une entrée source à la corbeille ne doit plus pouvoir être utilisée, même avec des usages restants");
     }
 }
