@@ -245,7 +245,29 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
+      # CORRECTIF (run réel, app-v1.2.1) : `android-actions/setup-android@v3` échouait avec
+      # « Warning: Failed to find package 'tools' » puis code de sortie 1 — cette action tente en
+      # interne d'installer le paquet SDK legacy `tools`, retiré du dépôt de paquets Android par
+      # Google il y a plusieurs années (remplacé par `cmdline-tools`, déjà présent). Les runners
+      # `ubuntu-latest` de GitHub embarquent DÉJÀ un SDK Android fonctionnel, à jour, avec licences
+      # pré-acceptées (voir actions/runner-images) et `ANDROID_HOME`/`ANDROID_SDK_ROOT` déjà
+      # positionnées — cette action n'apportait donc rien d'utile ici, seulement cette régression.
+      # Remplacée par une acceptation de licence explicite (idempotente, sans nommer AUCUN paquet
+      # précis — donc rien à casser si Google en retire un autre un jour) : suffisant pour que le
+      # plugin Gradle Android télécharge lui-même, au moment du build, la plateforme/les
+      # build-tools exacts dont ce projet a besoin (mécanisme standard de l'Android Gradle Plugin).
+      - name: Accepter les licences du SDK Android déjà présent sur le runner
+        # `cmdline-tools/latest` est le lien symbolique conventionnel sur les runners GitHub, mais
+        # le run réel qui a motivé ce correctif montrait un dossier numéroté (.../cmdline-tools/
+        # 16.0/...) — au cas où `latest` n'existe pas sur une future image de runner, on retombe sur
+        # le premier `sdkmanager` trouvé sous cmdline-tools plutôt que de dépendre d'un seul chemin.
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 2 -name sdkmanager -type f | head -1)"
+          fi
+          echo "sdkmanager utilisé : $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
 
       - name: Installer le NDK Android
         uses: nttld/setup-ndk@v1
